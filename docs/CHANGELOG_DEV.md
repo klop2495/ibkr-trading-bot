@@ -1,5 +1,9 @@
 # Dev Changelog (append-only)
 
+## 2025-12-16 — Step 1: agent schemas + tests
+- Summary: Added strict Pydantic agent contracts with extra-forbid and validation tests for bounds, universe/timeframes, and serialization.
+- Files: `app/agents/__init__.py`, `app/agents/schemas.py`, `tests/test_agents_schemas.py`, `docs/CHANGELOG_DEV.md`
+
 ## 2025-12-16 — Add agents gate hook
 - Summary: Added decision-layer gate entry point with disabled fallback, docs update, and tests for enabled/disabled paths.
 - Files: `app/agents/gate.py`, `tests/test_agents_gate.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`
