@@ -10,4 +10,8 @@ __all__ = [
     "AgentReport",
     "Decision",
     "ExecutionReport",
+
+    "BotSettings",
 ]
+
+from .bot_settings import BotSettings
