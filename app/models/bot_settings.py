@@ -38,6 +38,7 @@ class BotSettings(BaseModel):
     max_effective_leverage: float = Field(default=2.0, ge=0.0, le=50.0)
     max_margin_utilization: float = Field(default=0.35, ge=0.0, le=1.0)
 
+    warmup_bars_min: int = Field(default=300, ge=0)
     symbols: List[str] = Field(default_factory=list)
 
     created_at: datetime | None = None

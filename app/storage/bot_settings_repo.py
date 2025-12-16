@@ -22,6 +22,7 @@ class BotSettingsPatch(BaseModel):
     breaker_pause_hours: int | None = None
     max_effective_leverage: float | None = None
     max_margin_utilization: float | None = None
+    warmup_bars_min: int | None = None
     symbols: list[str] | None = None
 
 
