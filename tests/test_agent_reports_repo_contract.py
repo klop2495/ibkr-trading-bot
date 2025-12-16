@@ -40,7 +40,9 @@ def test_agent_reports_repo_payload():
     db = DummyDB()
     repo = AgentReportsRepo(db=db)  # type: ignore[arg-type]
     report = AgentReport(trade_allowed=True, risk_modifier=0.9, flags=["ok"], comment="c")
-    res = repo.insert(report=report)
+    ts = datetime.now(timezone.utc)
+
+    res = repo.insert(report=report, ts_utc=ts, scope="portfolio", symbol=None)
 
     table = db.client.table_obj
     assert table.table_name == "agent_reports"

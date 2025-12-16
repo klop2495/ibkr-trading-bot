@@ -10,10 +10,7 @@ class CircuitBreakerState:
     def is_open(self, now_utc: datetime, cooldown_sec: int) -> bool:
         if self.opened_at_utc is None:
             return False
-        if now_utc - self.opened_at_utc >= timedelta(seconds=cooldown_sec):
-            self.record_success()
-            return False
-        return True
+        return (now_utc - self.opened_at_utc).total_seconds() < cooldown_sec
 
     def record_failure(self, now_utc: datetime, threshold: int) -> None:
         self.failures += 1

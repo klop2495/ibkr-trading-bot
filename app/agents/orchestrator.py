@@ -41,7 +41,8 @@ class AgentsOrchestrator:
     def analyze(self, request_obj: AgentRequest) -> AgentDecision:
         now = self.now_func()
 
-        if self.state.is_open(now, self.cb_cooldown_sec):
+        breaker_open = self.state.is_open(now, self.cb_cooldown_sec)
+        if breaker_open:
             fallback = self._fallback_response(reason_flag="agent_circuit_breaker", timed_out=False)
             return AgentDecision(
                 response=fallback,
@@ -50,6 +51,10 @@ class AgentsOrchestrator:
                 fallback_used=True,
                 error="circuit_breaker_open",
             )
+
+        if self.state.opened_at_utc is not None and not breaker_open:
+            # Cooldown elapsed; reset breaker to allow new attempts.
+            self.state.record_success()
 
         responses: Dict[str, AgentResponse] = {}
 

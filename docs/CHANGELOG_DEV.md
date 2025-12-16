@@ -1,5 +1,13 @@
 # Dev Changelog (append-only)
 
+## 2025-12-16 — Step 6: persist agent_reports from decision precheck + tests
+- Summary: Added agent report repo, reporting helper, precheck persist hook with fail-safe fallback, and tests for repo payload and persist behavior.
+- Files: `app/storage/agent_reports_repo.py`, `app/storage/repositories.py`, `app/agents/reporting.py`, `app/decision/agents_precheck.py`, `tests/test_agent_reports_repo_contract.py`, `tests/test_decision_agents_precheck_persist.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`
+
+## 2025-12-16 — Fix: circuit breaker cooldown + strict precheck validation
+- Summary: Fixed circuit breaker cooldown to allow retries after window and enforced strict per-symbol input validation in decision precheck.
+- Files: `app/agents/state.py`, `app/decision/agents_precheck.py`, `tests/test_decision_agents_precheck.py`, `docs/CHANGELOG_DEV.md`
+
 ## 2025-12-16 — Step 5: decision pre-check hook for agents + tests
 - Summary: Added decision-layer agents precheck builder and gate invocation, with validation tests and docs update.
 - Files: `app/decision/agents_precheck.py`, `tests/test_decision_agents_precheck.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`

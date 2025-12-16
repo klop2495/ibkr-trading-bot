@@ -62,6 +62,10 @@ Source of truth: follows `docs/spec_v1.md` §11 (Agents) and `docs/AI_RULES.md`.
 - Returns `AgentDecision` for downstream decision/risk logic.
 - No runtime wiring added in this step.
 
+### Agent report persistence
+- When using `agents_precheck_and_persist(...)`, each agent decision is persisted as an agent_report (append-only).
+- Persistence failures are fail-safe: the function returns a blocked decision with `agent_report_persist_failed`.
+
 ## Integration (gate)
 - Use `evaluate_agents(agent_request, orchestrator, agents_enabled)` as the single entry for the decision layer.
 - If `agents_enabled` is false or orchestrator is `None`, gate returns `trade_allowed=true`, `risk_modifier=1.0`, and flag `agents_disabled`.
