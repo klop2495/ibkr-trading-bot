@@ -1,5 +1,9 @@
 # Dev Changelog (append-only)
 
+## 2025-12-16 — Step 2: OpenAI Responses client (stdlib) + tests
+- Summary: Added stdlib-based OpenAI Responses client with structured outputs validation and tests for success, schema errors, HTTP errors, and timeouts.
+- Files: `app/agents/errors.py`, `app/agents/openai_client.py`, `tests/test_agents_openai_client.py`, `docs/CHANGELOG_DEV.md`
+
 ## 2025-12-16 — Step 1: agent schemas + tests
 - Summary: Added strict Pydantic agent contracts with extra-forbid and validation tests for bounds, universe/timeframes, and serialization.
 - Files: `app/agents/__init__.py`, `app/agents/schemas.py`, `tests/test_agents_schemas.py`, `docs/CHANGELOG_DEV.md`
