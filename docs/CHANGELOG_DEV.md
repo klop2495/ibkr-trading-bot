@@ -1,5 +1,9 @@
 # Dev Changelog (append-only)
 
+## 2025-12-16 — Step 5: decision pre-check hook for agents + tests
+- Summary: Added decision-layer agents precheck builder and gate invocation, with validation tests and docs update.
+- Files: `app/decision/agents_precheck.py`, `tests/test_decision_agents_precheck.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`
+
 ## 2025-12-16 — Step 4: agents gate + config + tests
 - Summary: Added agents gate with env-driven config and fail-safe defaults, plus tests and documentation updates.
 - Files: `app/agents/config.py`, `app/agents/gate.py`, `tests/test_agents_gate.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`

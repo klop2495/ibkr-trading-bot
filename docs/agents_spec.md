@@ -56,6 +56,12 @@ Source of truth: follows `docs/spec_v1.md` §11 (Agents) and `docs/AI_RULES.md`.
 - Default: agents disabled → returns `trade_allowed=true`, `risk_modifier=1.0`, flag `agents_disabled`.
 - Misconfiguration (enabled without API key) → fail-safe block: `trade_allowed=false`, `risk_modifier=0.5`, flag `agent_misconfigured`.
 
+### Decision integration hook
+- Decision layer calls `app.decision.agents_precheck.agents_precheck(...)`.
+- Inputs must be already binned/categorical (no numeric trading math).
+- Returns `AgentDecision` for downstream decision/risk logic.
+- No runtime wiring added in this step.
+
 ## Integration (gate)
 - Use `evaluate_agents(agent_request, orchestrator, agents_enabled)` as the single entry for the decision layer.
 - If `agents_enabled` is false or orchestrator is `None`, gate returns `trade_allowed=true`, `risk_modifier=1.0`, and flag `agents_disabled`.
