@@ -46,3 +46,35 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# --- runtime loop entrypoint (auto-generated) ---
+def _run_runtime_loop_entrypoint():
+    from app.runtime.runtime_loop import run_runtime_loop
+    run_runtime_loop()
+
+if __name__ == "__main__":
+    _run_runtime_loop_entrypoint()
+
+# --- runtime loop thread (auto-generated) ---
+def _start_runtime_loop_thread_once():
+    import threading
+    try:
+        from app.runtime.runtime_loop import run_runtime_loop
+    except Exception as e:
+        try:
+            from app.storage.db import SupabaseDB
+            from app.storage.repositories import RiskEventsRepo
+            db = SupabaseDB()
+            RiskEventsRepo(db).insert(
+                event_type="RUNTIME_LOOP_IMPORT_ERROR",
+                severity="error",
+                message="Failed to import runtime_loop",
+                data={"error": str(e)},
+            )
+        except Exception:
+            pass
+        return
+
+    t = threading.Thread(target=run_runtime_loop, name="runtime-loop", daemon=True)
+    t.start()
+# --- end runtime loop thread (auto-generated) ---
