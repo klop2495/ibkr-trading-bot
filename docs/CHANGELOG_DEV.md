@@ -4,6 +4,14 @@
 - Summary: Hardened bot settings polling gate, strict patch validation, and ensured env-only startup; added/verified bot settings tests.
 - Files: `app/main.py`, `app/models/bot_settings.py`, `app/storage/bot_settings_repo.py`, `tests/test_bot_settings.py`, `tests/test_bot_settings_repo.py`, `docs/CHANGELOG_DEV.md`
 
+## 2025-12-18 — Stage 3 — Market Data Layer (bars + QA + warm-up + feature snapshots)
+- Summary: Added market data indicators, QA, warm-up readiness, IBKR fetcher, buffers, and service orchestration with tests and warmup settings.
+- Files: `app/market_data/*`, `app/models/bot_settings.py`, `app/storage/bot_settings_repo.py`, `migrations/004_bot_settings_warmup.sql`, `tests/test_market_data_*`, `docs/CHANGELOG_DEV.md`
+
+## 2025-12-18 — Stage 3 — Market Data runtime wiring (env-gated)
+- Summary: Added env-gated wiring in main loop for MarketDataService using IBKRClient; uses BotSettings symbols/warmup; fail-safe if disabled/misconfigured; no trading.
+- Files: `app/main.py`, `docs/CHANGELOG_DEV.md`
+
 ## 2025-12-18 — Stage 2 — IBKR Connect Layer
 - Summary: Added IBKR Pydantic contracts, ib_insync client wrapper for connect/read-only account summary and positions snapshots, contract tests, and changelog update.
 - Files: `app/models/ibkr.py`, `app/broker/ibkr_client.py`, `tests/test_ibkr_client_contract.py`, `docs/CHANGELOG_DEV.md`
