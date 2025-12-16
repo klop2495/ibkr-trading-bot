@@ -9,7 +9,6 @@ from app.models import (
     Decision,
     ExecutionReport,
 )
-
 from app.storage.db import SupabaseDB
 
 
@@ -132,10 +131,17 @@ def make_repos(db: SupabaseDB) -> dict[str, Any]:
     """
     Convenience factory.
     """
-    return {
+    repos = {
         "snapshots": SnapshotsRepo(db),
         "signals": SignalsRepo(db),
         "decisions": DecisionsRepo(db),
         "execution_reports": ExecutionReportsRepo(db),
         "risk_events": RiskEventsRepo(db),
     }
+    try:
+        from app.storage.agent_reports_repo import AgentReportsRepo  # local import to avoid circular
+
+        repos["agent_reports"] = AgentReportsRepo(db)
+    except Exception:
+        pass
+    return repos
