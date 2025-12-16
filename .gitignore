@@ -236,3 +236,7 @@ htmlcov/
 .DS_Store
 .vscode/
 .idea/
+
+# local helper scripts (generated)
+apply_*.sh
+create_*.sh
