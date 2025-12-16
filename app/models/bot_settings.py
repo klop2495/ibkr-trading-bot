@@ -1,10 +1,25 @@
-from pydantic import BaseModel, Field
-from typing import Literal, List
 from datetime import datetime
+from typing import List, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+DEFAULT_SYMBOLS = [
+    "EURUSD",
+    "GBPUSD",
+    "USDJPY",
+    "USDCHF",
+    "AUDUSD",
+    "USDCAD",
+    "NZDUSD",
+]
+
 
 class BotSettings(BaseModel):
-    id: int
-    owner_user_id: str
+    model_config = ConfigDict(extra="forbid")
+
+    owner_user_id: UUID
 
     trading_enabled: bool = False
     mode: Literal["paper", "live"] = "paper"
@@ -25,4 +40,24 @@ class BotSettings(BaseModel):
 
     symbols: List[str] = Field(default_factory=list)
 
-    updated_at: datetime
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @field_validator("symbols", mode="before")
+    @classmethod
+    def normalize_symbols(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = [v]
+        cleaned = []
+        seen = set()
+        for s in v:
+            if not isinstance(s, str):
+                continue
+            name = s.strip().upper()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            cleaned.append(name)
+        return cleaned

@@ -1,5 +1,9 @@
 # Dev Changelog (append-only)
 
+## 2025-12-17 — Bot settings control-plane alignment
+- Summary: Aligned BotSettings model with DB constraints, added safe defaults, tightened repo with fail-safe get/update and UUID parsing in main loop, plus tests.
+- Files: `app/models/bot_settings.py`, `app/storage/bot_settings_repo.py`, `app/main.py`, `tests/test_bot_settings.py`, `tests/test_bot_settings_repo.py`
+
 ## 2025-12-16 — Step 6: persist agent_reports from decision precheck + tests
 - Summary: Added agent report repo, reporting helper, precheck persist hook with fail-safe fallback, and tests for repo payload and persist behavior.
 - Files: `app/storage/agent_reports_repo.py`, `app/storage/repositories.py`, `app/agents/reporting.py`, `app/decision/agents_precheck.py`, `tests/test_agent_reports_repo_contract.py`, `tests/test_decision_agents_precheck_persist.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`
