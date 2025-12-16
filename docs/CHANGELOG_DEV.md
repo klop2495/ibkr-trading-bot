@@ -1,5 +1,9 @@
 # Dev Changelog (append-only)
 
+## 2025-12-16 — Step 3: orchestrator + circuit breaker + tests
+- Summary: Implemented agents orchestrator with deterministic aggregation, fallback policy, circuit breaker state, and unit tests covering success, timeout, error, and cooldown flows.
+- Files: `app/agents/orchestrator.py`, `app/agents/state.py`, `tests/test_agents_orchestrator.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`
+
 ## 2025-12-16 — Step 2: OpenAI Responses client (stdlib) + tests
 - Summary: Added stdlib-based OpenAI Responses client with structured outputs validation and tests for success, schema errors, HTTP errors, and timeouts.
 - Files: `app/agents/errors.py`, `app/agents/openai_client.py`, `tests/test_agents_openai_client.py`, `docs/CHANGELOG_DEV.md`

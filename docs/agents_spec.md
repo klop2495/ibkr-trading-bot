@@ -44,6 +44,12 @@ Source of truth: follows `docs/spec_v1.md` §11 (Agents) and `docs/AI_RULES.md`.
 - Orchestrator must log all agent outcomes with `decision_id` and `ts`; append-only semantics respected by storage adapters.
 - OpenAI client is implemented via stdlib HTTP; missing configuration or network errors raise `AgentCallError`/`AgentTimeout` for orchestrator fallback (safe mode).
 
+### Circuit breaker behavior (orchestrator)
+- Threshold: after N consecutive agent failures (configurable; default 3) breaker opens.
+- Cooldown: breaker stays open for a configured window; during this time agent calls are skipped and `trade_allowed=false`, `risk_modifier=0.5`, flag `agent_circuit_breaker`.
+- On timeout: fallback `trade_allowed=false`, `risk_modifier=0.5`, flag `agent_timeout`, `timed_out=true`.
+- On other agent errors/refusals: fallback `trade_allowed=false`, `risk_modifier=0.5`, flag `agent_error`.
+
 ## Integration (gate)
 - Use `evaluate_agents(agent_request, orchestrator, agents_enabled)` as the single entry for the decision layer.
 - If `agents_enabled` is false or orchestrator is `None`, gate returns `trade_allowed=true`, `risk_modifier=1.0`, and flag `agents_disabled`.
