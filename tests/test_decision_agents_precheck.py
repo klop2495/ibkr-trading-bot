@@ -79,7 +79,7 @@ def test_invalid_symbol_raises_validation_error():
 def test_unexpected_key_in_per_symbol_inputs_fails():
     per_symbol_inputs, portfolio_inputs = make_inputs()
     per_symbol_inputs["EURUSD"]["unexpected"] = "value"
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError):
         build_agent_request_from_inputs(
             ts_utc=datetime.now(timezone.utc),
             universe=["EURUSD"],

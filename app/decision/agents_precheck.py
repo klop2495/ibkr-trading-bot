@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from app.agents.config import AgentConfig
 from app.agents.gate import evaluate_agents
@@ -19,8 +19,10 @@ from app.storage.agent_reports_repo import AgentReportsRepo
 
 
 class _PerSymbolPayload(BaseModel):
+    # forbid extra keys -> raises ValidationError (tests expect this)
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
+    # accept flexible types (dict or already-built models)
     signal_summary: Any
     feature_bins: Any
     data_quality: Any | None = None
@@ -37,17 +39,13 @@ def build_agent_request_from_inputs(
     per_symbol_states: List[PerSymbolAgentState] = []
     for sym, payload in per_symbol_inputs.items():
         validated = _PerSymbolPayload.model_validate(payload)
+
         ss = validated.signal_summary
-        if isinstance(ss, SignalSummary):
-            signal_summary = ss
-        else:
-            signal_summary = SignalSummary(**ss)
+        signal_summary = ss if isinstance(ss, SignalSummary) else SignalSummary(**ss)
 
         fb = validated.feature_bins
-        if isinstance(fb, FeatureBins):
-            feature_bins = fb
-        else:
-            feature_bins = FeatureBins(**fb)
+        feature_bins = fb if isinstance(fb, FeatureBins) else FeatureBins(**fb)
+
         per_symbol_states.append(
             PerSymbolAgentState(
                 symbol=sym,
