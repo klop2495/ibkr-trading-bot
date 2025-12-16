@@ -4,6 +4,10 @@
 - Summary: Hardened bot settings polling gate, strict patch validation, and ensured env-only startup; added/verified bot settings tests.
 - Files: `app/main.py`, `app/models/bot_settings.py`, `app/storage/bot_settings_repo.py`, `tests/test_bot_settings.py`, `tests/test_bot_settings_repo.py`, `docs/CHANGELOG_DEV.md`
 
+## 2025-12-18 — Stage 2 — IBKR Connect Layer
+- Summary: Added IBKR Pydantic contracts, ib_insync client wrapper for connect/read-only account summary and positions snapshots, contract tests, and changelog update.
+- Files: `app/models/ibkr.py`, `app/broker/ibkr_client.py`, `tests/test_ibkr_client_contract.py`, `docs/CHANGELOG_DEV.md`
+
 ## 2025-12-17 — Bot settings control-plane alignment
 - Summary: Aligned BotSettings model with DB constraints, added safe defaults, tightened repo with fail-safe get/update and UUID parsing in main loop, plus tests.
 - Files: `app/models/bot_settings.py`, `app/storage/bot_settings_repo.py`, `app/main.py`, `tests/test_bot_settings.py`, `tests/test_bot_settings_repo.py`
