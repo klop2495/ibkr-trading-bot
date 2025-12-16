@@ -1,5 +1,9 @@
 # Dev Changelog (append-only)
 
+## 2025-12-16 — Step 4: agents gate + config + tests
+- Summary: Added agents gate with env-driven config and fail-safe defaults, plus tests and documentation updates.
+- Files: `app/agents/config.py`, `app/agents/gate.py`, `tests/test_agents_gate.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`
+
 ## 2025-12-16 — Step 3: orchestrator + circuit breaker + tests
 - Summary: Implemented agents orchestrator with deterministic aggregation, fallback policy, circuit breaker state, and unit tests covering success, timeout, error, and cooldown flows.
 - Files: `app/agents/orchestrator.py`, `app/agents/state.py`, `tests/test_agents_orchestrator.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`

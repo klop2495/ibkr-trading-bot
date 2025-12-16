@@ -50,6 +50,12 @@ Source of truth: follows `docs/spec_v1.md` §11 (Agents) and `docs/AI_RULES.md`.
 - On timeout: fallback `trade_allowed=false`, `risk_modifier=0.5`, flag `agent_timeout`, `timed_out=true`.
 - On other agent errors/refusals: fallback `trade_allowed=false`, `risk_modifier=0.5`, flag `agent_error`.
 
+### Gate usage
+- `evaluate_agents(request)` is the single entry point for decision/risk layers.
+- Environment variables: `AGENTS_ENABLED`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `AGENT_TIMEOUT_SEC`, `AGENT_CB_FAILURE_THRESHOLD`, `AGENT_CB_COOLDOWN_SEC`, `OPENAI_BASE_URL`, `OPENAI_STORE`.
+- Default: agents disabled → returns `trade_allowed=true`, `risk_modifier=1.0`, flag `agents_disabled`.
+- Misconfiguration (enabled without API key) → fail-safe block: `trade_allowed=false`, `risk_modifier=0.5`, flag `agent_misconfigured`.
+
 ## Integration (gate)
 - Use `evaluate_agents(agent_request, orchestrator, agents_enabled)` as the single entry for the decision layer.
 - If `agents_enabled` is false or orchestrator is `None`, gate returns `trade_allowed=true`, `risk_modifier=1.0`, and flag `agents_disabled`.
