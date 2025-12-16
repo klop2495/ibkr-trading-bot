@@ -85,7 +85,7 @@ def test_circuit_breaker_opens_and_blocks_until_cooldown():
     mock_client = mock.Mock(spec=OpenAIResponsesClient)
     mock_client.analyze.side_effect = AgentHTTPError("http", status_code=500)
     start = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    times = [start, start + timedelta(seconds=1), start + timedelta(seconds=2), start + timedelta(hours=2)]
+    times = [start, start + timedelta(seconds=1), start + timedelta(hours=2)]
 
     def now_fn():
         return times.pop(0)
