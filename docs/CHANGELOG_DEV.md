@@ -1,5 +1,25 @@
 # Dev Changelog (append-only)
 
+## 2025-12-16 — Step 5: decision pre-check hook for agents + tests
+- Summary: Added decision-layer agents precheck builder and gate invocation, with validation tests and docs update.
+- Files: `app/decision/agents_precheck.py`, `tests/test_decision_agents_precheck.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`
+
+## 2025-12-16 — Step 4: agents gate + config + tests
+- Summary: Added agents gate with env-driven config and fail-safe defaults, plus tests and documentation updates.
+- Files: `app/agents/config.py`, `app/agents/gate.py`, `tests/test_agents_gate.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`
+
+## 2025-12-16 — Step 3: orchestrator + circuit breaker + tests
+- Summary: Implemented agents orchestrator with deterministic aggregation, fallback policy, circuit breaker state, and unit tests covering success, timeout, error, and cooldown flows.
+- Files: `app/agents/orchestrator.py`, `app/agents/state.py`, `tests/test_agents_orchestrator.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`
+
+## 2025-12-16 — Step 2: OpenAI Responses client (stdlib) + tests
+- Summary: Added stdlib-based OpenAI Responses client with structured outputs validation and tests for success, schema errors, HTTP errors, and timeouts.
+- Files: `app/agents/errors.py`, `app/agents/openai_client.py`, `tests/test_agents_openai_client.py`, `docs/CHANGELOG_DEV.md`
+
+## 2025-12-16 — Step 1: agent schemas + tests
+- Summary: Added strict Pydantic agent contracts with extra-forbid and validation tests for bounds, universe/timeframes, and serialization.
+- Files: `app/agents/__init__.py`, `app/agents/schemas.py`, `tests/test_agents_schemas.py`, `docs/CHANGELOG_DEV.md`
+
 ## 2025-12-16 — Add agents gate hook
 - Summary: Added decision-layer gate entry point with disabled fallback, docs update, and tests for enabled/disabled paths.
 - Files: `app/agents/gate.py`, `tests/test_agents_gate.py`, `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`
