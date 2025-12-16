@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -19,12 +19,12 @@ from app.storage.agent_reports_repo import AgentReportsRepo
 
 
 class _PerSymbolPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
-    signal_summary: dict
-    feature_bins: dict
-    data_quality: dict | None = None
-    spread_quality: dict | None = None
+    signal_summary: Any
+    feature_bins: Any
+    data_quality: Any | None = None
+    spread_quality: Any | None = None
 
 
 def build_agent_request_from_inputs(
@@ -37,11 +37,22 @@ def build_agent_request_from_inputs(
     per_symbol_states: List[PerSymbolAgentState] = []
     for sym, payload in per_symbol_inputs.items():
         validated = _PerSymbolPayload.model_validate(payload)
+        ss = validated.signal_summary
+        if isinstance(ss, SignalSummary):
+            signal_summary = ss
+        else:
+            signal_summary = SignalSummary(**ss)
+
+        fb = validated.feature_bins
+        if isinstance(fb, FeatureBins):
+            feature_bins = fb
+        else:
+            feature_bins = FeatureBins(**fb)
         per_symbol_states.append(
             PerSymbolAgentState(
                 symbol=sym,
-                signal_summary=SignalSummary(**validated.signal_summary),
-                feature_bins=FeatureBins(**validated.feature_bins),
+                signal_summary=signal_summary,
+                feature_bins=feature_bins,
                 data_quality=validated.data_quality,
                 spread_quality=validated.spread_quality,
             )
