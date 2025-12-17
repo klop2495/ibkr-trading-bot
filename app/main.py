@@ -8,6 +8,8 @@ from app.broker.ibkr_client import IBKRClient
 from app.market_data.ibkr_fetcher import IBKRFetcher
 from app.market_data.service import MarketDataService
 from app.models.ibkr import IBKRConnectionConfig
+from app.signals.engine import SignalEngine
+from app.storage.repositories import RiskEventsRepo
 from app.storage.bot_settings_repo import BotSettingsRepo
 from app.storage.db import SupabaseDB
 
@@ -32,6 +34,8 @@ def main():
     print("Supabase ping:", db.ping())
 
     repo = BotSettingsRepo(db)
+    risk_events_repo = RiskEventsRepo(db)
+    signal_engine = SignalEngine()
 
     # Market data wiring (env-gated)
     ibkr_enabled = os.getenv("IBKR_ENABLED") == "1"
@@ -39,6 +43,7 @@ def main():
     md_service = None
     md_last_symbols = None
     md_last_warmup = None
+    signals_warned = False
     ib_warning_printed = False
     if not ibkr_enabled:
         print("IBKR market data disabled (IBKR_ENABLED != 1)")
@@ -109,6 +114,14 @@ def main():
                     if not ib_warning_printed:
                         print(f"IBKR market data error (continuing without crash): {exc}", file=sys.stderr)
                         ib_warning_printed = True
+        if fetcher and md_service and not signals_warned:
+            try:
+                signal_engine.warn_rules_not_specified(risk_events_repo)
+                signals_warned = True
+            except Exception as exc:
+                if not ib_warning_printed:
+                    print(f"Signals warning log failed (continuing without crash): {exc}", file=sys.stderr)
+                    ib_warning_printed = True
         time.sleep(poll_seconds)
 
 

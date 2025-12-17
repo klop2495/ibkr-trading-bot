@@ -12,6 +12,10 @@
 - Summary: Added env-gated wiring in main loop for MarketDataService using IBKRClient; uses BotSettings symbols/warmup; fail-safe if disabled/misconfigured; no trading.
 - Files: `app/main.py`, `docs/CHANGELOG_DEV.md`
 
+## 2025-12-18 — Stage 4 — Signals (deterministic, no persistence yet)
+- Summary: Added deterministic signals contracts/engine with safe defaults; persistence disabled until rules specified; logs `SIGNALS_RULES_NOT_SPECIFIED`; tests updated; main loop only logs once, no DB writes.
+- Files: `app/signals/models.py`, `app/signals/engine.py`, `tests/test_signals_engine.py`, `tests/test_signals_rules_warning.py`, `app/main.py`, `docs/CHANGELOG_DEV.md`
+
 ## 2025-12-18 — Stage 2 — IBKR Connect Layer
 - Summary: Added IBKR Pydantic contracts, ib_insync client wrapper for connect/read-only account summary and positions snapshots, contract tests, and changelog update.
 - Files: `app/models/ibkr.py`, `app/broker/ibkr_client.py`, `tests/test_ibkr_client_contract.py`, `docs/CHANGELOG_DEV.md`
