@@ -1,5 +1,9 @@
 # Dev Changelog (append-only)
 
+## 2025-12-18 — Stage 4.1 — Signals params in bot_settings
+- Summary: Added signals_params jsonb column and strict Pydantic contracts with configuration gating; repo roundtrips jsonb safely; runtime logs SIGNALS_RULES_NOT_SPECIFIED when config missing; added migration and validation tests.
+- Files: `migrations/005_bot_settings_signals_params.sql`, `app/models/signals_params.py`, `app/models/bot_settings.py`, `app/storage/bot_settings_repo.py`, `app/signals/engine.py`, `tests/test_bot_settings.py`, `tests/test_bot_settings_repo.py`, `tests/test_signals_params.py`, `tests/test_signals_rules_warning.py`, `app/main.py`, `docs/CHANGELOG_DEV.md`
+
 ## 2025-12-18 — Bot settings control-plane hardening
 - Summary: Hardened bot settings polling gate, strict patch validation, and ensured env-only startup; added/verified bot settings tests.
 - Files: `app/main.py`, `app/models/bot_settings.py`, `app/storage/bot_settings_repo.py`, `tests/test_bot_settings.py`, `tests/test_bot_settings_repo.py`, `docs/CHANGELOG_DEV.md`

@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.models.signals_params import SignalsParams
 
 DEFAULT_SYMBOLS = [
     "EURUSD",
@@ -14,7 +15,6 @@ DEFAULT_SYMBOLS = [
     "USDCAD",
     "NZDUSD",
 ]
-
 
 class BotSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -40,6 +40,7 @@ class BotSettings(BaseModel):
 
     warmup_bars_min: int = Field(default=300, ge=0)
     symbols: List[str] = Field(default_factory=list)
+    signals_params: SignalsParams = Field(default_factory=SignalsParams)
 
     created_at: datetime | None = None
     updated_at: datetime | None = None

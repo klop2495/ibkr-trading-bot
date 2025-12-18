@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.bot_settings import BotSettings
+from app.models.bot_settings import BotSettings, SignalsParams
 from app.storage.db import SupabaseDB
 
 
@@ -24,6 +24,7 @@ class BotSettingsPatch(BaseModel):
     max_margin_utilization: float | None = None
     warmup_bars_min: int | None = None
     symbols: list[str] | None = None
+    signals_params: SignalsParams | dict | None = None
 
 
 class BotSettingsRepo:
@@ -53,6 +54,8 @@ class BotSettingsRepo:
             row = res.data[0]
             if "symbols" in row and row["symbols"] is None:
                 row["symbols"] = []
+            if row.get("signals_params") is None:
+                row["signals_params"] = {}
             row["owner_user_id"] = row.get("owner_user_id") or str(owner_user_id)
             return BotSettings.model_validate(row)
         except Exception:
@@ -77,6 +80,8 @@ class BotSettingsRepo:
         row = res.data[0]
         if "symbols" in row and row["symbols"] is None:
             row["symbols"] = []
+        if row.get("signals_params") is None:
+            row["signals_params"] = {}
         row["owner_user_id"] = row.get("owner_user_id") or str(owner_user_id)
         try:
             return BotSettings.model_validate(row)

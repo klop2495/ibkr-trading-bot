@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import List
 
 from app.models.snapshot import MarketSnapshot
+from app.models.signals_params import SignalsParams
 from app.signals.models import FeatureBins, SignalPreview, SignalSummary
 
 
@@ -35,7 +36,11 @@ class SignalEngine:
             flags=flags,
         )
 
-    def warn_rules_not_specified(self, risk_repo) -> None:
+    def warn_rules_not_specified(self, risk_repo, params: SignalsParams | None = None) -> None:
+        configured = params.is_configured() if params is not None else False
+        if configured:
+            self._rules_warning_logged = False
+            return
         if self._rules_warning_logged:
             return
         try:

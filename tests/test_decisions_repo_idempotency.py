@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
+
 from app.models.decision import DecisionV1
 from app.storage.repositories import DecisionsRepo
 
@@ -88,3 +90,13 @@ def test_decision_repo_idempotent_on_duplicate():
     repo = DecisionsRepo(db=type("Obj", (), {"client": type("Obj", (), {"table": lambda self, _: DupThenSelectTable()})()})())  # type: ignore
     dec_id = repo.insert_decision(_decision())
     assert dec_id == "existing-id"
+
+
+def test_decision_repo_raises_on_non_unique_error():
+    class BadInsert:
+        def insert(self, payload):
+            raise Exception("connection refused")
+
+    repo = DecisionsRepo(db=type("Obj", (), {"client": type("Obj", (), {"table": lambda self, _: BadInsert()})()})())  # type: ignore
+    with pytest.raises(Exception):
+        repo.insert_decision(_decision())
