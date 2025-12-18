@@ -245,3 +245,4 @@ create_*.sh
 app/admin/
 app/api/
 app/login/
+package-lock.json
