@@ -32,6 +32,7 @@ from app.execution.adapters.null_adapter import NullExecutionAdapter
 from app.execution.adapters.ibkr_adapter import IBKRExecutionAdapter
 from app.execution.gates import is_execution_enabled
 from app.models.broker_request import BrokerRequestV1
+from app.reconciliation.engine_stub import ReconcilerStub
 
 
 def main():
@@ -62,6 +63,7 @@ def main():
     execution_reports_repo = ExecutionReportsRepo(db)
     order_intents_repo = OrderIntentsRepo(db)
     broker_requests_repo = BrokerRequestsRepo(db)
+    reconciler = ReconcilerStub(enabled=os.getenv("RECONCILIATION_ENABLED") == "1")
     execution_engine = ExecutionEngineStub()
     risk_engine = RiskEngineV1()
     signal_engine = SignalEngine()
@@ -211,26 +213,48 @@ def main():
                                                             )
                                                             if enabled:
                                                                 prepared = adapter.prepare(intent)
-                                                                br = BrokerRequestV1(
-                                                                    ts_utc=exec_report.ts_utc,
-                                                                    order_intent_id=intent.id,
-                                                                    decision_id=decision.id or decision.signal_preview_id,
-                                                                    signal_preview_id=decision.signal_preview_id,
-                                                                    status="PREPARED",
-                                                                    flags=[],
-                                                                    payload=prepared.model_dump(),
-                                                                )
-                                                            else:
-                                                                br = BrokerRequestV1(
-                                                                    ts_utc=exec_report.ts_utc,
-                                                                    order_intent_id=intent.id,
-                                                                    decision_id=decision.id or decision.signal_preview_id,
-                                                                    signal_preview_id=decision.signal_preview_id,
-                                                                    status="SKIPPED",
-                                                                    flags=["EXECUTION_DISABLED"],
-                                                                    payload={"reason": "execution_disabled"},
-                                                                )
-                                                            broker_requests_repo.insert_request(br)
+                                                            br = BrokerRequestV1(
+                                                                ts_utc=exec_report.ts_utc,
+                                                                order_intent_id=intent.id,
+                                                                decision_id=decision.id or decision.signal_preview_id,
+                                                                signal_preview_id=decision.signal_preview_id,
+                                                                execution_report_id=exec_report.id,
+                                                                status="PREPARED",
+                                                                flags=[],
+                                                                payload=prepared.model_dump(),
+                                                            )
+                                                        else:
+                                                            br = BrokerRequestV1(
+                                                                ts_utc=exec_report.ts_utc,
+                                                                order_intent_id=intent.id,
+                                                                decision_id=decision.id or decision.signal_preview_id,
+                                                                signal_preview_id=decision.signal_preview_id,
+                                                                execution_report_id=exec_report.id,
+                                                                status="SKIPPED",
+                                                                flags=["EXECUTION_DISABLED"],
+                                                                payload={"reason": "execution_disabled"},
+                                                            )
+                                                            br_id = broker_requests_repo.insert_request(br)
+                                                            try:
+                                                                # Reconciliation step (always, even if execution disabled)
+                                                                br.id = br_id
+                                                                recon = reconciler.reconcile(br)
+                                                                broker_requests_repo.db  # keep reference for clarity
+                                                                try:
+                                                                    from app.storage.repositories import ReconciliationReportsRepo
+                                                                except Exception:
+                                                                    ReconciliationReportsRepo = None  # type: ignore
+                                                                if ReconciliationReportsRepo:
+                                                                    # Construct repo using existing db
+                                                                    recon_repo = ReconciliationReportsRepo(db)
+                                                                    recon_repo.insert_report(recon)
+                                                            except Exception as exc_recon:
+                                                                if not ib_warning_printed:
+                                                                    print(
+                                                                        f"reconciliation persist failed (continuing): {exc_recon}",
+                                                                        file=sys.stderr,
+                                                                    )
+                                                                    ib_warning_printed = True
                                                         except Exception as exc_br:
                                                             if not ib_warning_printed:
                                                                 print(

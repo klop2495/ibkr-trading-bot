@@ -10,6 +10,7 @@ from app.models.risk_verdict import RiskVerdictV1
 from app.models.execution_report_v1 import ExecutionReportV1
 from app.models.order_intent import OrderIntentV1
 from app.models.broker_request import BrokerRequestV1
+from app.models.reconciliation_report_v1 import ReconciliationReportV1
 from app.models.order_intent import OrderIntentV1
 from app.storage.db import SupabaseDB
 
@@ -315,6 +316,46 @@ class BrokerRequestsRepo(BaseRepo):
         raise RuntimeError("broker request id not found after insert")
 
 
+class ReconciliationReportsRepo(BaseRepo):
+    table = "control_reconciliation_reports"
+
+    def _is_unique_violation(self, exc: Exception) -> bool:
+        code = getattr(exc, "code", None) or getattr(exc, "sqlstate", None)
+        if code == "23505":
+            return True
+        for attr in ("args", "detail", "details", "context"):
+            val = getattr(exc, attr, None)
+            if val and "23505" in str(val):
+                return True
+            if val and "duplicate key value violates unique constraint" in str(val).lower():
+                return True
+        msg = str(exc).lower()
+        if "duplicate key value violates unique constraint" in msg:
+            return True
+        return False
+
+    def insert_report(self, rep: ReconciliationReportV1) -> str:
+        payload = rep.to_db_row()
+        try:
+            res = self.db.client.table(self.table).insert(payload).select("id").execute()
+            if res.data:
+                return res.data[0].get("id")
+        except Exception as exc:
+            if not self._is_unique_violation(exc):
+                raise
+        res = (
+            self.db.client.table(self.table)
+            .select("id")
+            .eq("broker_request_id", str(payload["broker_request_id"]))
+            .eq("recon_version", payload["recon_version"])
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0].get("id")
+        raise RuntimeError("reconciliation report id not found after insert")
+
+
 def make_repos(db: SupabaseDB) -> dict[str, Any]:
     """
     Convenience factory.
@@ -334,5 +375,6 @@ def make_repos(db: SupabaseDB) -> dict[str, Any]:
     repos["signal_previews"] = SignalPreviewsRepo(db)
     repos["order_intents"] = OrderIntentsRepo(db)
     repos["broker_requests"] = BrokerRequestsRepo(db)
+    repos["reconciliation_reports"] = ReconciliationReportsRepo(db)
     repos["execution_reports"] = ExecutionReportsRepo(db)
     return repos
