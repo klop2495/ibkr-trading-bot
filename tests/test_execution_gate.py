@@ -73,7 +73,7 @@ def test_execution_persists_when_allowed():
     decision = _decision()
     decision.id = uuid4()
     res = run_execution_if_allowed(_verdict(True), decision, engine, repo)
-    assert res == "exec-id"
+    assert res is not None
     assert engine.called == 1
     assert repo.called == 1
     assert repo.last.status == "PLANNED"

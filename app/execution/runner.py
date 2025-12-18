@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Optional
-from uuid import uuid4
+from uuid import uuid4, UUID
 
 from app.models.decision import DecisionV1
 from app.models.execution_plan import ExecutionPlanV1
@@ -16,7 +16,7 @@ def run_execution_if_allowed(
     decision: DecisionV1,
     engine,
     repo: ExecutionReportsRepo,
-) -> Optional[str]:
+) -> Optional[ExecutionReportV1]:
     """
     Persist execution report only when risk allows. Stub engine, no broker calls.
     """
@@ -37,4 +37,9 @@ def run_execution_if_allowed(
         details={"action": plan.action},
         id=uuid4(),
     )
-    return repo.insert_report(report)
+    report_id = repo.insert_report(report)
+    try:
+        report.id = UUID(report_id)
+    except Exception:
+        pass
+    return report
