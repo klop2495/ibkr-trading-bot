@@ -12,7 +12,14 @@ from app.signals.engine import SignalEngine
 from app.signals.engine_v1 import SignalEngineV1
 from app.agents.runner import AgentsAggregator, aggregate_decision
 from app.storage.agent_reports_repo import AgentReportsRepo
-from app.storage.repositories import SignalPreviewsRepo, DecisionsRepo, RiskVerdictsRepo, ExecutionReportsRepo
+from app.storage.repositories import (
+    SignalPreviewsRepo,
+    DecisionsRepo,
+    RiskVerdictsRepo,
+    ExecutionReportsRepo,
+    OrderIntentsRepo,
+    BrokerRequestsRepo,
+)
 from app.models.decision import DecisionV1
 from app.risk.engine_v1 import RiskEngineV1
 from app.storage.repositories import RiskEventsRepo
@@ -20,6 +27,11 @@ from app.storage.bot_settings_repo import BotSettingsRepo
 from app.storage.db import SupabaseDB
 from app.execution.engine_stub import ExecutionEngineStub
 from app.execution.runner import run_execution_if_allowed
+from app.execution.oms_stub import create_order_intent
+from app.execution.adapters.null_adapter import NullExecutionAdapter
+from app.execution.adapters.ibkr_adapter import IBKRExecutionAdapter
+from app.execution.gates import is_execution_enabled
+from app.models.broker_request import BrokerRequestV1
 
 
 def main():
@@ -48,6 +60,8 @@ def main():
     decisions_repo = DecisionsRepo(db)
     risk_verdicts_repo = RiskVerdictsRepo(db)
     execution_reports_repo = ExecutionReportsRepo(db)
+    order_intents_repo = OrderIntentsRepo(db)
+    broker_requests_repo = BrokerRequestsRepo(db)
     execution_engine = ExecutionEngineStub()
     risk_engine = RiskEngineV1()
     signal_engine = SignalEngine()
@@ -169,16 +183,68 @@ def main():
                                         )
                                         if verdict.trade_allowed:
                                             try:
-                                                exec_id = run_execution_if_allowed(
+                                                exec_report = run_execution_if_allowed(
                                                     verdict,
                                                     decision,
                                                     execution_engine,
                                                     execution_reports_repo,
                                                 )
-                                                if exec_id:
+                                                if exec_report and exec_report.id:
                                                     print(
-                                                        f"execution_report symbol={p.symbol} status=PLANNED id={exec_id}"
+                                                        f"execution_report symbol={p.symbol} status=PLANNED id={exec_report.id}"
                                                     )
+                                                    try:
+                                                        intent = create_order_intent(
+                                                            plan_action=exec_report.details.get("action") if exec_report.details else "OPEN",
+                                                            execution_report=exec_report,
+                                                            decision=decision,
+                                                            preview=p,
+                                                        )
+                                                        intent_id = order_intents_repo.insert_intent(intent)
+                                                        print(
+                                                            f"order_intent symbol={p.symbol} side={intent.side} id={intent_id}"
+                                                        )
+                                                        try:
+                                                            enabled = is_execution_enabled(settings, os.environ)
+                                                            adapter = (
+                                                                IBKRExecutionAdapter() if enabled else NullExecutionAdapter()
+                                                            )
+                                                            if enabled:
+                                                                prepared = adapter.prepare(intent)
+                                                                br = BrokerRequestV1(
+                                                                    ts_utc=exec_report.ts_utc,
+                                                                    order_intent_id=intent.id,
+                                                                    decision_id=decision.id or decision.signal_preview_id,
+                                                                    signal_preview_id=decision.signal_preview_id,
+                                                                    status="PREPARED",
+                                                                    flags=[],
+                                                                    payload=prepared.model_dump(),
+                                                                )
+                                                            else:
+                                                                br = BrokerRequestV1(
+                                                                    ts_utc=exec_report.ts_utc,
+                                                                    order_intent_id=intent.id,
+                                                                    decision_id=decision.id or decision.signal_preview_id,
+                                                                    signal_preview_id=decision.signal_preview_id,
+                                                                    status="SKIPPED",
+                                                                    flags=["EXECUTION_DISABLED"],
+                                                                    payload={"reason": "execution_disabled"},
+                                                                )
+                                                            broker_requests_repo.insert_request(br)
+                                                        except Exception as exc_br:
+                                                            if not ib_warning_printed:
+                                                                print(
+                                                                    f"broker request persist failed (continuing): {exc_br}",
+                                                                    file=sys.stderr,
+                                                                )
+                                                                ib_warning_printed = True
+                                                    except Exception as exc_intent:
+                                                        if not ib_warning_printed:
+                                                            print(
+                                                                f"order intent persist failed (continuing): {exc_intent}",
+                                                                file=sys.stderr,
+                                                            )
+                                                            ib_warning_printed = True
                                             except Exception as exc_exec:
                                                 if not ib_warning_printed:
                                                     print(
