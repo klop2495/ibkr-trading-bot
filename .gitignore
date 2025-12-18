@@ -240,3 +240,8 @@ htmlcov/
 # local helper scripts (generated)
 apply_*.sh
 create_*.sh
+
+# frontend artifacts accidentally copied into backend
+app/admin/
+app/api/
+app/login/
