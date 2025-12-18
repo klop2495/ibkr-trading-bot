@@ -37,7 +37,8 @@ class MarketDataService:
                     return False
         return True
 
-    def process(self, end_dt_utc: datetime) -> bool:
+    def process(self, end_dt_utc: datetime):
+        snapshots: List[MarketSnapshot] = []
         counts: Dict[Tuple[str, str], int] = {}
         for sym in self.symbols:
             for tf in self.timeframes:
@@ -45,14 +46,16 @@ class MarketDataService:
                 counts[(sym, tf)] = len(bars)
                 if not bars:
                     continue
-                self._handle_bars(sym, tf, bars)
-        return self.is_warmup_ready(counts)
+                snap = self._handle_bars(sym, tf, bars)
+                if snap:
+                    snapshots.append(snap)
+        return self.is_warmup_ready(counts), snapshots
 
     def _handle_bars(self, symbol: str, timeframe: str, bars):
         latest = bars[-1]
         ts = getattr(latest, "date", None) or getattr(latest, "time", None)
         if ts is None:
-            return
+            return None
         issues = self.qa.process(symbol, timeframe, ts)
         if self.risk_events_repo and issues:
             for i in issues:
@@ -67,7 +70,7 @@ class MarketDataService:
         highs = [getattr(b, "high", None) for b in bars]
         lows = [getattr(b, "low", None) for b in bars]
         if None in closes or None in highs or None in lows:
-            return
+            return None
         atr_val = atr(highs, lows, closes)
         rsi_val = rsi(closes)
         sma50 = sma(closes, 50)
@@ -78,17 +81,18 @@ class MarketDataService:
         except Exception:
             spread = None
 
+        snap = MarketSnapshot(
+            schema_version=1,
+            timestamp=ts,
+            symbol=symbol,
+            timeframe=timeframe,
+            close=closes[-1],
+            atr=atr_val or 0.0,
+            rsi=rsi_val or 0.0,
+            ma_fast=sma50 or 0.0,
+            ma_slow=sma200 or 0.0,
+            spread=spread or 0.0,
+        )
         if self.snapshots_repo:
-            snap = MarketSnapshot(
-                schema_version=1,
-                timestamp=ts,
-                symbol=symbol,
-                timeframe=timeframe,
-                close=closes[-1],
-                atr=atr_val or 0.0,
-                rsi=rsi_val or 0.0,
-                ma_fast=sma50 or 0.0,
-                ma_slow=sma200 or 0.0,
-                spread=spread or 0.0,
-            )
             self.snapshots_repo.insert(snap)
+        return snap

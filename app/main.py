@@ -9,6 +9,11 @@ from app.market_data.ibkr_fetcher import IBKRFetcher
 from app.market_data.service import MarketDataService
 from app.models.ibkr import IBKRConnectionConfig
 from app.signals.engine import SignalEngine
+from app.signals.engine_v1 import SignalEngineV1
+from app.agents.runner import AgentsAggregator, aggregate_decision
+from app.storage.agent_reports_repo import AgentReportsRepo
+from app.storage.repositories import SignalPreviewsRepo, DecisionsRepo
+from app.models.decision import DecisionV1
 from app.storage.repositories import RiskEventsRepo
 from app.storage.bot_settings_repo import BotSettingsRepo
 from app.storage.db import SupabaseDB
@@ -35,7 +40,12 @@ def main():
 
     repo = BotSettingsRepo(db)
     risk_events_repo = RiskEventsRepo(db)
+    agent_reports_repo = AgentReportsRepo(db)
+    signal_previews_repo = SignalPreviewsRepo(db)
+    decisions_repo = DecisionsRepo(db)
     signal_engine = SignalEngine()
+    preview_engine = None
+    agents_aggregator = AgentsAggregator(reports_repo=agent_reports_repo)
 
     # Market data wiring (env-gated)
     ibkr_enabled = os.getenv("IBKR_ENABLED") == "1"
@@ -109,15 +119,57 @@ def main():
                 )
             if md_service:
                 try:
-                    md_service.process(end_dt_utc=datetime.now(timezone.utc))
+                    warmup_ready, snapshots = md_service.process(end_dt_utc=datetime.now(timezone.utc))
+                    params = getattr(settings, "signals_params", None)
+                    preview_engine = SignalEngineV1(params) if params else None
+                    if preview_engine and snapshots:
+                        previews = preview_engine.compute_previews(snapshots, warmup_ready=warmup_ready)
+                        for p in previews:
+                            preview_id = None
+                            if params and params.is_configured():
+                                try:
+                                    preview_id = signal_previews_repo.insert_preview_return_id(p)
+                                except Exception as exc:
+                                    if not ib_warning_printed:
+                                        print(f"signal_preview persist failed (continuing): {exc}", file=sys.stderr)
+                                        ib_warning_printed = True
+                            print(
+                                f"signal_preview symbol={p.symbol} dir={p.direction} setup={p.setup_type} rr={p.rr} flags={p.flags}"
+                            )
+                            if params and params.is_configured() and preview_id:
+                                agent_results = agents_aggregator.run(p, params, signal_preview_id=preview_id)
+                                agg = aggregate_decision(p, agent_results)
+                                print(
+                                    f"agents_decision symbol={p.symbol} allowed={agg['trade_allowed']} rr_mod={agg['risk_modifier']} flags={agg['flags']}"
+                                )
+                                try:
+                                    decision = DecisionV1(
+                                        ts_utc=p.ts_utc,
+                                        symbol=p.symbol,
+                                        signal_preview_id=preview_id,
+                                        trade_allowed=agg["trade_allowed"],
+                                        risk_modifier=agg["risk_modifier"],
+                                        flags=agg["flags"],
+                                        commentary=agg.get("commentary"),
+                                    )
+                                    decisions_repo.insert_decision(decision)
+                                except Exception as exc:
+                                    if not ib_warning_printed:
+                                        print(f"decision persist failed (continuing): {exc}", file=sys.stderr)
+                                        ib_warning_printed = True
                 except Exception as exc:
                     if not ib_warning_printed:
                         print(f"IBKR market data error (continuing without crash): {exc}", file=sys.stderr)
                         ib_warning_printed = True
-        if fetcher and md_service and not signals_warned:
+        if fetcher and md_service:
             try:
-                signal_engine.warn_rules_not_specified(risk_events_repo)
-                signals_warned = True
+                params = getattr(settings, "signals_params", None)
+                configured = params.is_configured() if params else False
+                if not configured:
+                    signal_engine.warn_rules_not_specified(risk_events_repo, params)
+                    signals_warned = signal_engine._rules_warning_logged  # internal state: log once per missing config
+                else:
+                    signals_warned = False
             except Exception as exc:
                 if not ib_warning_printed:
                     print(f"Signals warning log failed (continuing without crash): {exc}", file=sys.stderr)

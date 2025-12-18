@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import UUID
 
 from app.models.agent_report import AgentReport
 from app.storage.repositories import BaseRepo
@@ -23,6 +24,7 @@ class AgentReportsRepo(BaseRepo):
             "ts": ts_utc.isoformat(),
             "scope": scope,
             "symbol": symbol,
+            "signal_preview_id": str(report.signal_preview_id) if report.signal_preview_id else None,
             "trade_allowed": report.trade_allowed,
             "risk_modifier": report.risk_modifier,
             "flags": report.flags,

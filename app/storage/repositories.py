@@ -6,9 +6,9 @@ from typing import Any, Optional
 from app.models import (
     MarketSnapshot,
     Signal,
-    Decision,
     ExecutionReport,
 )
+from app.models.signal_preview import SignalPreviewV1
 from app.storage.db import SupabaseDB
 
 
@@ -58,34 +58,29 @@ class SignalsRepo(BaseRepo):
 class DecisionsRepo(BaseRepo):
     table = "decisions"
 
-    def insert(self, dec: Decision) -> dict:
-        payload = {
-            "decision_id": str(dec.decision_id),
-            "schema_version": dec.schema_version,
-            "ts": datetime.utcnow().isoformat(),
-            "symbol": dec.symbol,
-            "action": dec.action,
-            "direction": dec.direction,
-            "volume": dec.volume,
-            "sl_price": dec.sl_price,
-            "tp_price": dec.tp_price,
-            "reason_codes": dec.reason_codes,
-        }
-        res = self.db.client.table(self.table).insert(payload).execute()
-        return {"count": len(res.data or []), "data": res.data}
-
-    def exists(self, decision_id: str) -> bool:
-        """
-        Idempotency helper: check if decision_id already exists.
-        """
+    def insert_decision(self, dec) -> str:
+        payload = dec.to_db_row()
+        try:
+            res = self.db.client.table(self.table).insert(payload).select("id").execute()
+            if res.data:
+                return res.data[0].get("id")
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "duplicate key" in msg or "unique constraint" in msg:
+                pass
+            else:
+                raise
         res = (
             self.db.client.table(self.table)
-            .select("decision_id")
-            .eq("decision_id", decision_id)
+            .select("id")
+            .eq("signal_preview_id", str(payload["signal_preview_id"]))
+            .eq("decision_version", payload["decision_version"])
             .limit(1)
             .execute()
         )
-        return bool(res.data)
+        if res.data:
+            return res.data[0].get("id")
+        raise RuntimeError("decision id not found after insert")
 
 
 class ExecutionReportsRepo(BaseRepo):
@@ -127,6 +122,41 @@ class RiskEventsRepo(BaseRepo):
         return {"count": len(res.data or []), "data": res.data}
 
 
+class SignalPreviewsRepo(BaseRepo):
+    table = "signal_previews"
+
+    def insert_preview(self, preview: SignalPreviewV1) -> None:
+        _ = self.insert_preview_return_id(preview)
+
+    def insert_preview_return_id(self, preview: SignalPreviewV1):
+        payload = preview.to_db_row()
+        try:
+            res = self.db.client.table(self.table).insert(payload).select("id").execute()
+            if res.data:
+                return res.data[0].get("id")
+        except Exception as exc:
+            # Idempotent: unique violation is acceptable
+            msg = str(exc).lower()
+            if "duplicate key" in msg or "unique constraint" in msg:
+                pass
+            else:
+                raise
+        # fetch existing on conflict
+        res = (
+            self.db.client.table(self.table)
+            .select("id")
+            .eq("ts_utc", payload["ts_utc"])
+            .eq("symbol", payload["symbol"])
+            .eq("timeframe_trigger", payload["timeframe_trigger"])
+            .eq("engine_version", payload["engine_version"])
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0].get("id")
+        raise RuntimeError("signal_preview id not found after insert")
+
+
 def make_repos(db: SupabaseDB) -> dict[str, Any]:
     """
     Convenience factory.
@@ -144,4 +174,5 @@ def make_repos(db: SupabaseDB) -> dict[str, Any]:
         repos["agent_reports"] = AgentReportsRepo(db)
     except Exception:
         pass
+    repos["signal_previews"] = SignalPreviewsRepo(db)
     return repos
