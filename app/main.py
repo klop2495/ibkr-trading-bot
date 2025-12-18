@@ -12,11 +12,14 @@ from app.signals.engine import SignalEngine
 from app.signals.engine_v1 import SignalEngineV1
 from app.agents.runner import AgentsAggregator, aggregate_decision
 from app.storage.agent_reports_repo import AgentReportsRepo
-from app.storage.repositories import SignalPreviewsRepo, DecisionsRepo
+from app.storage.repositories import SignalPreviewsRepo, DecisionsRepo, RiskVerdictsRepo, ExecutionReportsRepo
 from app.models.decision import DecisionV1
+from app.risk.engine_v1 import RiskEngineV1
 from app.storage.repositories import RiskEventsRepo
 from app.storage.bot_settings_repo import BotSettingsRepo
 from app.storage.db import SupabaseDB
+from app.execution.engine_stub import ExecutionEngineStub
+from app.execution.runner import run_execution_if_allowed
 
 
 def main():
@@ -43,6 +46,10 @@ def main():
     agent_reports_repo = AgentReportsRepo(db)
     signal_previews_repo = SignalPreviewsRepo(db)
     decisions_repo = DecisionsRepo(db)
+    risk_verdicts_repo = RiskVerdictsRepo(db)
+    execution_reports_repo = ExecutionReportsRepo(db)
+    execution_engine = ExecutionEngineStub()
+    risk_engine = RiskEngineV1()
     signal_engine = SignalEngine()
     preview_engine = None
     agents_aggregator = AgentsAggregator(reports_repo=agent_reports_repo)
@@ -152,7 +159,37 @@ def main():
                                         flags=agg["flags"],
                                         commentary=agg.get("commentary"),
                                     )
-                                    decisions_repo.insert_decision(decision)
+                                    decision_id = decisions_repo.insert_decision(decision)
+                                    try:
+                                        decision.id = decision_id
+                                        verdict = risk_engine.evaluate(decision, settings)
+                                        risk_verdicts_repo.insert_verdict(verdict)
+                                        print(
+                                            f"risk_verdict symbol={p.symbol} allowed={verdict.trade_allowed} flags={verdict.flags}"
+                                        )
+                                        if verdict.trade_allowed:
+                                            try:
+                                                exec_id = run_execution_if_allowed(
+                                                    verdict,
+                                                    decision,
+                                                    execution_engine,
+                                                    execution_reports_repo,
+                                                )
+                                                if exec_id:
+                                                    print(
+                                                        f"execution_report symbol={p.symbol} status=PLANNED id={exec_id}"
+                                                    )
+                                            except Exception as exc_exec:
+                                                if not ib_warning_printed:
+                                                    print(
+                                                        f"execution persist failed (continuing): {exc_exec}",
+                                                        file=sys.stderr,
+                                                    )
+                                                    ib_warning_printed = True
+                                    except Exception as exc_verdict:
+                                        if not ib_warning_printed:
+                                            print(f"risk verdict persist failed (continuing): {exc_verdict}", file=sys.stderr)
+                                            ib_warning_printed = True
                                 except Exception as exc:
                                     if not ib_warning_printed:
                                         print(f"decision persist failed (continuing): {exc}", file=sys.stderr)

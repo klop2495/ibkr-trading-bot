@@ -3,12 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from app.models import (
-    MarketSnapshot,
-    Signal,
-    ExecutionReport,
-)
+from app.models import MarketSnapshot, Signal
 from app.models.signal_preview import SignalPreviewV1
+from app.models.decision import DecisionV1
+from app.models.risk_verdict import RiskVerdictV1
+from app.models.execution_report_v1 import ExecutionReportV1
 from app.storage.db import SupabaseDB
 
 
@@ -56,7 +55,22 @@ class SignalsRepo(BaseRepo):
 
 
 class DecisionsRepo(BaseRepo):
-    table = "decisions"
+    table = "control_decisions"
+
+    def _is_unique_violation(self, exc: Exception) -> bool:
+        code = getattr(exc, "code", None) or getattr(exc, "sqlstate", None)
+        if code == "23505":
+            return True
+        for attr in ("args", "detail", "details", "context"):
+            val = getattr(exc, attr, None)
+            if val and "23505" in str(val):
+                return True
+            if val and "duplicate key value violates unique constraint" in str(val).lower():
+                return True
+        msg = str(exc).lower()
+        if "duplicate key value violates unique constraint" in msg:
+            return True
+        return False
 
     def insert_decision(self, dec) -> str:
         payload = dec.to_db_row()
@@ -65,10 +79,7 @@ class DecisionsRepo(BaseRepo):
             if res.data:
                 return res.data[0].get("id")
         except Exception as exc:
-            msg = str(exc).lower()
-            if "duplicate key" in msg or "unique constraint" in msg:
-                pass
-            else:
+            if not self._is_unique_violation(exc):
                 raise
         res = (
             self.db.client.table(self.table)
@@ -83,20 +94,84 @@ class DecisionsRepo(BaseRepo):
         raise RuntimeError("decision id not found after insert")
 
 
-class ExecutionReportsRepo(BaseRepo):
-    table = "execution_reports"
+class RiskVerdictsRepo(BaseRepo):
+    table = "risk_verdicts"
 
-    def insert(self, rep: ExecutionReport) -> dict:
-        payload = {
-            "schema_version": rep.schema_version,
-            "ts": datetime.utcnow().isoformat(),
-            "decision_id": str(rep.decision_id),
-            "order_id": rep.order_id,
-            "status": rep.status,
-            "message": rep.message,
-        }
-        res = self.db.client.table(self.table).insert(payload).execute()
-        return {"count": len(res.data or []), "data": res.data}
+    def _is_unique_violation(self, exc: Exception) -> bool:
+        code = getattr(exc, "code", None) or getattr(exc, "sqlstate", None)
+        if code == "23505":
+            return True
+        for attr in ("args", "detail", "details", "context"):
+            val = getattr(exc, attr, None)
+            if val and "23505" in str(val):
+                return True
+            if val and "duplicate key value violates unique constraint" in str(val).lower():
+                return True
+        msg = str(exc).lower()
+        if "duplicate key value violates unique constraint" in msg:
+            return True
+        return False
+
+    def insert_verdict(self, verdict: RiskVerdictV1) -> str:
+        payload = verdict.to_db_row()
+        try:
+            res = self.db.client.table(self.table).insert(payload).select("id").execute()
+            if res.data:
+                return res.data[0].get("id")
+        except Exception as exc:
+            if not self._is_unique_violation(exc):
+                raise
+        res = (
+            self.db.client.table(self.table)
+            .select("id")
+            .eq("decision_id", str(payload["decision_id"]))
+            .eq("risk_version", payload["risk_version"])
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0].get("id")
+        raise RuntimeError("risk verdict id not found after insert")
+
+
+class ExecutionReportsRepo(BaseRepo):
+    table = "control_execution_reports"
+
+    def _is_unique_violation(self, exc: Exception) -> bool:
+        code = getattr(exc, "code", None) or getattr(exc, "sqlstate", None)
+        if code == "23505":
+            return True
+        for attr in ("args", "detail", "details", "context"):
+            val = getattr(exc, attr, None)
+            if val and "23505" in str(val):
+                return True
+            if val and "duplicate key value violates unique constraint" in str(val).lower():
+                return True
+        msg = str(exc).lower()
+        if "duplicate key value violates unique constraint" in msg:
+            return True
+        return False
+
+    def insert_report(self, rep: ExecutionReportV1) -> str:
+        payload = rep.to_db_row()
+        try:
+            res = self.db.client.table(self.table).insert(payload).select("id").execute()
+            if res.data:
+                return res.data[0].get("id")
+        except Exception as exc:
+            if not self._is_unique_violation(exc):
+                raise
+        res = (
+            self.db.client.table(self.table)
+            .select("id")
+            .eq("decision_id", str(payload["decision_id"]))
+            .eq("execution_version", payload["execution_version"])
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0].get("id")
+        raise RuntimeError("execution report id not found after insert")
 
 
 class RiskEventsRepo(BaseRepo):
@@ -165,7 +240,6 @@ def make_repos(db: SupabaseDB) -> dict[str, Any]:
         "snapshots": SnapshotsRepo(db),
         "signals": SignalsRepo(db),
         "decisions": DecisionsRepo(db),
-        "execution_reports": ExecutionReportsRepo(db),
         "risk_events": RiskEventsRepo(db),
     }
     try:
@@ -175,4 +249,5 @@ def make_repos(db: SupabaseDB) -> dict[str, Any]:
     except Exception:
         pass
     repos["signal_previews"] = SignalPreviewsRepo(db)
+    repos["execution_reports"] = ExecutionReportsRepo(db)
     return repos
