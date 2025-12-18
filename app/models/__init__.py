@@ -3,6 +3,8 @@ from .signal import Signal
 from .agent_report import AgentReport
 from .decision import DecisionV1
 from .execution_report_v1 import ExecutionReportV1
+from .order_intent import OrderIntentV1
+from .broker_request import BrokerRequestV1
 from .risk_verdict import RiskVerdictV1
 
 __all__ = [
@@ -11,6 +13,8 @@ __all__ = [
     "AgentReport",
     "DecisionV1",
     "ExecutionReportV1",
+    "OrderIntentV1",
+    "BrokerRequestV1",
     "RiskVerdictV1",
 
     "BotSettings",
