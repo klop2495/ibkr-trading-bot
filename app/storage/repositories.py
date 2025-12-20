@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import uuid4
 from typing import Any, Optional
 
 from app.models import MarketSnapshot, Signal
@@ -61,6 +62,9 @@ class SignalsRepo(BaseRepo):
 class DecisionsRepo(BaseRepo):
     table = "control_decisions"
 
+    def _new_id(self) -> str:
+        return str(uuid4())
+
     def _is_unique_violation(self, exc: Exception) -> bool:
         code = getattr(exc, "code", None) or getattr(exc, "sqlstate", None)
         if code == "23505":
@@ -78,10 +82,14 @@ class DecisionsRepo(BaseRepo):
 
     def insert_decision(self, dec) -> str:
         payload = dec.to_db_row()
+        if "id" not in payload or not payload.get("id"):
+            payload["id"] = self._new_id()
         try:
-            res = self.db.client.table(self.table).insert(payload).select("id").execute()
-            if res.data:
-                return res.data[0].get("id")
+            res = self.db.client.table(self.table).insert(payload).execute()
+            rows = getattr(res, "data", None) or []
+            if rows:
+                return rows[0].get("id") or payload["id"]
+            return payload["id"]
         except Exception as exc:
             if not self._is_unique_violation(exc):
                 raise
@@ -97,9 +105,29 @@ class DecisionsRepo(BaseRepo):
             return res.data[0].get("id")
         raise RuntimeError("decision id not found after insert")
 
+    def insert_decisions_bulk(self, decisions: list[DecisionV1]) -> list[str]:
+        if not decisions:
+            return []
+        payloads = []
+        ids = []
+        for dec in decisions:
+            row = dec.to_db_row()
+            if "id" not in row or not row.get("id"):
+                row["id"] = self._new_id()
+            ids.append(row["id"])
+            payloads.append(row)
+        res = self.db.client.table(self.table).insert(payloads).execute()
+        rows = getattr(res, "data", None) or []
+        if rows and len(rows) == len(payloads):
+            return [r.get("id") or ids[i] for i, r in enumerate(rows)]
+        return ids
+
 
 class RiskVerdictsRepo(BaseRepo):
     table = "risk_verdicts"
+
+    def _new_id(self) -> str:
+        return str(uuid4())
 
     def _is_unique_violation(self, exc: Exception) -> bool:
         code = getattr(exc, "code", None) or getattr(exc, "sqlstate", None)
@@ -118,10 +146,14 @@ class RiskVerdictsRepo(BaseRepo):
 
     def insert_verdict(self, verdict: RiskVerdictV1) -> str:
         payload = verdict.to_db_row()
+        if "id" not in payload or not payload.get("id"):
+            payload["id"] = self._new_id()
         try:
-            res = self.db.client.table(self.table).insert(payload).select("id").execute()
-            if res.data:
-                return res.data[0].get("id")
+            res = self.db.client.table(self.table).insert(payload).execute()
+            rows = getattr(res, "data", None) or []
+            if rows:
+                return rows[0].get("id") or payload["id"]
+            return payload["id"]
         except Exception as exc:
             if not self._is_unique_violation(exc):
                 raise
@@ -136,6 +168,23 @@ class RiskVerdictsRepo(BaseRepo):
         if res.data:
             return res.data[0].get("id")
         raise RuntimeError("risk verdict id not found after insert")
+
+    def insert_verdicts_bulk(self, verdicts: list[RiskVerdictV1]) -> list[str]:
+        if not verdicts:
+            return []
+        payloads = []
+        ids = []
+        for v in verdicts:
+            row = v.to_db_row()
+            if "id" not in row or not row.get("id"):
+                row["id"] = self._new_id()
+            ids.append(row["id"])
+            payloads.append(row)
+        res = self.db.client.table(self.table).insert(payloads).execute()
+        rows = getattr(res, "data", None) or []
+        if rows and len(rows) == len(payloads):
+            return [r.get("id") or ids[i] for i, r in enumerate(rows)]
+        return ids
 
 
 class ExecutionReportsRepo(BaseRepo):
@@ -158,10 +207,14 @@ class ExecutionReportsRepo(BaseRepo):
 
     def insert_report(self, rep: ExecutionReportV1) -> str:
         payload = rep.to_db_row()
+        if "id" not in payload or not payload.get("id"):
+            payload["id"] = str(uuid4())
         try:
-            res = self.db.client.table(self.table).insert(payload).select("id").execute()
-            if res.data:
-                return res.data[0].get("id")
+            res = self.db.client.table(self.table).insert(payload).execute()
+            rows = getattr(res, "data", None) or []
+            if rows:
+                return rows[0].get("id") or payload["id"]
+            return payload["id"]
         except Exception as exc:
             if not self._is_unique_violation(exc):
                 raise
@@ -209,10 +262,13 @@ class SignalPreviewsRepo(BaseRepo):
 
     def insert_preview_return_id(self, preview: SignalPreviewV1):
         payload = preview.to_db_row()
+        payload["id"] = str(uuid4())
         try:
-            res = self.db.client.table(self.table).insert(payload).select("id").execute()
-            if res.data:
-                return res.data[0].get("id")
+            res = self.db.client.table(self.table).insert(payload).execute()
+            rows = getattr(res, "data", None) or []
+            if rows:
+                return rows[0].get("id", payload["id"])
+            return payload["id"]
         except Exception as exc:
             # Idempotent: unique violation is acceptable
             msg = str(exc).lower()
@@ -256,10 +312,14 @@ class OrderIntentsRepo(BaseRepo):
 
     def insert_intent(self, intent: OrderIntentV1) -> str:
         payload = intent.to_db_row()
+        if "id" not in payload or not payload.get("id"):
+            payload["id"] = str(uuid4())
         try:
-            res = self.db.client.table(self.table).insert(payload).select("id").execute()
-            if res.data:
-                return res.data[0].get("id")
+            res = self.db.client.table(self.table).insert(payload).execute()
+            rows = getattr(res, "data", None) or []
+            if rows:
+                return rows[0].get("id") or payload["id"]
+            return payload["id"]
         except Exception as exc:
             if not self._is_unique_violation(exc):
                 raise
@@ -296,10 +356,14 @@ class BrokerRequestsRepo(BaseRepo):
 
     def insert_request(self, req: BrokerRequestV1) -> str:
         payload = req.to_db_row()
+        if "id" not in payload or not payload.get("id"):
+            payload["id"] = str(uuid4())
         try:
-            res = self.db.client.table(self.table).insert(payload).select("id").execute()
-            if res.data:
-                return res.data[0].get("id")
+            res = self.db.client.table(self.table).insert(payload).execute()
+            rows = getattr(res, "data", None) or []
+            if rows:
+                return rows[0].get("id") or payload["id"]
+            return payload["id"]
         except Exception as exc:
             if not self._is_unique_violation(exc):
                 raise
@@ -336,10 +400,14 @@ class ReconciliationReportsRepo(BaseRepo):
 
     def insert_report(self, rep: ReconciliationReportV1) -> str:
         payload = rep.to_db_row()
+        if "id" not in payload or not payload.get("id"):
+            payload["id"] = str(uuid4())
         try:
-            res = self.db.client.table(self.table).insert(payload).select("id").execute()
-            if res.data:
-                return res.data[0].get("id")
+            res = self.db.client.table(self.table).insert(payload).execute()
+            rows = getattr(res, "data", None) or []
+            if rows:
+                return rows[0].get("id") or payload["id"]
+            return payload["id"]
         except Exception as exc:
             if not self._is_unique_violation(exc):
                 raise

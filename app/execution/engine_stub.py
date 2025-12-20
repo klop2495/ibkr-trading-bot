@@ -10,11 +10,13 @@ class ExecutionEngineStub:
     def plan(self, verdict: RiskVerdictV1, decision: DecisionV1) -> Optional[ExecutionPlanV1]:
         if not verdict.trade_allowed:
             return None
+        if not decision.id:
+            raise ValueError("decision.id is required")
         ts = verdict.ts_utc or decision.ts_utc or datetime.now(timezone.utc)
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
         return ExecutionPlanV1(
-            decision_id=decision.id or decision.signal_preview_id,
+            decision_id=decision.id,
             signal_preview_id=decision.signal_preview_id,
             symbol=decision.symbol,
             action="OPEN",

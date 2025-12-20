@@ -21,6 +21,8 @@ def create_order_intent(
     decision: DecisionV1,
     preview: SignalPreviewV1,
 ) -> OrderIntentV1:
+    if not decision.id:
+        raise ValueError("decision.id is required")
     ts = execution_report.ts_utc or decision.ts_utc or datetime.now(timezone.utc)
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
@@ -32,7 +34,7 @@ def create_order_intent(
         ts_utc=ts,
         symbol=decision.symbol,
         execution_report_id=execution_report.id,
-        decision_id=decision.id or decision.signal_preview_id,
+        decision_id=decision.id,
         signal_preview_id=decision.signal_preview_id,
         intent_type="OPEN_MARKET",
         side=side,

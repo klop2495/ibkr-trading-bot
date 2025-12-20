@@ -73,6 +73,23 @@ def test_bot_settings_repo_parses_symbols():
     assert s.signals_params.is_configured() is False
 
 
+def test_bot_settings_repo_fetches_by_uuid_owner():
+    owner = uuid4()
+    payload = [
+        {
+            "owner_user_id": str(owner),
+            "trading_enabled": True,
+            "mode": "paper",
+            "symbols": ["EURUSD"],
+            "signals_params": {},
+        }
+    ]
+    repo = BotSettingsRepo(db=DummyDB(payload))  # type: ignore
+    s = repo.get(owner_user_id=owner)
+    assert s.trading_enabled is True
+    assert s.symbols == ["EURUSD"]
+
+
 def test_bot_settings_repo_parses_signals_params():
     owner = uuid4()
     payload = [
@@ -111,3 +128,125 @@ def test_bot_settings_repo_parses_signals_params():
     repo = BotSettingsRepo(db=DummyDB(payload))  # type: ignore
     s = repo.get(owner_user_id=owner)
     assert s.signals_params.is_configured() is True
+
+
+class RecordingTable:
+    def __init__(self, data):
+        self.data = data
+        self.eq_calls: list[tuple[str, str]] = []
+
+    def select(self, *args, **kwargs):
+        return self
+
+    def eq(self, column, value):
+        self.eq_calls.append((column, value))
+        return self
+
+    def limit(self, *args, **kwargs):
+        return self
+
+    def execute(self):
+        return DummyResult(self.data)
+
+
+class RecordingDB:
+    def __init__(self, data):
+        self._table = RecordingTable(data)
+        self.client = self
+
+    def table(self, name):
+        return self._table
+
+
+def test_bot_settings_repo_queries_owner_as_string():
+    owner = uuid4()
+    payload = [
+        {
+            "owner_user_id": str(owner),
+            "trading_enabled": True,
+            "symbols": ["EURUSD"],
+            "signals_params": {},
+        }
+    ]
+    db = RecordingDB(payload)
+    repo = BotSettingsRepo(db=db)  # type: ignore
+    s = repo.get(owner_user_id=owner)
+    assert db._table.eq_calls == [("owner_user_id", str(owner))]
+    assert s.trading_enabled is True
+    assert s.symbols == ["EURUSD"]
+
+
+class RecordingTableUpdate:
+    def __init__(self, owner: str):
+        self.owner = owner
+        self.eq_calls: list[tuple[str, str]] = []
+        self.updated_payload: dict | None = None
+
+    def update(self, payload):
+        self.updated_payload = payload
+        return self
+
+    def eq(self, column, value):
+        self.eq_calls.append((column, value))
+        return self
+
+    def execute(self):
+        return DummyResult(
+            [
+                {
+                    "owner_user_id": self.owner,
+                    "trading_enabled": True,
+                    "mode": "paper",
+                    "symbols": ["EURUSD"],
+                    "signals_params": {},
+                }
+            ]
+        )
+
+
+class RecordingDBUpdate:
+    def __init__(self, owner: str):
+        self._table = RecordingTableUpdate(owner)
+        self.client = self
+
+    def table(self, name):
+        return self._table
+
+
+def test_bot_settings_repo_update_uses_owner_string():
+    owner = uuid4()
+    db = RecordingDBUpdate(str(owner))
+    repo = BotSettingsRepo(db=db)  # type: ignore
+    s = repo.update(owner, {"trading_enabled": True})
+    assert db._table.eq_calls == [("owner_user_id", str(owner))]
+    assert db._table.updated_payload == {"trading_enabled": True}
+    assert s.trading_enabled is True
+    assert s.symbols == ["EURUSD"]
+
+
+class RecordingRiskEventsRepo:
+    def __init__(self):
+        self.events: list[dict] = []
+
+    def insert(self, event_type, severity="info", symbol=None, message=None, data=None):
+        self.events.append(
+            {
+                "event_type": event_type,
+                "severity": severity,
+                "symbol": symbol,
+                "message": message,
+                "data": data or {},
+            }
+        )
+        return {"count": 1, "data": [data or {}]}
+
+
+def test_bot_settings_repo_logs_not_found_event():
+    owner = uuid4()
+    risk_repo = RecordingRiskEventsRepo()
+    repo = BotSettingsRepo(db=DummyDB([]), risk_events_repo=risk_repo)  # type: ignore
+    s = repo.get(owner)
+    assert s.trading_enabled is False
+    assert repo.last_found_row is False
+    assert risk_repo.events[-1]["event_type"] == "BOT_SETTINGS"
+    assert risk_repo.events[-1]["severity"] in ("warning", "WARN", "Warning")

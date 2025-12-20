@@ -1,0 +1,185 @@
+{
+  "meta": {
+    "ts": "2025-12-19T20:37:27.105517+00:00"
+  },
+  "env": {
+    "supabase_url": "https://kimuxfiaoyyswdwkubve.supabase.co",
+    "owner_user_id": "fb7e03c2-aef5-4215-acd0-47902df9c721",
+    "service_role_key": {
+      "len": 219,
+      "prefix": "eyJhbG",
+      "suffix": "yRve9s"
+    }
+  },
+  "counts": {
+    "signal_previews_total": 946,
+    "control_decisions_total": 515,
+    "risk_verdicts_total": 515,
+    "risk_events_total": 1140
+  },
+  "coverage": {
+    "previews_without_decision": 431,
+    "decisions_without_verdict": 0,
+    "verdicts_without_decision": 0
+  },
+  "freshness": {
+    "signal_previews_latest_ts": null,
+    "control_decisions_latest_ts": null,
+    "risk_verdicts_latest_ts": null
+  },
+  "fk_checks": {
+    "decisions_missing_preview": 0,
+    "verdicts_missing_decision": 0,
+    "verdict_preview_mismatch": 0,
+    "decisions_missing_preview_fk": 0,
+    "verdicts_missing_decision_fk": 0
+  },
+  "sanity": {
+    "decisions_missing_preview_fk": 0,
+    "verdicts_missing_decision_fk": 0
+  },
+  "top_errors": [
+    {
+      "ts": "2025-12-19T20:09:59.894281+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:09:59.824184+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:09:49.415348+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:09:49.34071+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:09:39.094763+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:09:39.020729+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:09:28.687491+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:09:28.62415+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:09:18.173439+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:09:18.100642+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:09:07.699546+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:09:07.625107+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:08:57.328063+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:08:57.258097+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:08:46.954348+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:08:46.882863+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:08:36.668862+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:08:36.598214+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:08:26.314058+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    },
+    {
+      "ts": "2025-12-19T20:08:26.22807+00:00",
+      "event_type": "CONTROL_DECISION_PERSIST",
+      "severity": "ERROR",
+      "message": "fetch pending previews failed",
+      "error": "BaseSelectRequestBuilder.order() takes 2 positional arguments but 3 were given"
+    }
+  ],
+  "warnings": [],
+  "smoke": {}
+}

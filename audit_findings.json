@@ -1,0 +1,128 @@
+[
+  {
+    "id": "F1",
+    "title": "insert().select() still used in execution repos",
+    "severity": "HIGH",
+    "area": "storage",
+    "evidence_files": ["app/storage/repositories.py"],
+    "evidence_snippets": [
+      "ExecutionReportsRepo.insert_report uses insert(...).select(\"id\")",
+      "OrderIntentsRepo.insert_intent uses insert(...).select(\"id\")",
+      "BrokerRequestsRepo.insert_request uses insert(...).select(\"id\")",
+      "ReconciliationReportsRepo.insert_report uses insert(...).select(\"id\")"
+    ],
+    "reproduction": "Supabase runtime here fails on .insert().select() (same issue previously seen on previews).",
+    "fix_idea": "Drop .select() after insert and follow signal_previews pattern (generate UUID client-side, on conflict fetch id)."
+  },
+  {
+    "id": "F2",
+    "title": "Risk engine fabricates UUID when decision.id missing",
+    "severity": "MED",
+    "area": "risk",
+    "evidence_files": ["app/risk/engine_v1.py"],
+    "evidence_snippets": [
+      "evaluate sets dec_id = decision.id or uuid4(); verdict.decision_id uses dec_id"
+    ],
+    "reproduction": "Call RiskEngineV1.evaluate with DecisionV1 without id → verdict decision_id not tied to DB row.",
+    "fix_idea": "Require decision.id to be set (raise/log) before evaluate; avoid generating new UUIDs."
+  },
+  {
+    "id": "F3",
+    "title": "Telemetry keys inconsistent (preview_id vs signal_preview_id)",
+    "severity": "LOW",
+    "area": "logging",
+    "evidence_files": ["app/main.py"],
+    "evidence_snippets": [
+      "persist_control_decision_and_verdict error paths log data with \"preview_id\"",
+      "main loop logs errors with \"signal_preview_id\" elsewhere"
+    ],
+    "reproduction": "Force decision persist to fail; risk_event data key differs from other logs, complicating joins.",
+    "fix_idea": "Standardize on data.signal_preview_id everywhere for control-plane telemetry."
+  },
+  {
+    "id": "F4",
+    "title": "Risk_event logging failures silently ignored in persist paths",
+    "severity": "LOW",
+    "area": "observability",
+    "evidence_files": ["app/main.py"],
+    "evidence_snippets": [
+      "risk_events_repo.insert in exception blocks is wrapped with bare except pass (only limited stderr prints)"
+    ],
+    "reproduction": "If risk_events insert fails (e.g., RLS/env), persist errors become silent except one-off stderr.",
+    "fix_idea": "Log stderr consistently and consider fallback counter/flag to surface logging failures."
+  },
+  {
+    "id": "F5",
+    "title": "SUPABASE_URL/SERVICE_ROLE missing causes hard crash without telemetry",
+    "severity": "MED",
+    "area": "runtime",
+    "evidence_files": ["app/storage/db.py"],
+    "evidence_snippets": [
+      "SupabaseDB.__init__ raises RuntimeError if envs missing; no risk_event emitted"
+    ],
+    "reproduction": "Launch without SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY → process exits, no diagnostics.",
+    "fix_idea": "Add early risk_event/clear error message before exiting; optionally guard main startup."
+  },
+  {
+    "id": "F6",
+    "title": "Enum/casing drift between schema and models",
+    "severity": "MED",
+    "area": "schema-contract",
+    "evidence_files": ["migrations/006_signal_previews.sql", "app/models/signal_preview.py"],
+    "evidence_snippets": [
+      "DB stores direction/setup_type as unconstrained text",
+      "Models enforce Direction enum with lowercase values"
+    ],
+    "reproduction": "Insert preview with wrong casing via direct SQL → passes DB, breaks model expectations.",
+    "fix_idea": "Add CHECK/enum constraints or validation in repos before insert."
+  },
+  {
+    "id": "F7",
+    "title": "risk_modifier bounds differ between model and DB",
+    "severity": "MED",
+    "area": "schema-contract",
+    "evidence_files": ["migrations/010_control_decisions_v1.sql", "app/models/decision.py"],
+    "evidence_snippets": [
+      "risk_modifier numeric NOT NULL (no constraint) in DB",
+      "DecisionV1 risk_modifier Field(ge=0.0, le=2.0)"
+    ],
+    "reproduction": "Write decision with risk_modifier=10 via SQL → accepted by DB, violates model contract.",
+    "fix_idea": "Add CHECK constraint or validate in repo before insert."
+  },
+  {
+    "id": "F8",
+    "title": "Legacy tables remain alongside control-plane schema",
+    "severity": "LOW",
+    "area": "schema",
+    "evidence_files": ["migrations/001_init.sql"],
+    "evidence_snippets": [
+      "Tables decisions/execution_reports/orders/fills/positions still created"
+    ],
+    "reproduction": "Querying without table scoping can hit legacy tables instead of control_* equivalents.",
+    "fix_idea": "Document deprecation or drop/rename legacy tables in a later migration; update queries/tests."
+  },
+  {
+    "id": "F9",
+    "title": "No lint/static analysis configured",
+    "severity": "LOW",
+    "area": "tooling",
+    "evidence_files": ["repo root"],
+    "evidence_snippets": [
+      "No ruff/flake8/mypy config; pytest only"
+    ],
+    "reproduction": "Run ruff/flake8 → not configured; potential style/type issues remain hidden.",
+    "fix_idea": "Add lint/static checks to CI to catch attr access/typing issues early."
+  },
+  {
+    "id": "F10",
+    "title": "Idempotency conflict paths untested for control_decisions/risk_verdicts",
+    "severity": "LOW",
+    "area": "tests",
+    "evidence_files": ["tests/test_control_plane_repos.py"],
+    "evidence_snippets": [
+      "Unit tests only cover happy path UUID generation; conflict lookup branches not exercised"
+    ],
+    "reproduction": "Conflict (duplicate signal_preview_id/risk_version) not covered; potential regressions unnoticed.",
+    "fix_idea": "Add tests simulating duplicate insert to assert lookup code returns existing id."
+  }
+]

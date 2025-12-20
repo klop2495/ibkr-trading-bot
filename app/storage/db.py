@@ -1,5 +1,18 @@
 import os
+import sys
 from supabase import create_client, Client
+
+
+class _NullSupabaseClient:
+    """
+    Minimal stub to surface meaningful errors when Supabase env is missing.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def table(self, *args, **kwargs):
+        raise RuntimeError(f"Supabase client not configured: {self.reason}")
 
 
 class SupabaseDB:
@@ -12,8 +25,13 @@ class SupabaseDB:
         url = os.getenv("SUPABASE_URL")
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         if not url or not key:
-            raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set")
-        self.client: Client = create_client(url, key)
+            reason = "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set"
+            print(f"[SupabaseDB] {reason}", file=sys.stderr)
+            self.client: Client | _NullSupabaseClient = _NullSupabaseClient(reason)
+            self.disabled = True
+            return
+        self.client: Client | _NullSupabaseClient = create_client(url, key)
+        self.disabled = False
 
     def ping(self) -> bool:
         """

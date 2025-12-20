@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
+
 from app.models.bot_settings import BotSettings
 from app.models.decision import DecisionV1
 from app.risk.engine_v1 import RiskEngineV1, FLAG_TRADING_DISABLED, FLAG_RISK_ERROR
@@ -23,7 +25,7 @@ def _settings_disabled():
 
 
 def _decision(trade_allowed=True, flags=None):
-    return DecisionV1(
+    dec = DecisionV1(
         ts_utc=datetime.now(timezone.utc),
         symbol="EURUSD",
         signal_preview_id=uuid4(),
@@ -31,6 +33,8 @@ def _decision(trade_allowed=True, flags=None):
         risk_modifier=1.0,
         flags=flags or [],
     )
+    dec.id = uuid4()
+    return dec
 
 
 def test_trading_disabled_blocks():
@@ -59,3 +63,11 @@ def test_fail_safe_sets_risk_error():
     verdict = engine.evaluate(_decision(), BadSettings(owner_user_id=uuid4(), symbols=[]))  # type: ignore[arg-type]
     assert verdict.trade_allowed is False
     assert FLAG_RISK_ERROR in verdict.flags
+
+
+def test_requires_decision_id():
+    engine = RiskEngineV1()
+    dec = _decision()
+    dec.id = None
+    with pytest.raises(ValueError):
+        engine.evaluate(dec, _settings_enabled())

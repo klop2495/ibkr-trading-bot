@@ -9,3 +9,66 @@ Skeleton structure for IBKR trading bot + Supabase backend.
 - Event sequencing: `docs/event-priorities.md`
 - Reconciliation workflow: `docs/recon-workflow.md`
 - Append-only logs enforced by DB triggers (see `migrations/003_append_only_triggers.sql`).
+
+---
+
+## Quick Start
+
+```bash
+# Setup
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Configure
+cp .env.example .env
+# Edit .env with your Supabase credentials
+
+# Test
+python -m pytest -q
+```
+
+---
+
+## Dependencies
+
+Pinned versions для стабильности:
+
+```
+supabase==2.6.0
+httpx==0.26.0
+postgrest==0.13.0
+```
+
+При обновлении supabase SDK проверьте совместимость httpx/postgrest.
+
+---
+
+## Graceful Fallback
+
+При отсутствии `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`:
+
+1. Приложение запускается (для диагностики)
+2. Логируется причина в stderr
+3. Операции с БД выбрасывают `RuntimeError`
+
+См. `OPS.md` для деталей.
+
+---
+
+## CI/CD
+
+GitHub Actions workflow: `.github/workflows/ci.yml`
+
+- Python 3.11
+- Lint (ruff)
+- Type check (mypy)
+- Tests (pytest)
+
+---
+
+## Documentation
+
+- `CHANGELOG.md` — история изменений
+- `OPS.md` — операционная документация
+- `docs/` — архитектурная документация

@@ -45,9 +45,10 @@ def _params():
 
 
 def _snap(tf: str, ma_fast: float, ma_slow: float, rsi: float = 50, close: float = 1.0, spread: float = 0.1):
+    ts = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
     return MarketSnapshot(
         schema_version=1,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=ts,
         symbol="EURUSD",
         timeframe=tf,
         close=close,

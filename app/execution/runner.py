@@ -22,6 +22,8 @@ def run_execution_if_allowed(
     """
     if not verdict.trade_allowed:
         return None
+    if not decision.id:
+        raise ValueError("decision.id is required")
     plan: Optional[ExecutionPlanV1] = engine.plan(verdict, decision)
     if plan is None:
         return None
@@ -30,7 +32,7 @@ def run_execution_if_allowed(
         ts = ts.replace(tzinfo=timezone.utc)
     report = ExecutionReportV1(
         ts_utc=ts,
-        decision_id=decision.id or decision.signal_preview_id,
+        decision_id=decision.id,
         signal_preview_id=decision.signal_preview_id,
         status="PLANNED",
         reason_flags=[],

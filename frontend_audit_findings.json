@@ -1,0 +1,102 @@
+[
+  {
+    "id": "F1",
+    "title": "ControlDashboard uses many `any` types (lint failure)",
+    "severity": "MED",
+    "area": "lint/quality",
+    "evidence_files": ["app/admin/control/ControlDashboard.tsx"],
+    "evidence_snippets": ["lines ~21-23, 106, 134, 160, 454, 506 flagged by eslint no-explicit-any"],
+    "reproduction": "npm run lint fails with multiple @typescript-eslint/no-explicit-any errors.",
+    "fix_idea": "Define proper types for ChainPayload, API responses, and remove unused Section component."
+  },
+  {
+    "id": "F2",
+    "title": "Chain route typed as `any` with unused errors (lint failure)",
+    "severity": "LOW",
+    "area": "api/quality",
+    "evidence_files": ["app/api/admin/control/chain/route.ts"],
+    "evidence_snippets": ["lines ~36-81 show `any` and unused err variables"],
+    "reproduction": "npm run lint reports no-explicit-any and unused-vars for chain route.",
+    "fix_idea": "Type Supabase responses and remove unused err variables."
+  },
+  {
+    "id": "F3",
+    "title": "Meta route uses `any` for Supabase rows (lint failure)",
+    "severity": "LOW",
+    "area": "api/quality",
+    "evidence_files": ["app/api/admin/control/meta/route.ts"],
+    "evidence_snippets": ["lines ~45-51 flagged as no-explicit-any"],
+    "reproduction": "npm run lint errors on meta route any usages.",
+    "fix_idea": "Type flags/symbol rows explicitly."
+  },
+  {
+    "id": "F4",
+    "title": "Previews route uses `any` and returns 200 on unexpected error",
+    "severity": "MED",
+    "area": "api/contract",
+    "evidence_files": ["app/api/admin/control/previews/route.ts"],
+    "evidence_snippets": ["any at lines ~50,79,93; catch returns 200 with UNEXPECTED_ERROR"],
+    "reproduction": "npm run lint; force throw in handler -> UI gets 200 with empty previews.",
+    "fix_idea": "Type rows; return 500 or surface explicit error flag."
+  },
+  {
+    "id": "F5",
+    "title": "Login page setState in effect (react-hooks warning)",
+    "severity": "LOW",
+    "area": "auth/ui",
+    "evidence_files": ["app/login/page.tsx"],
+    "evidence_snippets": ["line 15 setError in useEffect"],
+    "reproduction": "npm run lint reports react-hooks/set-state-in-effect.",
+    "fix_idea": "Move error derivation to render or useEffect with guard/async pattern."
+  },
+  {
+    "id": "F6",
+    "title": "DetailCard stringifies objects, causing `[object Object]`",
+    "severity": "LOW",
+    "area": "ui/rendering",
+    "evidence_files": ["app/admin/control/ControlDashboard.tsx"],
+    "evidence_snippets": ["DetailCard uses String(value) at ~470"],
+    "reproduction": "If API adds structured field (e.g., payload), UI shows `[object Object]`.",
+    "fix_idea": "Render primitives only or pretty-print JSON with guards."
+  },
+  {
+    "id": "F7",
+    "title": "Date parsing without null guard in detail cards",
+    "severity": "LOW",
+    "area": "ui/runtime",
+    "evidence_files": ["app/admin/control/ControlDashboard.tsx"],
+    "evidence_snippets": ["new Date(chain.decision.ts_utc) at ~337/346"],
+    "reproduction": "If ts_utc missing/invalid, renders 'Invalid Date' and may throw in Date constructor.",
+    "fix_idea": "Guard against falsy ts_utc before formatting."
+  },
+  {
+    "id": "F8",
+    "title": "Warning codes shown verbatim to user",
+    "severity": "LOW",
+    "area": "i18n/usability",
+    "evidence_files": ["app/admin/control/ControlDashboard.tsx"],
+    "evidence_snippets": ["warnings list renders raw codes like FLAG_FILTER_FALLBACK at ~310, ~322"],
+    "reproduction": "Trigger fallback -> UI shows code strings (English/technical).",
+    "fix_idea": "Map codes to RU user-friendly messages."
+  },
+  {
+    "id": "F9",
+    "title": "API returns HTML/200 risk; build EPERM blocks CI",
+    "severity": "MED",
+    "area": "runtime/build",
+    "evidence_files": ["npm run build output"],
+    "evidence_snippets": ["EPERM open .next/trace-build"],
+    "reproduction": "npm run build fails due to .next permissions; deploy/build pipeline would fail.",
+    "fix_idea": "Clean/chmod .next or configure output dir before build."
+  },
+  {
+    "id": "F10",
+    "title": "Chain endpoint returns 200 with empty data on errors",
+    "severity": "MED",
+    "area": "api/contract",
+    "evidence_files": ["app/api/admin/control/chain/route.ts"],
+    "evidence_snippets": ["Catches errors, adds warning, still returns 200 with nulls"],
+    "reproduction": "Force Supabase error -> UI sees empty details with warning code only.",
+    "fix_idea": "Return 500/explicit error or surface warning text in RU to user."
+  }
+]

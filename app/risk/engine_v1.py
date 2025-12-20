@@ -10,6 +10,10 @@ FLAG_RISK_ERROR = "RISK_ERROR"
 
 class RiskEngineV1:
     def evaluate(self, decision: DecisionV1, settings: BotSettings) -> RiskVerdictV1:
+        dec_id = decision.id
+        if dec_id is None:
+            raise ValueError("decision.id is required for risk evaluation")
+
         try:
             ts = decision.ts_utc or datetime.now(timezone.utc)
             if ts.tzinfo is None:
@@ -21,7 +25,7 @@ class RiskEngineV1:
                 return RiskVerdictV1(
                     ts_utc=ts,
                     symbol=decision.symbol,
-                    decision_id=decision.id or decision.signal_preview_id,
+                    decision_id=dec_id,
                     signal_preview_id=decision.signal_preview_id,
                     trade_allowed=False,
                     risk_modifier=min(decision.risk_modifier, 1.0),
@@ -32,7 +36,7 @@ class RiskEngineV1:
                 return RiskVerdictV1(
                     ts_utc=ts,
                     symbol=decision.symbol,
-                    decision_id=decision.id or decision.signal_preview_id,
+                    decision_id=dec_id,
                     signal_preview_id=decision.signal_preview_id,
                     trade_allowed=False,
                     risk_modifier=min(decision.risk_modifier, 1.0),
@@ -45,7 +49,7 @@ class RiskEngineV1:
             return RiskVerdictV1(
                 ts_utc=ts,
                 symbol=decision.symbol,
-                decision_id=decision.id or decision.signal_preview_id,
+                decision_id=dec_id,
                 signal_preview_id=decision.signal_preview_id,
                 trade_allowed=True,
                 risk_modifier=modifier,
@@ -59,7 +63,7 @@ class RiskEngineV1:
             return RiskVerdictV1(
                 ts_utc=ts,
                 symbol=decision.symbol,
-                decision_id=decision.id or decision.signal_preview_id,
+                decision_id=dec_id,
                 signal_preview_id=decision.signal_preview_id,
                 trade_allowed=False,
                 risk_modifier=0.0,
