@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build: .
+    container_name: ibkr-trading-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Healthcheck - проверяем что процесс жив
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
