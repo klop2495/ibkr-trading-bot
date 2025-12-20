@@ -2,6 +2,85 @@
 
 Все изменения в проектах ibkr-trading-bot и ibkr-trading-fronend.
 
+## [2025-12-20] — Production Deployment to Hetzner VPS
+
+### 🚀 VPS Deployment
+
+**Сервер:** `65.108.83.67` (Ubuntu 24.04, CX23, Helsinki)
+
+#### Docker Setup
+- Установлен Docker 28.2.2 + docker-compose
+- Создан `Dockerfile` (Python 3.11-slim)
+- Создан `docker-compose.yml` с healthcheck и logging
+- Контейнер: `ibkr-trading-bot`
+
+#### Dockerfile
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y gcc
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app/ ./app/
+ENV PYTHONUNBUFFERED=1
+CMD ["python", "-m", "app.main"]
+```
+
+#### docker-compose.yml
+- Healthcheck: `pgrep -f python`
+- Restart: `unless-stopped`
+- Logging: 10MB max, 3 files
+- Env file: `.env`
+
+#### Environment Variables
+```
+SUPABASE_URL=https://kimuxfiaoyyswdwkubve.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=***
+BOT_OWNER_USER_ID=fb7e03c2-aef5-4215-acd0-47902df9c721
+EXECUTION_MODE=DRY_RUN
+BOT_MODE=paper
+TRADING_ENABLED=false
+CONTROL_PLANE_IDLE_BACKOFF_ENABLED=1
+```
+
+### 🔧 Bug Fixes
+
+#### requirements.txt
+- Удалена жёсткая версия `postgrest==0.13.0` (конфликт с supabase 2.6.0)
+- Supabase сам подтягивает `postgrest>=0.14`
+
+### 📊 Bot Status
+```
+✅ Supabase ping: True
+✅ ExecutionService initialized mode=disabled
+✅ bot_settings found_row=True symbols_count=1
+✅ control_plane_backfill: FULLY_DRAINED
+✅ Idle backoff: 10s → 60s
+```
+
+### 🛠️ Полезные команды
+
+```bash
+# SSH
+ssh root@65.108.83.67
+
+# Логи
+docker logs -f ibkr-trading-bot
+
+# Перезапуск
+cd /root/ibkr-trading-bot
+docker-compose restart
+
+# Полная пересборка
+docker-compose down
+docker-compose up -d --build
+
+# Статус
+docker ps
+```
+
+---
+
 ## [2024-12-20] — Audit & Stabilization Release
 
 ### Фаза 1 — Unblock Deployment
