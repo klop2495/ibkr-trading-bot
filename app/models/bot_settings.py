@@ -38,6 +38,15 @@ class BotSettings(BaseModel):
     max_effective_leverage: float = Field(default=2.0, ge=0.0, le=50.0)
     max_margin_utilization: float = Field(default=0.35, ge=0.0, le=1.0)
 
+    # Stop Loss / Take Profit settings
+    default_sl_pips: float = Field(default=20.0, ge=5.0, le=200.0)
+    default_tp_pips: float = Field(default=40.0, ge=5.0, le=400.0)
+    
+    # Trailing Stop settings
+    trailing_stop_enabled: bool = Field(default=False)
+    trailing_stop_distance_pips: float = Field(default=15.0, ge=5.0, le=100.0)
+    trailing_stop_activation_pips: float = Field(default=10.0, ge=0.0, le=100.0)  # Activate after X pips profit
+
     warmup_bars_min: int = Field(default=300, ge=0)
     symbols: List[str] = Field(default_factory=list)
     signals_params: SignalsParams = Field(default_factory=SignalsParams)

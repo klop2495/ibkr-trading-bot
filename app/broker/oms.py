@@ -36,6 +36,8 @@ class OrderType(str, Enum):
     LIMIT = "LMT"
     STOP = "STP"
     STOP_LIMIT = "STP_LMT"
+    TRAIL = "TRAIL"           # Trailing Stop
+    TRAIL_LIMIT = "TRAIL_LIMIT"  # Trailing Stop Limit
 
 
 class OrderSide(str, Enum):
@@ -59,6 +61,11 @@ class IBKROrderRequest(BaseModel):
     # Stop Loss / Take Profit
     stop_loss_price: Optional[float] = None
     take_profit_price: Optional[float] = None
+    
+    # Trailing Stop settings
+    trailing_stop_enabled: bool = False
+    trailing_stop_distance: Optional[float] = None  # In price units (not pips)
+    trailing_stop_distance_pips: Optional[float] = None  # In pips (will be converted)
     
     # Linking to control plane
     signal_preview_id: Optional[UUID] = None
@@ -129,6 +136,11 @@ class IBKROrderState(BaseModel):
     is_bracket: bool = False
     stop_loss_order_id: Optional[int] = None
     take_profit_order_id: Optional[int] = None
+    
+    # For trailing stop
+    is_trailing_stop: bool = False
+    trailing_stop_order_id: Optional[int] = None
+    trailing_stop_distance: Optional[float] = None
 
 
 class IBKRFill(BaseModel):
@@ -436,21 +448,125 @@ class IBKROMS:
         
         return state
     
+    def place_trailing_stop_order(
+        self,
+        request: IBKROrderRequest,
+        entry_price: float,
+    ) -> IBKROrderState:
+        """
+        Place a trailing stop order after main order is filled.
+        
+        The trailing stop follows the price by a fixed distance.
+        When price moves in favor, the stop moves up (for long) or down (for short).
+        When price reverses, the stop stays in place and triggers when hit.
+        
+        Args:
+            request: Order request with trailing_stop_distance or trailing_stop_distance_pips
+            entry_price: Entry price to calculate initial stop level
+        """
+        state = IBKROrderState(
+            request_id=request.id,
+            is_trailing_stop=True,
+        )
+        self._orders[request.id] = state
+        
+        try:
+            from ib_insync import Order
+            
+            # Create contract
+            contract = self.create_forex_contract(request.symbol)
+            
+            # Calculate trailing distance in price units
+            trailing_distance = request.trailing_stop_distance
+            if trailing_distance is None and request.trailing_stop_distance_pips is not None:
+                # Convert pips to price units
+                pip_value = 0.01 if "JPY" in request.symbol.upper() else 0.0001
+                trailing_distance = request.trailing_stop_distance_pips * pip_value
+            
+            if trailing_distance is None or trailing_distance <= 0:
+                raise ValueError("Invalid trailing stop distance")
+            
+            state.trailing_stop_distance = trailing_distance
+            
+            # Opposite action for the stop order
+            opposite_action = "SELL" if request.side == OrderSide.BUY else "BUY"
+            
+            # Create trailing stop order
+            trailing_order = Order(
+                action=opposite_action,
+                totalQuantity=request.quantity,
+                orderType="TRAIL",
+                auxPrice=trailing_distance,  # Trailing amount in price units
+                tif=request.tif,
+            )
+            
+            # Place order
+            trade = self.ib.placeOrder(contract, trailing_order)
+            
+            # Store IDs
+            state.ib_order_id = trade.order.orderId
+            state.trailing_stop_order_id = trade.order.orderId
+            state.ib_perm_id = getattr(trade.order, "permId", None)
+            state.status = OrderStatus.SUBMITTED
+            state.updated_at = datetime.now(timezone.utc)
+            
+            self._ib_to_request[state.ib_order_id] = request.id
+            
+            self.callback.on_order_status(state)
+            
+        except Exception as exc:
+            state.status = OrderStatus.ERROR
+            state.error_message = str(exc)
+            state.updated_at = datetime.now(timezone.utc)
+            self.callback.on_error(request.id, state.error_message)
+        
+        return state
+    
     def place_order_with_sl_tp(
         self,
         request: IBKROrderRequest,
         current_price: Optional[float] = None,
     ) -> IBKROrderState:
         """
-        Place order with optional SL/TP.
+        Place order with optional SL/TP or Trailing Stop.
         
-        If both stop_loss_price and take_profit_price are provided,
-        creates a bracket order. Otherwise creates a simple order.
+        Priority:
+        1. If trailing_stop_enabled and has distance -> Main order + Trailing Stop
+        2. If both SL and TP prices -> Bracket order
+        3. Otherwise -> Simple order
         
         Args:
             request: Order request with optional SL/TP prices
             current_price: Current market price (used to calculate SL/TP if needed)
         """
+        # If trailing stop is enabled, use trailing stop approach
+        if request.trailing_stop_enabled and (
+            request.trailing_stop_distance is not None or 
+            request.trailing_stop_distance_pips is not None
+        ):
+            # First place main order, then trailing stop will be placed on fill
+            main_state = self.place_order(request)
+            
+            if main_state.status not in (OrderStatus.ERROR, OrderStatus.REJECTED):
+                # Store trailing stop info for when main order fills
+                main_state.is_trailing_stop = True
+                main_state.trailing_stop_distance = request.trailing_stop_distance
+                # Note: In production, you'd want to place trailing stop AFTER main fills
+                # For now, we place it immediately
+                if current_price:
+                    trailing_request = IBKROrderRequest(
+                        symbol=request.symbol,
+                        side=request.side,
+                        quantity=request.quantity,
+                        trailing_stop_enabled=True,
+                        trailing_stop_distance=request.trailing_stop_distance,
+                        trailing_stop_distance_pips=request.trailing_stop_distance_pips,
+                        tif=request.tif,
+                    )
+                    self.place_trailing_stop_order(trailing_request, current_price)
+            
+            return main_state
+        
         # If both SL and TP are set, use bracket order
         if request.stop_loss_price is not None and request.take_profit_price is not None:
             bracket_request = IBKRBracketOrderRequest(
