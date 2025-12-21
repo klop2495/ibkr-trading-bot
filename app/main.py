@@ -22,6 +22,17 @@ from app.storage.db import SupabaseDB
 from app.storage.repositories import DecisionsRepo, RiskEventsRepo, RiskVerdictsRepo, SignalPreviewsRepo
 from app.execution.service import ExecutionService, ExecutionMode, ExecutionResult
 
+# Phase 0: Shadow mode parallel decisions
+from app.models.parallel_decision import ParallelDecisionV1
+from app.storage.parallel_decisions_repo import ParallelDecisionsRepo
+
+# Phase 1: Data sources
+from app.data_sources import EconomicCalendarFetcher, COTReportsFetcher, DXYFetcher
+from app.agents.safety import SourceHealthMonitor, BudgetLimiter, AgentCache, ResponseValidator
+
+# Phase 3-4: LLM Agents and integration
+from app.agents.parallel_runner import ParallelDecisionRunner, create_parallel_runner
+
 
 DEFAULT_BACKFILL_BATCH = 25
 DEFAULT_BACKFILL_MAX_PER_TICK = 400
@@ -863,6 +874,203 @@ def format_backfill_status(
     return " ".join(parts)
 
 
+def run_parallel_shadow_tick(
+    *,
+    client: Any,
+    parallel_repo: ParallelDecisionsRepo,
+    parallel_runner: ParallelDecisionRunner,
+    risk_events_repo: Optional[RiskEventsRepo],
+    limit: int = 20,
+) -> Dict[str, Any]:
+    """
+    Phase 4: Full LLM agents parallel decision logging.
+    
+    Reads recent control_decisions that don't have parallel_decisions yet,
+    runs LLM agents (or mocks), creates parallel decision records.
+    
+    This runs AFTER the main backfill tick, so control_decisions already exist.
+    """
+    if client is None:
+        return {"logged": 0, "skipped": 0, "errors": 0, "llm_calls": 0, "cache_hits": 0}
+    
+    logged = 0
+    skipped = 0
+    errors = 0
+    llm_calls = 0
+    cache_hits = 0
+    
+    try:
+        # Get recent control_decisions
+        decisions_res = (
+            client.table("control_decisions")
+            .select("id, ts_utc, symbol, signal_preview_id, trade_allowed, risk_modifier, flags")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        decisions_rows = getattr(decisions_res, "data", None) or []
+        
+        if not decisions_rows:
+            return {"logged": 0, "skipped": 0, "errors": 0, "llm_calls": 0, "cache_hits": 0}
+        
+        # Get decision IDs to check which already have parallel records
+        decision_ids = [row.get("id") for row in decisions_rows if row.get("id")]
+        if not decision_ids:
+            return {"logged": 0, "skipped": 0, "errors": 0, "llm_calls": 0, "cache_hits": 0}
+        
+        # Check existing parallel_decisions
+        existing_res = (
+            client.table("parallel_decisions")
+            .select("control_decision_id")
+            .in_("control_decision_id", decision_ids)
+            .execute()
+        )
+        existing_rows = getattr(existing_res, "data", None) or []
+        existing_ids = {row.get("control_decision_id") for row in existing_rows if row.get("control_decision_id")}
+        
+        # Get signal_previews for full data
+        signal_preview_ids = [row.get("signal_preview_id") for row in decisions_rows if row.get("signal_preview_id")]
+        previews_map: Dict[str, SignalPreviewV1] = {}
+        if signal_preview_ids:
+            previews_res = (
+                client.table("signal_previews")
+                .select("id, ts_utc, symbol, timeframe_trigger, setup_type, direction, setup_present, entry_triggered, confidence, rr, data_quality, spread_quality, flags, sl_distance_pips, tp_distance_pips")
+                .in_("id", signal_preview_ids)
+                .execute()
+            )
+            previews_rows = getattr(previews_res, "data", None) or []
+            for row in previews_rows:
+                try:
+                    previews_map[str(row.get("id"))] = _preview_from_row(row)
+                except Exception:
+                    pass
+        
+        # Create parallel decisions for missing ones
+        parallel_records = []
+        for dec_row in decisions_rows:
+            dec_id = dec_row.get("id")
+            if not dec_id or dec_id in existing_ids:
+                skipped += 1
+                continue
+            
+            # Get preview
+            sp_id = dec_row.get("signal_preview_id")
+            preview = previews_map.get(str(sp_id)) if sp_id else None
+            
+            if not preview:
+                # Create minimal preview from decision row
+                try:
+                    ts_raw = dec_row.get("ts_utc")
+                    if isinstance(ts_raw, str):
+                        ts_utc = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                    else:
+                        ts_utc = ts_raw or datetime.now(timezone.utc)
+                    
+                    preview = SignalPreviewV1(
+                        ts_utc=ts_utc,
+                        symbol=dec_row.get("symbol") or "",
+                        timeframe_trigger="M15",
+                        setup_type=SetupType.NO_TRADE,
+                        direction=Direction.FLAT,
+                        setup_present=False,
+                        entry_triggered=False,
+                        confidence=Confidence.LOW,
+                        rr=0.0,
+                        data_quality=DataQuality.OK,
+                        spread_quality=SpreadQuality.OK,
+                        flags=dec_row.get("flags") or [],
+                    )
+                except Exception:
+                    skipped += 1
+                    continue
+            
+            # Build decision for runner
+            try:
+                decision = DecisionV1(
+                    ts_utc=preview.ts_utc,
+                    symbol=preview.symbol,
+                    signal_preview_id=_safe_uuid(sp_id),
+                    trade_allowed=dec_row.get("trade_allowed", False),
+                    risk_modifier=dec_row.get("risk_modifier", 1.0),
+                    flags=dec_row.get("flags") or [],
+                )
+                
+                # Run parallel runner with LLM agents
+                parallel_dec = parallel_runner.run(
+                    preview=preview,
+                    preview_id=_safe_uuid(sp_id) or uuid4(),
+                    decision=decision,
+                    decision_id=dec_id,
+                )
+                
+                parallel_records.append(parallel_dec)
+                
+            except Exception as exc:
+                errors += 1
+                if risk_events_repo:
+                    risk_events_repo.insert(
+                        event_type="PARALLEL_LLM_ERROR",
+                        severity="error",
+                        message=f"Failed to run parallel agents: {exc}",
+                        data={"decision_id": dec_id, "error": str(exc)},
+                    )
+        
+        # Get stats from runner
+        runner_stats = parallel_runner.get_stats()
+        llm_calls = runner_stats.get("llm_calls", 0)
+        cache_hits = runner_stats.get("cache_hits", 0)
+        
+        # Bulk insert
+        if parallel_records:
+            try:
+                parallel_repo.insert_bulk(parallel_records)
+                logged = len(parallel_records)
+            except Exception as exc:
+                errors += len(parallel_records)
+                if risk_events_repo:
+                    risk_events_repo.insert(
+                        event_type="PARALLEL_LLM_BULK_ERROR",
+                        severity="error",
+                        message=f"Bulk insert failed: {exc}",
+                        data={"count": len(parallel_records), "error": str(exc)},
+                    )
+    
+    except Exception as exc:
+        errors += 1
+        if risk_events_repo:
+            risk_events_repo.insert(
+                event_type="PARALLEL_LLM_TICK_ERROR",
+                severity="error",
+                message=f"LLM tick failed: {exc}",
+                data={"error": str(exc)},
+            )
+    
+    return {
+        "logged": logged,
+        "skipped": skipped,
+        "errors": errors,
+        "llm_calls": llm_calls,
+        "cache_hits": cache_hits,
+    }
+
+
+def _create_openai_client():
+    """Create OpenAI client if API key is available."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    
+    try:
+        from openai import OpenAI
+        return OpenAI(api_key=api_key)
+    except ImportError:
+        print("Warning: openai package not installed, LLM agents will run in mock mode")
+        return None
+    except Exception as e:
+        print(f"Warning: Failed to create OpenAI client: {e}")
+        return None
+
+
 def main():
     owner_user_id_raw = os.getenv("BOT_OWNER_USER_ID")
     if not owner_user_id_raw:
@@ -888,6 +1096,50 @@ def main():
     risk_verdicts_repo = RiskVerdictsRepo(db)
     agents_aggregator = AgentsAggregator(reports_repo=None)
     risk_engine = RiskEngineV1()
+
+    # Phase 0: Parallel decisions shadow mode
+    parallel_decisions_repo = ParallelDecisionsRepo(db)
+    parallel_shadow_enabled = os.getenv("PARALLEL_SHADOW_ENABLED", "1") != "0"
+    parallel_shadow_limit = int(os.getenv("PARALLEL_SHADOW_LIMIT", "20"))
+    last_parallel_log: Optional[str] = None
+
+    # Phase 1: Data sources (mock mode for now)
+    data_sources_enabled = os.getenv("DATA_SOURCES_ENABLED", "1") != "0"
+    economic_calendar = EconomicCalendarFetcher(mock_mode=True)
+    cot_reports = COTReportsFetcher(mock_mode=True)
+    dxy_fetcher = DXYFetcher(mock_mode=True)
+    source_health_monitor = SourceHealthMonitor()
+    data_sources_fetch_interval = int(os.getenv("DATA_SOURCES_FETCH_INTERVAL", "300"))  # 5 min default
+    last_data_sources_fetch = 0.0
+    last_data_sources_log: Optional[str] = None
+
+    # Phase 2: Safety gates (initialized in parallel_runner)
+    
+    # Phase 3-5: LLM Agents with full integration
+    llm_enabled = os.getenv("LLM_AGENTS_ENABLED", "0") == "1"
+    active_strategy = os.getenv("ACTIVE_STRATEGY", "rules")  # rules, gpt, hybrid
+    
+    # Create OpenAI client (returns None if no API key)
+    llm_client = _create_openai_client() if llm_enabled else None
+    
+    # Create parallel runner with all components
+    parallel_runner = create_parallel_runner(
+        llm_enabled=llm_enabled,
+        active_strategy=active_strategy,
+        economic_calendar=economic_calendar,
+        cot_reports=cot_reports,
+        dxy_fetcher=dxy_fetcher,
+        llm_client=llm_client,
+    )
+    
+    # Log initialization status
+    if parallel_shadow_enabled:
+        mode_str = "LLM" if llm_enabled else "MOCK"
+        client_str = "OpenAI" if llm_client else "None"
+        print(f"Phase 5: Parallel agents ENABLED mode={mode_str} strategy={active_strategy} client={client_str}")
+    
+    if data_sources_enabled:
+        print("Phase 1: Data sources ENABLED (mock mode)")
 
     # Initialize ExecutionService
     owner_uuid_str = str(owner_uuid)
@@ -919,8 +1171,13 @@ def main():
 
     last_logged_symbols = None
     last_logged_found = None
+    
+    # Stats logging interval
+    stats_log_interval = int(os.getenv("STATS_LOG_INTERVAL_TICKS", "10"))
+    tick_count = 0
 
     while True:
+        tick_count += 1
         settings = bot_settings_repo.get(owner_uuid_str)
         symbols_empty_flag = False
         symbols_list = getattr(settings, "symbols", None)
@@ -996,6 +1253,70 @@ def main():
                 if exec_log != last_execution_log:
                     print(exec_log)
                     last_execution_log = exec_log
+
+        # Phase 5: Parallel LLM agents mode logging
+        if parallel_shadow_enabled:
+            parallel_result = run_parallel_shadow_tick(
+                client=db.client,
+                parallel_repo=parallel_decisions_repo,
+                parallel_runner=parallel_runner,
+                risk_events_repo=risk_events_repo,
+                limit=parallel_shadow_limit,
+            )
+            if parallel_result["logged"] > 0 or parallel_result["errors"] > 0:
+                llm_suffix = ""
+                if llm_enabled:
+                    llm_suffix = f" llm_calls={parallel_result['llm_calls']} cache_hits={parallel_result['cache_hits']}"
+                parallel_log = f"parallel_agents logged={parallel_result['logged']} skipped={parallel_result['skipped']} errors={parallel_result['errors']}{llm_suffix}"
+                if parallel_log != last_parallel_log:
+                    print(parallel_log)
+                    last_parallel_log = parallel_log
+
+        # Phase 1: Periodic data sources fetch
+        if data_sources_enabled:
+            now_ts = time.time()
+            if now_ts - last_data_sources_fetch >= data_sources_fetch_interval:
+                try:
+                    economic_calendar.fetch(days_ahead=7)
+                    cot_reports.fetch()
+                    dxy_fetcher.fetch()
+                    
+                    # Check health of all sources
+                    health = source_health_monitor.check_all({
+                        "economic_calendar": economic_calendar,
+                        "cot_reports": cot_reports,
+                        "dxy_index": dxy_fetcher,
+                    })
+                    
+                    stale = source_health_monitor.get_all_stale(health)
+                    data_sources_log = f"data_sources fetched=3 stale={len(stale)}"
+                    if stale:
+                        data_sources_log += f" stale_list={stale}"
+                    
+                    if data_sources_log != last_data_sources_log:
+                        print(data_sources_log)
+                        last_data_sources_log = data_sources_log
+                    
+                    last_data_sources_fetch = now_ts
+                except Exception as exc:
+                    if risk_events_repo:
+                        risk_events_repo.insert(
+                            event_type="DATA_SOURCES_FETCH_ERROR",
+                            severity="error",
+                            message=f"Data sources fetch failed: {exc}",
+                            data={"error": str(exc)},
+                        )
+
+        # Periodic stats logging
+        if tick_count % stats_log_interval == 0 and llm_enabled:
+            runner_stats = parallel_runner.get_stats()
+            budget_status = parallel_runner.budget_limiter.get_status() if parallel_runner.budget_limiter else "N/A"
+            cache_stats = parallel_runner.agent_cache.get_stats() if parallel_runner.agent_cache else {}
+            print(
+                f"llm_stats calls={runner_stats['llm_calls']} cache_hits={runner_stats['cache_hits']} "
+                f"budget={budget_status} cache_entries={cache_stats.get('entries', 0)} "
+                f"cache_hit_rate={cache_stats.get('hit_rate', 0):.1%}"
+            )
 
         # Idle backoff for drained states
         if stop_reason in ("NO_PENDING", "FULLY_DRAINED"):
