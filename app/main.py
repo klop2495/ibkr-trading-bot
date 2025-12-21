@@ -192,6 +192,8 @@ def _preview_from_row(row: Dict[str, Any]) -> SignalPreviewV1:
         data_quality=_parse_enum(DataQuality, row.get("data_quality"), DataQuality.OK),
         spread_quality=_parse_enum(SpreadQuality, row.get("spread_quality"), SpreadQuality.OK),
         flags=row.get("flags") or [],
+        sl_distance_pips=float(row.get("sl_distance_pips")) if row.get("sl_distance_pips") is not None else None,
+        tp_distance_pips=float(row.get("tp_distance_pips")) if row.get("tp_distance_pips") is not None else None,
     )
 
 
@@ -228,7 +230,7 @@ def process_pending_previews(
     fetch_start = time.perf_counter()
     try:
         query = client.table("signal_previews").select(
-            "id, ts_utc, symbol, timeframe_trigger, setup_type, direction, setup_present, entry_triggered, confidence, rr, data_quality, spread_quality, flags"
+            "id, ts_utc, symbol, timeframe_trigger, setup_type, direction, setup_present, entry_triggered, confidence, rr, data_quality, spread_quality, flags, sl_distance_pips, tp_distance_pips"
         )
         if scan_mode == "recent":
             query = query.order("ts_utc", desc=True)
@@ -668,7 +670,7 @@ def run_execution_tick(
     Process pending verdicts for execution.
     
     Finds recent verdicts with trade_allowed=True that haven't been executed yet,
-    and submits them to the execution service.
+    and submits them to the execution service with SL/TP from signal_preview.
     """
     if client is None:
         return {"executed": 0, "skipped": 0, "errors": 0}
@@ -679,7 +681,6 @@ def run_execution_tick(
     
     try:
         # Get recent verdicts with trade_allowed=True
-        # Join with decisions to get full context
         verdicts_res = (
             client.table("risk_verdicts")
             .select("id, decision_id, signal_preview_id, trade_allowed, risk_modifier, flags, created_at")
@@ -707,8 +708,20 @@ def run_execution_tick(
         decisions_rows = getattr(decisions_res, "data", None) or []
         decisions_map = {row.get("id"): row for row in decisions_rows}
         
+        # Get signal_preview_ids to fetch SL/TP
+        signal_preview_ids = [row.get("signal_preview_id") for row in verdicts_rows if row.get("signal_preview_id")]
+        signal_previews_map: Dict[str, Dict[str, Any]] = {}
+        if signal_preview_ids:
+            previews_res = (
+                client.table("signal_previews")
+                .select("id, sl_distance_pips, tp_distance_pips")
+                .in_("id", signal_preview_ids)
+                .execute()
+            )
+            previews_rows = getattr(previews_res, "data", None) or []
+            signal_previews_map = {str(row.get("id")): row for row in previews_rows}
+        
         # Check which verdicts have already been executed (via risk_events)
-        # Look for EXECUTION_* events with matching decision_id
         executed_check = (
             client.table("risk_events")
             .select("data")
@@ -739,6 +752,15 @@ def run_execution_tick(
                 skipped += 1
                 continue
             
+            # Get SL/TP from signal_preview
+            signal_preview_id = verdict_row.get("signal_preview_id")
+            sl_pips = None
+            tp_pips = None
+            if signal_preview_id:
+                preview_data = signal_previews_map.get(str(signal_preview_id), {})
+                sl_pips = preview_data.get("sl_distance_pips")
+                tp_pips = preview_data.get("tp_distance_pips")
+            
             # Build DecisionV1 and RiskVerdictV1 from rows
             try:
                 decision = DecisionV1(
@@ -762,12 +784,20 @@ def run_execution_tick(
                     flags=verdict_row.get("flags") or [],
                 )
                 
-                result = execution_service.execute(decision, verdict, settings)
+                # Execute with SL/TP from signal_preview
+                result = execution_service.execute(
+                    decision,
+                    verdict,
+                    settings,
+                    stop_loss_pips=float(sl_pips) if sl_pips is not None else None,
+                    take_profit_pips=float(tp_pips) if tp_pips is not None else None,
+                )
                 
                 if result.executed:
                     executed += 1
                     if os.getenv("CONTROL_PLANE_LOG_LEVEL", "INFO").upper() == "DEBUG":
-                        print(f"execution_tick symbol={decision.symbol} mode={result.mode.value} side={result.side.value if result.side else 'N/A'} qty={result.quantity}")
+                        sl_tp_info = f" SL={result.stop_loss_price} TP={result.take_profit_price}" if result.is_bracket else ""
+                        print(f"execution_tick symbol={decision.symbol} mode={result.mode.value} side={result.side.value if result.side else 'N/A'} qty={result.quantity}{sl_tp_info}")
                 else:
                     skipped += 1
                     

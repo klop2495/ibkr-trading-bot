@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    container_name: ib-gateway
+    restart: unless-stopped
+    ports:
+      - "4001:4001"   # Paper trading API
+      - "4002:4002"   # Live trading API (not used yet)
+      - "5900:5900"   # VNC for initial setup
+    environment:
+      # IBKR Credentials (set via .env file)
+      - TWS_USERID=${TWS_USERID}
+      - TWS_PASSWORD=${TWS_PASSWORD}
+      - TWS_TOTP_SECRET=${TWS_TOTP_SECRET:-}
+      # Trading mode: paper or live
+      - TRADING_MODE=paper
+      # Accept incoming API connections
+      - TWS_ACCEPT_INCOMING=accept
+      # Read-only mode (set to 'no' for actual trading)
+      - READ_ONLY_API=no
+      # VNC password for remote access
+      - VNC_SERVER_PASSWORD=${VNC_PASSWORD:-ibgateway}
+      # Timezone
+      - TZ=Europe/Paris
+    volumes:
+      # Persist IBC config and TWS settings
+      - ib-gateway-ibc:/root/ibc
+      - ib-gateway-tws:/root/Jts
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "4001"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ib-gateway-ibc:
+  ib-gateway-tws:

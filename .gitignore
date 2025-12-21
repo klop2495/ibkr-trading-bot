@@ -246,3 +246,6 @@ app/admin/
 app/api/
 app/login/
 package-lock.json
+
+# IB Gateway credentials
+deploy/ib-gateway/.env

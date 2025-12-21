@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 ALLOWED_SYMBOLS = [
+    # Major pairs
     "EURUSD",
     "GBPUSD",
     "USDJPY",
@@ -12,6 +13,17 @@ ALLOWED_SYMBOLS = [
     "AUDUSD",
     "USDCAD",
     "NZDUSD",
+    # JPY crosses
+    "EURJPY",
+    "GBPJPY",
+    "AUDJPY",
+    "CADJPY",
+    "CHFJPY",
+    "NZDJPY",
+    # Other crosses
+    "EURGBP",
+    "EURAUD",
+    "EURCHF",
 ]
 
 ALLOWED_TIMEFRAMES = ["M15", "H1", "H4"]
