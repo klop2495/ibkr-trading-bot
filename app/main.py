@@ -33,6 +33,13 @@ from app.agents.safety import SourceHealthMonitor, BudgetLimiter, AgentCache, Re
 # Phase 3-4: LLM Agents and integration
 from app.agents.parallel_runner import ParallelDecisionRunner, create_parallel_runner
 
+# Phase 6: Signal generation from IB Gateway market data
+from app.market_data.service import MarketDataService
+from app.market_data.seed_fetcher import SeedFetcher
+from app.signals.engine_v1 import SignalEngineV1
+from app.storage.repositories import SnapshotsRepo
+from app.models.bot_settings import DEFAULT_SYMBOLS
+
 
 DEFAULT_BACKFILL_BATCH = 25
 DEFAULT_BACKFILL_MAX_PER_TICK = 400
@@ -1071,6 +1078,117 @@ def _create_openai_client():
         return None
 
 
+# Phase 6: Signal generation tick - generates signal_previews from market data
+DEFAULT_SIGNAL_GEN_INTERVAL = 60  # Generate signals every 60 seconds
+DEFAULT_SIGNAL_GEN_TIMEFRAMES = ["M15", "H1", "H4"]
+
+
+def run_signal_generation_tick(
+    *,
+    market_data_service: Optional[MarketDataService],
+    signal_engine: Optional[SignalEngineV1],
+    signal_previews_repo: SignalPreviewsRepo,
+    risk_events_repo: Optional[RiskEventsRepo],
+    settings: Any,
+) -> Dict[str, Any]:
+    """
+    Phase 6: Signal generation tick.
+    
+    Fetches market data from IB Gateway (or SeedFetcher in mock mode),
+    generates signal_previews via SignalEngineV1, and persists to DB.
+    
+    This is the SOURCE of signal_previews that the control plane processes.
+    """
+    if market_data_service is None or signal_engine is None:
+        return {"generated": 0, "warmup_ready": False, "errors": 0, "mode": "disabled"}
+    
+    generated = 0
+    errors = 0
+    warmup_ready = False
+    
+    try:
+        # Fetch market data and check warmup
+        end_dt_utc = datetime.now(timezone.utc)
+        warmup_ready, snapshots = market_data_service.process(end_dt_utc)
+        
+        if not warmup_ready:
+            return {
+                "generated": 0,
+                "warmup_ready": False,
+                "errors": 0,
+                "mode": "warmup",
+                "snapshots": len(snapshots),
+            }
+        
+        if not snapshots:
+            return {
+                "generated": 0,
+                "warmup_ready": warmup_ready,
+                "errors": 0,
+                "mode": "no_data",
+            }
+        
+        # Generate signal previews
+        previews = signal_engine.compute_previews(snapshots, warmup_ready=warmup_ready)
+        
+        # Apply SL/TP from settings
+        default_sl = getattr(settings, "default_sl_pips", 20.0)
+        default_tp = getattr(settings, "default_tp_pips", 40.0)
+        
+        for preview in previews:
+            try:
+                # Set SL/TP distances
+                preview.sl_distance_pips = default_sl
+                preview.tp_distance_pips = default_tp
+                
+                # Insert into DB
+                signal_previews_repo.insert_preview(preview)
+                generated += 1
+            except Exception as exc:
+                # Duplicate key is acceptable (idempotent)
+                msg = str(exc).lower()
+                if "duplicate key" in msg or "unique constraint" in msg:
+                    pass  # Already exists, skip
+                else:
+                    errors += 1
+                    if risk_events_repo:
+                        risk_events_repo.insert(
+                            event_type="SIGNAL_GEN_INSERT_ERROR",
+                            severity="error",
+                            message=f"Failed to insert signal preview: {exc}",
+                            data={"symbol": preview.symbol, "error": str(exc)},
+                        )
+    
+    except Exception as exc:
+        errors += 1
+        if risk_events_repo:
+            risk_events_repo.insert(
+                event_type="SIGNAL_GEN_TICK_ERROR",
+                severity="error",
+                message=f"Signal generation tick failed: {exc}",
+                data={"error": str(exc)},
+            )
+    
+    return {
+        "generated": generated,
+        "warmup_ready": warmup_ready,
+        "errors": errors,
+        "mode": "active",
+    }
+
+
+def _create_ib_connection(host: str, port: int, client_id: int):
+    """Create IB Gateway connection."""
+    try:
+        from ib_insync import IB
+        ib = IB()
+        ib.connect(host, port, clientId=client_id, readonly=True)
+        return ib
+    except Exception as e:
+        print(f"Warning: Failed to connect to IB Gateway: {e}")
+        return None
+
+
 def main():
     owner_user_id_raw = os.getenv("BOT_OWNER_USER_ID")
     if not owner_user_id_raw:
@@ -1146,6 +1264,63 @@ def main():
         mode_str = "MOCK" if data_sources_mock else "REAL"
         print(f"Phase 1: Data sources ENABLED mode={mode_str}")
 
+    # Phase 6: Signal generation from market data
+    signal_gen_enabled = os.getenv("SIGNAL_GEN_ENABLED", "1") != "0"
+    signal_gen_mock = os.getenv("SIGNAL_GEN_MOCK", "1") == "1"  # Mock by default (no IB connection required)
+    signal_gen_interval = int(os.getenv("SIGNAL_GEN_INTERVAL", str(DEFAULT_SIGNAL_GEN_INTERVAL)))
+    last_signal_gen_tick = 0.0
+    last_signal_gen_log: Optional[str] = None
+    
+    market_data_service: Optional[MarketDataService] = None
+    signal_engine_instance: Optional[SignalEngineV1] = None
+    snapshots_repo = SnapshotsRepo(db)
+    
+    if signal_gen_enabled:
+        # Get symbols from settings or use defaults
+        initial_settings = bot_settings_repo.get(str(owner_uuid))
+        symbols = getattr(initial_settings, "symbols", None) or DEFAULT_SYMBOLS
+        warmup_bars = getattr(initial_settings, "warmup_bars_min", 300)
+        signals_params = getattr(initial_settings, "signals_params", None)
+        
+        # Create fetcher (mock or real IB Gateway)
+        if signal_gen_mock:
+            fetcher = SeedFetcher(seed=42)  # Deterministic mock data
+        else:
+            # Try to connect to IB Gateway
+            ib_host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
+            ib_port = int(os.getenv("IB_GATEWAY_PORT", "4001"))
+            ib_client_id = int(os.getenv("IB_CLIENT_ID", "10"))
+            ib_conn = _create_ib_connection(ib_host, ib_port, ib_client_id)
+            if ib_conn:
+                from app.market_data.ibkr_fetcher import IBKRFetcher
+                fetcher = IBKRFetcher(ib=ib_conn)
+            else:
+                print("Warning: IB Gateway connection failed, falling back to mock data")
+                fetcher = SeedFetcher(seed=42)
+                signal_gen_mock = True
+        
+        # Initialize MarketDataService
+        market_data_service = MarketDataService(
+            symbols=symbols,
+            timeframes=DEFAULT_SIGNAL_GEN_TIMEFRAMES,
+            warmup_bars_min=warmup_bars,
+            fetcher=fetcher,
+            snapshots_repo=snapshots_repo,
+            risk_events_repo=risk_events_repo,
+        )
+        
+        # Initialize SignalEngine
+        if signals_params:
+            signal_engine_instance = SignalEngineV1(params=signals_params)
+        else:
+            from app.models.signals_params import SignalsParams
+            signal_engine_instance = SignalEngineV1(params=SignalsParams())
+        
+        mode_str = "MOCK" if signal_gen_mock else "IBKR"
+        print(f"Phase 6: Signal generation ENABLED mode={mode_str} symbols={len(symbols)} interval={signal_gen_interval}s")
+    else:
+        print("Phase 6: Signal generation DISABLED")
+
     # Initialize ExecutionService
     owner_uuid_str = str(owner_uuid)
     execution_service = ExecutionService(risk_events_repo=risk_events_repo)
@@ -1195,6 +1370,29 @@ def main():
             )
             last_logged_symbols = symbols_list
             last_logged_found = bot_settings_repo.last_found_row
+        
+        # Phase 6: Signal generation tick (generates signal_previews)
+        if signal_gen_enabled:
+            now_ts = time.time()
+            if now_ts - last_signal_gen_tick >= signal_gen_interval:
+                signal_result = run_signal_generation_tick(
+                    market_data_service=market_data_service,
+                    signal_engine=signal_engine_instance,
+                    signal_previews_repo=signal_previews_repo,
+                    risk_events_repo=risk_events_repo,
+                    settings=settings,
+                )
+                signal_gen_log = (
+                    f"signal_gen generated={signal_result['generated']} "
+                    f"warmup_ready={signal_result['warmup_ready']} "
+                    f"errors={signal_result['errors']} "
+                    f"mode={signal_result['mode']}"
+                )
+                if signal_gen_log != last_signal_gen_log or signal_result["generated"] > 0:
+                    print(signal_gen_log)
+                    last_signal_gen_log = signal_gen_log
+                last_signal_gen_tick = now_ts
+
         (
             processed_total,
             fetched_total,
