@@ -726,13 +726,13 @@ def run_execution_tick(
         decisions_rows = getattr(decisions_res, "data", None) or []
         decisions_map = {row.get("id"): row for row in decisions_rows}
         
-        # Get signal_preview_ids to fetch SL/TP
+        # Get signal_preview_ids to fetch SL/TP and direction
         signal_preview_ids = [row.get("signal_preview_id") for row in verdicts_rows if row.get("signal_preview_id")]
         signal_previews_map: Dict[str, Dict[str, Any]] = {}
         if signal_preview_ids:
             previews_res = (
                 client.table("signal_previews")
-                .select("id, sl_distance_pips, tp_distance_pips")
+                .select("id, sl_distance_pips, tp_distance_pips, direction")
                 .in_("id", signal_preview_ids)
                 .execute()
             )
@@ -770,14 +770,16 @@ def run_execution_tick(
                 skipped += 1
                 continue
             
-            # Get SL/TP from signal_preview
+            # Get SL/TP and direction from signal_preview
             signal_preview_id = verdict_row.get("signal_preview_id")
             sl_pips = None
             tp_pips = None
+            direction = None
             if signal_preview_id:
                 preview_data = signal_previews_map.get(str(signal_preview_id), {})
                 sl_pips = preview_data.get("sl_distance_pips")
                 tp_pips = preview_data.get("tp_distance_pips")
+                direction = preview_data.get("direction")
             
             # Build DecisionV1 and RiskVerdictV1 from rows
             try:
@@ -802,13 +804,14 @@ def run_execution_tick(
                     flags=verdict_row.get("flags") or [],
                 )
                 
-                # Execute with SL/TP from signal_preview
+                # Execute with SL/TP and direction from signal_preview
                 result = execution_service.execute(
                     decision,
                     verdict,
                     settings,
                     stop_loss_pips=float(sl_pips) if sl_pips is not None else None,
                     take_profit_pips=float(tp_pips) if tp_pips is not None else None,
+                    direction=direction,
                 )
                 
                 if result.executed:

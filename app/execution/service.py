@@ -339,8 +339,16 @@ class ExecutionService:
         
         return sl_price, tp_price
     
-    def _determine_side(self, decision: DecisionV1, verdict: RiskVerdictV1) -> Optional[OrderSide]:
-        """Determine order side from decision."""
+    def _determine_side(self, decision: DecisionV1, verdict: RiskVerdictV1, direction: Optional[str] = None) -> Optional[OrderSide]:
+        """Determine order side from decision or direction."""
+        # First check explicit direction from signal_preview
+        if direction:
+            direction_upper = direction.upper()
+            if direction_upper in ("LONG", "BUY"):
+                return OrderSide.BUY
+            if direction_upper in ("SHORT", "SELL"):
+                return OrderSide.SELL
+        
         flags = decision.flags or []
         
         # Check flags
@@ -385,6 +393,7 @@ class ExecutionService:
         take_profit_pips: Optional[float] = None,
         entry_price: Optional[float] = None,
         order_type: OrderType = OrderType.MARKET,
+        direction: Optional[str] = None,
     ) -> ExecutionResult:
         """
         Execute trade based on decision and verdict.
@@ -428,7 +437,7 @@ class ExecutionService:
             )
         
         # Determine side
-        side = self._determine_side(decision, verdict)
+        side = self._determine_side(decision, verdict, direction=direction)
         if side is None:
             self._log_event(
                 "EXECUTION_SKIPPED",
