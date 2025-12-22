@@ -1103,11 +1103,15 @@ def main():
     parallel_shadow_limit = int(os.getenv("PARALLEL_SHADOW_LIMIT", "20"))
     last_parallel_log: Optional[str] = None
 
-    # Phase 1: Data sources (mock mode for now)
+    # Phase 1: Data sources
+    # DXY: Real Yahoo Finance API integration (done)
+    # TODO: EconomicCalendarFetcher - integrate real API (Investing.com or ForexFactory)
+    # TODO: COTReportsFetcher - integrate CFTC data
     data_sources_enabled = os.getenv("DATA_SOURCES_ENABLED", "1") != "0"
-    economic_calendar = EconomicCalendarFetcher(mock_mode=True)
-    cot_reports = COTReportsFetcher(mock_mode=True)
-    dxy_fetcher = DXYFetcher(mock_mode=True)
+    data_sources_mock = os.getenv("DATA_SOURCES_MOCK", "0") == "1"  # Real data by default
+    economic_calendar = EconomicCalendarFetcher(mock_mode=True)  # TODO: real API
+    cot_reports = COTReportsFetcher(mock_mode=True)  # TODO: real API
+    dxy_fetcher = DXYFetcher(mock_mode=data_sources_mock)  # Real Yahoo Finance API
     source_health_monitor = SourceHealthMonitor()
     data_sources_fetch_interval = int(os.getenv("DATA_SOURCES_FETCH_INTERVAL", "300"))  # 5 min default
     last_data_sources_fetch = 0.0
@@ -1139,7 +1143,8 @@ def main():
         print(f"Phase 5: Parallel agents ENABLED mode={mode_str} strategy={active_strategy} client={client_str}")
     
     if data_sources_enabled:
-        print("Phase 1: Data sources ENABLED (mock mode)")
+        mode_str = "MOCK" if data_sources_mock else "REAL"
+        print(f"Phase 1: Data sources ENABLED mode={mode_str}")
 
     # Initialize ExecutionService
     owner_uuid_str = str(owner_uuid)

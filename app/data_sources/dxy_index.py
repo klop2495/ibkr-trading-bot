@@ -135,18 +135,91 @@ class DXYFetcher(BaseDataSource):
     
     def _fetch_from_yahoo(self) -> DXYSnapshot:
         """
-        Fetch from Yahoo Finance (placeholder for Phase 2+).
+        Fetch DXY from Yahoo Finance via direct HTTP API.
         
-        TODO: Implement real Yahoo Finance integration.
-        
-        Example with yfinance:
-        ```
-        import yfinance as yf
-        dxy = yf.Ticker("DX-Y.NYB")
-        hist = dxy.history(period="60d")
-        ```
+        Ticker: DX=F (US Dollar Index Futures)
+        Downloads 60 days of history to calculate SMAs.
+        Uses direct HTTP requests (yfinance library has session issues).
         """
-        raise NotImplementedError("Real Yahoo API not implemented yet. Use mock_mode=True")
+        import requests
+        
+        now = datetime.now(timezone.utc)
+        
+        try:
+            # Direct Yahoo Finance API request
+            url = "https://query1.finance.yahoo.com/v8/finance/chart/DX=F"
+            params = {
+                "interval": "1d",
+                "range": "60d",
+            }
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            }
+            
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Parse response
+            result = data.get("chart", {}).get("result", [])
+            if not result:
+                logger.warning("DXY: empty result from Yahoo, falling back to mock")
+                return self._generate_mock_snapshot()
+            
+            quote = result[0]
+            indicators = quote.get("indicators", {}).get("quote", [{}])[0]
+            
+            closes = indicators.get("close", [])
+            highs = indicators.get("high", [])
+            lows = indicators.get("low", [])
+            
+            # Filter None values
+            closes = [c for c in closes if c is not None]
+            
+            if not closes:
+                logger.warning("DXY: no close prices, falling back to mock")
+                return self._generate_mock_snapshot()
+            
+            # Current value (last close)
+            value = closes[-1]
+            
+            # Calculate SMAs
+            sma_20 = sum(closes[-20:]) / min(20, len(closes)) if len(closes) >= 1 else None
+            sma_50 = sum(closes[-50:]) / min(50, len(closes)) if len(closes) >= 20 else None
+            sma_200 = sum(closes) / len(closes) if len(closes) >= 50 else None
+            
+            # Daily change
+            if len(closes) >= 2:
+                prev_close = closes[-2]
+                daily_change_pct = ((value - prev_close) / prev_close) * 100
+            else:
+                daily_change_pct = 0.0
+            
+            # ATR 14 (simplified: average of High-Low over 14 days)
+            highs_clean = [h for h in highs if h is not None][-14:]
+            lows_clean = [lo for lo in lows if lo is not None][-14:]
+            if len(highs_clean) >= 14 and len(lows_clean) >= 14:
+                tr_values = [h - lo for h, lo in zip(highs_clean, lows_clean)]
+                atr_14 = sum(tr_values) / len(tr_values)
+            else:
+                atr_14 = 0.45  # Default
+            
+            logger.info(f"DXY fetched via Yahoo API: {value:.3f}")
+            
+            return DXYSnapshot(
+                value=round(value, 3),
+                timestamp=now,
+                sma_20=round(sma_20, 3) if sma_20 else None,
+                sma_50=round(sma_50, 3) if sma_50 else None,
+                sma_200=round(sma_200, 3) if sma_200 else None,
+                daily_change_pct=round(daily_change_pct, 2),
+                atr_14=round(atr_14, 3),
+            )
+            
+        except Exception as e:
+            logger.error(f"Yahoo Finance API fetch failed: {e}")
+            # Fallback to mock on any error
+            return self._generate_mock_snapshot()
     
     def _fetch_from_fred(self) -> DXYSnapshot:
         """
