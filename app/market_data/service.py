@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import math
 from typing import Dict, List, Tuple
 
 from app.market_data.buffer import MarketDataBuffer
@@ -135,7 +136,7 @@ class MarketDataService:
             rsi=rsi_val or 0.0,
             ma_fast=sma50 or 0.0,
             ma_slow=sma200 or 0.0,
-            spread=spread or 0.0,
+            spread=0.0 if spread is None or (isinstance(spread, float) and math.isnan(spread)) else spread,
         )
         if self.snapshots_repo:
             self.snapshots_repo.insert(snap)
