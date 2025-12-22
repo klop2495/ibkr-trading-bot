@@ -1182,7 +1182,8 @@ def _create_ib_connection(host: str, port: int, client_id: int):
     try:
         from ib_insync import IB
         ib = IB()
-        ib.connect(host, port, clientId=client_id, readonly=True)
+        ib.RequestTimeout = 30
+        ib.connect(host, port, clientId=client_id, timeout=30)
         return ib
     except Exception as e:
         print(f"Warning: Failed to connect to IB Gateway: {e}")
