@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from typing import Any, List, Optional
 
@@ -29,14 +30,15 @@ class IBKRFetcher:
     def __init__(
         self,
         ib: Any | None = None,
-        host: str = "127.0.0.1",
-        port: int = 4004,
-        client_id: int = 10,
+        host: str | None = None,
+        port: int | None = None,
+        client_id: int | None = None,
     ):
         self._ib = ib
-        self._host = host
-        self._port = port
-        self._client_id = client_id
+        # Use provided values or fall back to environment variables
+        self._host = host or os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
+        self._port = port or int(os.getenv("IB_GATEWAY_PORT", "4004"))
+        self._client_id = client_id or int(os.getenv("IB_CLIENT_ID", "10"))
 
     def _ensure_connected(self):
         """Ensure IB connection is active, reconnect if needed."""
@@ -46,16 +48,27 @@ class IBKRFetcher:
             self._ib = IB()
         
         if not self._ib.isConnected():
+            # Re-read env vars on reconnect in case they changed
+            host = os.getenv("IB_GATEWAY_HOST", self._host)
+            port = int(os.getenv("IB_GATEWAY_PORT", str(self._port)))
+            client_id = int(os.getenv("IB_CLIENT_ID", str(self._client_id)))
+            
             try:
                 self._ib.RequestTimeout = 60
                 self._ib.connect(
-                    self._host, 
-                    self._port, 
-                    clientId=self._client_id, 
+                    host, 
+                    port, 
+                    clientId=client_id, 
                     timeout=30
                 )
+                # Update instance vars on successful reconnect
+                self._host = host
+                self._port = port
+                self._client_id = client_id
+                print(f"ibkr_reconnect host={host} port={port} client_id={client_id}")
             except Exception as e:
-                raise RuntimeError(f"ibkr_connection_failed: {e}") from e
+                print(f"ibkr_connection_failed host={host} port={port} error={e}")
+                raise RuntimeError(f"ibkr_connection_failed: host={host} port={port} error={e}") from e
         
         return self._ib
 
@@ -93,8 +106,12 @@ class IBKRFetcher:
                 useRTH=False,
                 formatDate=1,
             )
+            if os.getenv("CONTROL_PLANE_LOG_LEVEL", "INFO").upper() == "DEBUG":
+                print(f"ibkr_fetch symbol={symbol} tf={timeframe} duration={duration} bars={len(bars or [])}")
             return bars or []
         except Exception as exc:
+            # Log the error with details
+            print(f"ibkr_fetch_error symbol={symbol} tf={timeframe} error={exc}")
             # Reset connection on error so next call will reconnect
             if self._ib:
                 try:
@@ -102,7 +119,7 @@ class IBKRFetcher:
                 except:
                     pass
                 self._ib = None
-            raise RuntimeError("ibkr_fetch_failed") from exc
+            raise RuntimeError(f"ibkr_fetch_failed: symbol={symbol} tf={timeframe} error={exc}") from exc
 
     def fetch_spread(self, symbol: str) -> float | None:
         try:

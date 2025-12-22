@@ -1,6 +1,6 @@
+import os
 import math
 from datetime import datetime, timezone
-import math
 from typing import Dict, List, Tuple
 
 from app.market_data.buffer import MarketDataBuffer
@@ -42,9 +42,29 @@ class MarketDataService:
     def process(self, end_dt_utc: datetime):
         snapshots: List[MarketSnapshot] = []
         counts: Dict[Tuple[str, str], int] = {}
+        fetch_errors: List[str] = []
+        debug_log = os.getenv("CONTROL_PLANE_LOG_LEVEL", "INFO").upper() == "DEBUG"
+        
         for sym in self.symbols:
             for tf in self.timeframes:
-                bars = self.fetcher.fetch_historical_bars(sym, tf, end_dt_utc, self.warmup_bars_min)
+                try:
+                    bars = self.fetcher.fetch_historical_bars(sym, tf, end_dt_utc, self.warmup_bars_min)
+                except Exception as exc:
+                    # Log fetch errors to stdout for visibility
+                    error_msg = f"market_data_fetch_error symbol={sym} tf={tf} error={exc}"
+                    print(error_msg)
+                    fetch_errors.append(f"{sym}/{tf}")
+                    if self.risk_events_repo:
+                        self.risk_events_repo.insert(
+                            event_type="MARKET_DATA_FETCH_ERROR",
+                            severity="error",
+                            symbol=sym,
+                            message=f"Failed to fetch bars: {exc}",
+                            data={"symbol": sym, "timeframe": tf, "error": str(exc)},
+                        )
+                    counts[(sym, tf)] = 0
+                    continue
+                    
                 filtered_bars, issues = self._prepare_bars(sym, tf, bars, end_dt_utc)
                 self.last_qa_issues[(sym, tf)] = issues
                 if self.risk_events_repo and issues:
@@ -57,12 +77,32 @@ class MarketDataService:
                             data={"symbol": sym, "timeframe": tf},
                         )
                 counts[(sym, tf)] = len(filtered_bars)
+                
+                if debug_log:
+                    print(f"market_data symbol={sym} tf={tf} bars={len(filtered_bars)} warmup_min={self.warmup_bars_min}")
+                
                 if not filtered_bars:
                     continue
                 snap = self._handle_bars(sym, tf, filtered_bars)
                 if snap:
                     snapshots.append(snap)
-        return self.is_warmup_ready(counts), snapshots
+        
+        warmup_ready = self.is_warmup_ready(counts)
+        
+        # Log warmup status summary if not ready or if there were errors
+        if not warmup_ready or fetch_errors:
+            missing = []
+            for sym in self.symbols:
+                for tf in self.timeframes:
+                    cnt = counts.get((sym, tf), 0)
+                    if cnt < self.warmup_bars_min:
+                        missing.append(f"{sym}/{tf}:{cnt}/{self.warmup_bars_min}")
+            if missing:
+                print(f"warmup_incomplete pairs={len(missing)} missing={missing[:5]}{'...' if len(missing) > 5 else ''}")
+            if fetch_errors:
+                print(f"fetch_errors count={len(fetch_errors)} pairs={fetch_errors[:5]}{'...' if len(fetch_errors) > 5 else ''}")
+        
+        return warmup_ready, snapshots
 
     def _prepare_bars(self, symbol: str, timeframe: str, bars, end_dt_utc: datetime):
         if not bars:

@@ -1154,6 +1154,8 @@ def run_signal_generation_tick(
                     pass  # Already exists, skip
                 else:
                     errors += 1
+                    # Always log insert errors to stdout
+                    print(f"signal_gen_insert_error symbol={preview.symbol} tf={getattr(preview, 'timeframe_trigger', 'N/A')} error={exc}")
                     if risk_events_repo:
                         risk_events_repo.insert(
                             event_type="SIGNAL_GEN_INSERT_ERROR",
@@ -1164,6 +1166,8 @@ def run_signal_generation_tick(
     
     except Exception as exc:
         errors += 1
+        # Always log tick errors to stdout for visibility
+        print(f"signal_gen_tick_error error={exc}")
         if risk_events_repo:
             risk_events_repo.insert(
                 event_type="SIGNAL_GEN_TICK_ERROR",
@@ -1292,7 +1296,7 @@ def main():
         else:
             # Try to connect to IB Gateway
             ib_host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
-            ib_port = int(os.getenv("IB_GATEWAY_PORT", "4001"))
+            ib_port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
             ib_client_id = int(os.getenv("IB_CLIENT_ID", "10"))
             ib_conn = _create_ib_connection(ib_host, ib_port, ib_client_id)
             if ib_conn:
