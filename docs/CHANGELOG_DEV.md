@@ -1,5 +1,14 @@
 # Dev Changelog (append-only)
 
+## 2025-12-22 — Frontend Signal Strength Page + Dashboard Improvements
+- Summary: Created Signal Strength page with signal analysis, filtering, sorting. Improved main dashboard with better error handling, system status display, and loading states. Added navigation link in Sidebar.
+- Files (frontend): `app/admin/signal-strength/page.tsx`, `app/page.tsx`, `app/components/Sidebar.tsx`
+- Features:
+  - Signal Strength page: visual strength bars, direction/R:R display, quality badges, filtering by direction, sorting by strength/R:R/symbol
+  - Dashboard: real-time system status (mode, trading pairs, backend status), proper error display, auto-refresh every 60s
+  - Navigation: added 💪 Signal Strength link to sidebar
+- Pending: verify all pages load correctly after VPS deploy
+
 ## 2025-12-18 — Stage 4.1 — Signals params in bot_settings
 - Summary: Added signals_params jsonb column and strict Pydantic contracts with configuration gating; repo roundtrips jsonb safely; runtime logs SIGNALS_RULES_NOT_SPECIFIED when config missing; added migration and validation tests.
 - Files: `migrations/005_bot_settings_signals_params.sql`, `app/models/signals_params.py`, `app/models/bot_settings.py`, `app/storage/bot_settings_repo.py`, `app/signals/engine.py`, `tests/test_bot_settings.py`, `tests/test_bot_settings_repo.py`, `tests/test_signals_params.py`, `tests/test_signals_rules_warning.py`, `app/main.py`, `docs/CHANGELOG_DEV.md`
