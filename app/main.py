@@ -1287,7 +1287,7 @@ def main():
         # Get symbols from settings or use defaults
         initial_settings = bot_settings_repo.get(str(owner_uuid))
         symbols = getattr(initial_settings, "symbols", None) or DEFAULT_SYMBOLS
-        warmup_bars = getattr(initial_settings, "warmup_bars_min", 300)
+        warmup_bars = getattr(initial_settings, "warmup_bars_min", 100)
         signals_params = getattr(initial_settings, "signals_params", None)
         
         # Create fetcher (mock or real IB Gateway)
