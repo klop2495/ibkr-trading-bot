@@ -726,6 +726,28 @@ def run_execution_tick(
         decisions_rows = getattr(decisions_res, "data", None) or []
         decisions_map = {row.get("id"): row for row in decisions_rows}
         
+        # Load current prices from market_snapshots for all symbols
+        symbols_to_load = list(set(row.get("symbol") for row in decisions_rows if row.get("symbol")))
+        if symbols_to_load:
+            prices_res = (
+                client.table("market_snapshots")
+                .select("symbol, close, ts")
+                .in_("symbol", symbols_to_load)
+                .eq("timeframe", "M15")
+                .order("ts", desc=True)
+                .execute()
+            )
+            prices_rows = getattr(prices_res, "data", None) or []
+            # Take latest price per symbol
+            seen_symbols: set = set()
+            for row in prices_rows:
+                symbol = row.get("symbol")
+                if symbol and symbol not in seen_symbols:
+                    price = row.get("close")
+                    if price is not None:
+                        execution_service.update_price(symbol, float(price))
+                        seen_symbols.add(symbol)
+        
         # Get signal_preview_ids to fetch SL/TP and direction
         signal_preview_ids = [row.get("signal_preview_id") for row in verdicts_rows if row.get("signal_preview_id")]
         signal_previews_map: Dict[str, Dict[str, Any]] = {}
