@@ -2,6 +2,167 @@
 
 Все изменения в проектах ibkr-trading-bot и ibkr-trading-fronend.
 
+## [2025-12-23] — Quorum Voting v2 + IB Gateway Connection Fix
+
+### 🎯 Quorum Voting v2
+
+#### Проблема
+Предыдущая система требовала unanimous voting — любой агент с HOLD блокировал торговлю, что делало веса агентов бессмысленными.
+
+#### Решение
+Внедрена система взвешенного голосования с настраиваемыми порогами:
+
+| Параметр | Значение | Описание |
+|----------|----------|----------|
+| `QUORUM_THRESHOLD_WITH_ENTRY` | 0.60 | Порог при entry_triggered=True |
+| `QUORUM_THRESHOLD_NO_ENTRY` | 0.75 | Строже при entry_triggered=False |
+| `MIN_ACTIVE_WEIGHT` | 0.50 | Минимум участия для кворума |
+| `RISK_MOD_CAP_NO_ENTRY` | 0.70 | Ограничение risk_modifier без entry |
+
+#### Логика голосования
+```python
+# Vote mapping
+LONG/SHORT → ALLOW (вес × confidence)
+HOLD + confidence >= MEDIUM → BLOCK
+HOLD + confidence == LOW → ABSTAIN (не участвует)
+
+# Расчёт
+approval_ratio = allow_score / (allow_score + block_score)
+trade_allowed = approval_ratio >= threshold AND active_weight >= 0.50
+```
+
+#### Изменённые файлы
+- `app/agents/config.py` — новые константы
+- `app/models/confidence.py` — `confidence_to_float()`
+- `app/agents/llm/aggregator.py` — полная переработка логики
+- `app/agents/runner.py` — `is_candidate_valid()`, убран hard gate entry_triggered
+- `app/agents/parallel_runner.py` — передача entry_triggered и candidate_valid
+- `tests/test_quorum_voting.py` — 23 новых теста
+
+### 🔌 IB Gateway Connection Fix
+
+#### Проблема
+После деплоя Quorum Voting бот не подключался к IB Gateway:
+```
+API connection failed: TimeoutError()
+Warning: IB Gateway connection failed, falling back to mock data
+```
+
+#### Причины
+1. **Неправильный `.env` на VPS** — содержал только 4 строки вместо полного конфига
+2. **Неверный SUPABASE_URL** — `traddingbot.supabase.co` вместо `kimuxfiaoyyswdwkubve.supabase.co`
+3. **Неверный OpenAI API Key** — устаревший ключ
+4. **Неправильный порт IB Gateway** — использовался 4002 вместо 4004
+
+#### Решение
+
+**1. Правильный `.env` для VPS:**
+```bash
+# Supabase
+SUPABASE_URL=https://kimuxfiaoyyswdwkubve.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJ...
+
+# Bot
+BOT_OWNER_USER_ID=fb7e03c2-aef5-4215-acd0-47902df9c721
+BOT_MODE=paper
+
+# IB Gateway Connection (КРИТИЧНО!)
+IB_GATEWAY_HOST=ib-gateway      # Имя контейнера в Docker network
+IB_GATEWAY_PORT=4004            # Gateway Paper Trading порт
+IB_CLIENT_ID=10
+
+IBKR_HOST=ib-gateway
+IBKR_PORT=4004
+IBKR_CLIENT_ID=20
+IBKR_ENABLED=1
+
+# OpenAI
+OPENAI_API_KEY=sk-proj-...
+
+# Phase 6
+SIGNAL_GEN_ENABLED=1
+SIGNAL_GEN_MOCK=0
+SIGNAL_GEN_INTERVAL=60
+```
+
+**2. Архитектура портов IB Gateway:**
+
+| Порт | Назначение |
+|------|------------|
+| 4001 | TWS Live |
+| 4002 | TWS Paper / Gateway внутренний |
+| 4003 | Gateway Live |
+| **4004** | **Gateway Paper (используем)** |
+
+В Docker образе `ghcr.io/gnzsnz/ib-gateway`:
+- IB Gateway слушает на 4002 внутри
+- socat проксирует 4004 → 4002
+- **Подключаться нужно на 4004!**
+
+**3. Docker Compose Network:**
+```yaml
+services:
+  trading-bot:
+    networks:
+      - default
+      - ib-gateway_default  # Подключение к сети IB Gateway
+
+networks:
+  ib-gateway_default:
+    external: true
+```
+
+#### Проверка подключения
+```bash
+# Проверить socket
+docker exec ibkr-trading-bot python -c "
+import socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+result = sock.connect_ex(('ib-gateway', 4004))
+print('OPEN' if result == 0 else 'CLOSED')
+"
+
+# Проверить ib_insync
+docker exec ibkr-trading-bot python -c "
+from ib_insync import IB
+ib = IB()
+ib.connect('ib-gateway', 4004, clientId=10, timeout=30)
+print('Connected:', ib.isConnected())
+ib.disconnect()
+"
+```
+
+#### Успешное подключение в логах
+```
+Supabase ping: True
+Phase 5: Parallel agents ENABLED mode=LLM strategy=hybrid client=OpenAI
+Phase 1: Data sources ENABLED mode=REAL
+Phase 6: Signal generation ENABLED mode=IBKR symbols=7 interval=60s
+```
+
+В IB Gateway GUI:
+- ✅ Interactive Brokers API Server: connected
+- ✅ Market Data Farm: ON (cashfarm, usfarm)
+- ✅ Historical Data Farm: ON (cashhmds, ushmds)
+- ✅ API Client: 1 connected (Client 10)
+
+### ⚠️ Важные уроки
+
+1. **`.env` не синхронизируется через git** — нужно вручную обновлять на VPS
+2. **Имя переменной важно** — код ожидает `SUPABASE_SERVICE_ROLE_KEY`, не `SUPABASE_KEY`
+3. **docker-compose restart не перечитывает `.env`** — нужен `docker-compose down && up`
+4. **Порт 4004, не 4002** — из-за socat proxy в Docker образе
+
+### 📊 Тесты
+
+| Файл | Тестов | Статус |
+|------|--------|--------|
+| test_quorum_voting.py | 23 | ✅ |
+| test_llm_agents.py | 30 | ✅ |
+| **Всего** | **85** | ✅ |
+
+---
+
 ## [2025-12-20] — Production Deployment to Hetzner VPS
 
 ### 🚀 VPS Deployment

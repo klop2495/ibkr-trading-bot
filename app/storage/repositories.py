@@ -424,6 +424,85 @@ class ReconciliationReportsRepo(BaseRepo):
         raise RuntimeError("reconciliation report id not found after insert")
 
 
+class TradesHistoryRepo(BaseRepo):
+    """Repository for trades_history table - tracks open/closed trades with P/L."""
+    table = "trades_history"
+
+    def open_trade(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        entry_price: Optional[float],
+        stop_loss: Optional[float],
+        take_profit: Optional[float],
+        mode: str = "paper",
+        signal_preview_id: Optional[str] = None,
+        decision_id: Optional[str] = None,
+    ) -> str:
+        """Create a new trade record with status OPEN."""
+        trade_id = str(uuid4())
+        payload = {
+            "id": trade_id,
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "mode": mode,
+            "status": "OPEN",
+            "opened_at": datetime.utcnow().isoformat(),
+            "signal_preview_id": signal_preview_id,
+            "decision_id": decision_id,
+        }
+        self.db.client.table(self.table).insert(payload).execute()
+        return trade_id
+
+    def close_trade(
+        self,
+        trade_id: str,
+        exit_price: float,
+        close_reason: str,
+        pnl: Optional[float] = None,
+        pnl_pips: Optional[float] = None,
+    ) -> None:
+        """Close an existing trade with exit details."""
+        payload = {
+            "exit_price": exit_price,
+            "close_reason": close_reason,
+            "pnl": pnl,
+            "pnl_pips": pnl_pips,
+            "status": "CLOSED",
+            "closed_at": datetime.utcnow().isoformat(),
+        }
+        self.db.client.table(self.table).update(payload).eq("id", trade_id).execute()
+
+    def get_open_trades(self, symbol: Optional[str] = None) -> list[dict]:
+        """Get all open trades, optionally filtered by symbol."""
+        query = self.db.client.table(self.table).select("*").eq("status", "OPEN")
+        if symbol:
+            query = query.eq("symbol", symbol)
+        res = query.order("opened_at", desc=True).execute()
+        return res.data or []
+
+    def get_trade_by_id(self, trade_id: str) -> Optional[dict]:
+        """Get a single trade by ID."""
+        res = self.db.client.table(self.table).select("*").eq("id", trade_id).limit(1).execute()
+        return res.data[0] if res.data else None
+
+    def get_recent_trades(self, limit: int = 100) -> list[dict]:
+        """Get recent trades ordered by opened_at."""
+        res = (
+            self.db.client.table(self.table)
+            .select("*")
+            .order("opened_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+
+
 def make_repos(db: SupabaseDB) -> dict[str, Any]:
     """
     Convenience factory.
@@ -433,6 +512,7 @@ def make_repos(db: SupabaseDB) -> dict[str, Any]:
         "signals": SignalsRepo(db),
         "decisions": DecisionsRepo(db),
         "risk_events": RiskEventsRepo(db),
+        "trades_history": TradesHistoryRepo(db),
     }
     try:
         from app.storage.agent_reports_repo import AgentReportsRepo  # local import to avoid circular

@@ -37,7 +37,7 @@ from app.models.bot_settings import BotSettings
 from app.models.decision import DecisionV1
 from app.models.risk_verdict import RiskVerdictV1
 from app.pm.position_sizer import PositionSizer, PositionSizerConfig, PositionSizeResult
-from app.storage.repositories import RiskEventsRepo
+from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
 
 
 logger = logging.getLogger(__name__)
@@ -160,9 +160,11 @@ class ExecutionService:
     def __init__(
         self,
         risk_events_repo: Optional[RiskEventsRepo] = None,
+        trades_history_repo: Optional[TradesHistoryRepo] = None,
         connection_config: Optional[ConnectionConfig] = None,
     ):
         self.risk_events_repo = risk_events_repo
+        self.trades_history_repo = trades_history_repo
         self.connection_config = connection_config
         
         # Components (lazy init)
@@ -533,6 +535,20 @@ class ExecutionService:
                     "is_bracket": is_bracket,
                 },
             )
+            
+            # Record trade in trades_history (even for dry-run)
+            self._record_trade_open(
+                symbol=decision.symbol,
+                side=side,
+                quantity=size_result.units,
+                entry_price=current_price,
+                stop_loss=sl_price,
+                take_profit=tp_price,
+                mode="dry_run",
+                signal_preview_id=decision.signal_preview_id,
+                decision_id=decision.id,
+            )
+            
             return ExecutionResult(
                 executed=True,  # "executed" in dry-run sense
                 mode=self._mode,
@@ -598,6 +614,20 @@ class ExecutionService:
         # Place order (with or without SL/TP)
         try:
             state = self._oms.place_order_with_sl_tp(request, current_price)
+            
+            # Record trade in trades_history
+            self._record_trade_open(
+                symbol=decision.symbol,
+                side=side,
+                quantity=size_result.units,
+                entry_price=current_price,
+                stop_loss=sl_price,
+                take_profit=tp_price,
+                mode=self._mode.value,
+                signal_preview_id=decision.signal_preview_id,
+                decision_id=decision.id,
+            )
+            
             return ExecutionResult(
                 executed=True,
                 mode=self._mode,
@@ -645,6 +675,40 @@ class ExecutionService:
                 message=message,
                 data=data or {},
             )
+    
+    def _record_trade_open(
+        self,
+        symbol: str,
+        side: OrderSide,
+        quantity: float,
+        entry_price: Optional[float],
+        stop_loss: Optional[float],
+        take_profit: Optional[float],
+        mode: str,
+        signal_preview_id: Optional[UUID],
+        decision_id: Optional[UUID],
+    ) -> Optional[str]:
+        """Record trade opening in trades_history."""
+        if not self.trades_history_repo:
+            return None
+        
+        try:
+            trade_id = self.trades_history_repo.open_trade(
+                symbol=symbol,
+                side=side.value,
+                quantity=quantity,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                mode=mode,
+                signal_preview_id=str(signal_preview_id) if signal_preview_id else None,
+                decision_id=str(decision_id) if decision_id else None,
+            )
+            logger.info(f"Trade recorded in trades_history: {trade_id}")
+            return trade_id
+        except Exception as e:
+            logger.error(f"Failed to record trade in trades_history: {e}")
+            return None
     
     def shutdown(self) -> None:
         """Cleanup resources."""
