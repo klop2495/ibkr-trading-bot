@@ -5,6 +5,7 @@ services:
     build: .
     container_name: ibkr-trading-bot
     restart: unless-stopped
+    network_mode: host
     env_file:
       - .env
     environment:
@@ -14,7 +15,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    # Healthcheck - проверяем что процесс жив
     healthcheck:
       test: ["CMD", "pgrep", "-f", "python"]
       interval: 30s
