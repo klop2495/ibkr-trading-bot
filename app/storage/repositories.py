@@ -486,6 +486,26 @@ class TradesHistoryRepo(BaseRepo):
         res = query.order("opened_at", desc=True).execute()
         return res.data or []
 
+    def get_all_open_trades(self) -> list[dict]:
+        """Get all open trades (no filter)."""
+        res = (
+            self.db.client.table(self.table)
+            .select("*")
+            .eq("status", "OPEN")
+            .execute()
+        )
+        return res.data or []
+
+    def count_open_trades(self) -> int:
+        """Count all open trades."""
+        res = (
+            self.db.client.table(self.table)
+            .select("id", count="exact")
+            .eq("status", "OPEN")
+            .execute()
+        )
+        return res.count if hasattr(res, 'count') and res.count is not None else len(res.data or [])
+
     def get_trade_by_id(self, trade_id: str) -> Optional[dict]:
         """Get a single trade by ID."""
         res = self.db.client.table(self.table).select("*").eq("id", trade_id).limit(1).execute()

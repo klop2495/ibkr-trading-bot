@@ -386,6 +386,43 @@ class ExecutionService:
             risk_modifier=risk_modifier,
         )
     
+    def _get_open_trades_count(self) -> int:
+        """Get count of currently open trades."""
+        if not self.trades_history_repo:
+            return 0
+        try:
+            return self.trades_history_repo.count_open_trades()
+        except Exception as e:
+            logger.error(f"Failed to get open trades count: {e}")
+            return 0
+    
+    def _get_open_trades_for_symbol(self, symbol: str) -> int:
+        """Get count of open trades for a specific symbol."""
+        if not self.trades_history_repo:
+            return 0
+        try:
+            trades = self.trades_history_repo.get_open_trades(symbol)
+            return len(trades)
+        except Exception as e:
+            logger.error(f"Failed to get open trades for {symbol}: {e}")
+            return 0
+    
+    def _calculate_total_exposure(self) -> float:
+        """Calculate total exposure from all open trades."""
+        if not self.trades_history_repo:
+            return 0.0
+        try:
+            trades = self.trades_history_repo.get_all_open_trades()
+            total = 0.0
+            for trade in trades:
+                qty = trade.get('quantity') or 0
+                entry = trade.get('entry_price') or 0
+                total += qty * entry
+            return total
+        except Exception as e:
+            logger.error(f"Failed to calculate exposure: {e}")
+            return 0.0
+
     def execute(
         self,
         decision: DecisionV1,
@@ -422,6 +459,48 @@ class ExecutionService:
                 mode=self._mode,
                 reason="execution_disabled",
             )
+        
+        # ========== MONEY MANAGEMENT CHECKS ==========
+        
+        # 1. Check max concurrent trades
+        max_positions = getattr(settings, 'max_open_positions', 3)
+        current_open = self._get_open_trades_count()
+        if current_open >= max_positions:
+            self._log_event(
+                "EXECUTION_BLOCKED",
+                "warn",
+                f"Max open positions reached: {current_open}/{max_positions}",
+                {"decision_id": str(decision.id), "symbol": decision.symbol, "current_open": current_open},
+            )
+            return ExecutionResult(
+                executed=False,
+                mode=self._mode,
+                symbol=decision.symbol,
+                reason=f"max_positions_reached:{current_open}/{max_positions}",
+            )
+        
+        # 2. Check if already have position in this symbol
+        symbol_positions = self._get_open_trades_for_symbol(decision.symbol)
+        if symbol_positions > 0:
+            self._log_event(
+                "EXECUTION_BLOCKED",
+                "info",
+                f"Already have open position in {decision.symbol}",
+                {"decision_id": str(decision.id), "symbol": decision.symbol, "existing_positions": symbol_positions},
+            )
+            return ExecutionResult(
+                executed=False,
+                mode=self._mode,
+                symbol=decision.symbol,
+                reason=f"already_have_position:{decision.symbol}",
+            )
+        
+        # 3. Check leverage limit
+        max_leverage = getattr(settings, 'max_effective_leverage', 5.0)
+        current_exposure = self._calculate_total_exposure()
+        max_exposure = self._equity * max_leverage
+        
+        # ========== END MONEY MANAGEMENT CHECKS ==========
         
         # Check verdict allows trade
         if not verdict.trade_allowed:
@@ -461,6 +540,9 @@ class ExecutionService:
         # Default SL for position sizing if not provided
         effective_sl_pips = sl_pips if sl_pips is not None else 20.0
         
+        # Get entry price early for leverage calculation
+        current_price = entry_price or self.get_price(decision.symbol)
+        
         # Calculate position size
         size_result = self._calculate_position_size(
             symbol=decision.symbol,
@@ -488,8 +570,32 @@ class ExecutionService:
                 reason=size_result.reason or "position_too_small",
             )
         
-        # Get entry price for SL/TP calculation
-        current_price = entry_price or self.get_price(decision.symbol)
+        # Check if new position would exceed leverage limit
+        estimated_position_value = size_result.units * (current_price or 1.0)
+        new_total_exposure = current_exposure + estimated_position_value
+        if new_total_exposure > max_exposure:
+            self._log_event(
+                "EXECUTION_BLOCKED",
+                "warn",
+                f"Leverage limit exceeded: {new_total_exposure:.0f}/{max_exposure:.0f}",
+                {
+                    "decision_id": str(decision.id),
+                    "symbol": decision.symbol,
+                    "current_exposure": current_exposure,
+                    "new_position_value": estimated_position_value,
+                    "max_exposure": max_exposure,
+                    "equity": self._equity,
+                    "max_leverage": max_leverage,
+                },
+            )
+            return ExecutionResult(
+                executed=False,
+                mode=self._mode,
+                symbol=decision.symbol,
+                side=side,
+                quantity=size_result.units,
+                reason=f"leverage_exceeded:{new_total_exposure:.0f}/{max_exposure:.0f}",
+            )
         
         # Calculate SL/TP prices if we have distances and a price
         sl_price = None
