@@ -762,10 +762,14 @@ def run_execution_tick(
             signal_previews_map = {str(row.get("id")): row for row in previews_rows}
         
         # Check which verdicts have already been executed (via risk_events)
+        # Only check recent events (last 24 hours) to avoid blocking on old executions
+        from datetime import timedelta
+        dedup_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         executed_check = (
             client.table("risk_events")
             .select("data")
             .in_("event_type", ["EXECUTION_SUBMIT", "EXECUTION_DRY_RUN"])
+            .gte("created_at", dedup_cutoff)
             .execute()
         )
         executed_rows = getattr(executed_check, "data", None) or []
