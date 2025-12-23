@@ -351,12 +351,13 @@ class TestWeightedAggregator:
             AgentSignal("RiskAgent", "LONG", ConfidenceLevel.HIGH, "risk ok", []),
         ]
         
-        result = agg.aggregate(signals)
+        result = agg.aggregate(signals, entry_triggered=True, candidate_valid=True)
         
         assert result.signal == "LONG"
         assert result.confidence == ConfidenceLevel.HIGH
         assert result.consensus_level == "STRONG"
         assert result.vote_score > 0.5
+        assert result.trade_allowed is True
     
     def test_aggregate_unanimous_short(self):
         """Test aggregation with unanimous SHORT."""
@@ -369,10 +370,11 @@ class TestWeightedAggregator:
             AgentSignal("RiskAgent", "SHORT", ConfidenceLevel.MEDIUM, "risk ok", []),
         ]
         
-        result = agg.aggregate(signals)
+        result = agg.aggregate(signals, entry_triggered=True, candidate_valid=True)
         
         assert result.signal == "SHORT"
         assert result.vote_score < -0.5
+        assert result.trade_allowed is True
     
     def test_aggregate_mixed_signals(self):
         """Test aggregation with mixed signals."""
@@ -385,13 +387,14 @@ class TestWeightedAggregator:
             AgentSignal("RiskAgent", "HOLD", ConfidenceLevel.LOW, "uncertain", []),
         ]
         
-        result = agg.aggregate(signals)
+        result = agg.aggregate(signals, entry_triggered=True, candidate_valid=True)
         
         assert result.signal == "HOLD"
         assert abs(result.vote_score) < 0.15
         # 3 of 5 agents returned HOLD = 60% = STRONG consensus for HOLD
         assert result.consensus_level == "STRONG"
         assert result.confidence == ConfidenceLevel.LOW
+        assert result.trade_allowed is False  # HOLD signal
     
     def test_aggregate_risk_veto(self):
         """Test aggregation with RiskAgent veto."""
@@ -404,9 +407,9 @@ class TestWeightedAggregator:
             AgentSignal("RiskAgent", "HOLD", ConfidenceLevel.HIGH, "HIGH VOLATILITY", ["HIGH_VOLATILITY"]),
         ]
         
-        result = agg.aggregate(signals)
+        result = agg.aggregate(signals, entry_triggered=True, candidate_valid=True)
         
-        assert result.signal == "HOLD"  # Vetoed by RiskAgent
+        assert result.trade_allowed is False  # Vetoed by RiskAgent
         assert result.risk_blocked is True
         assert "RISK_VETO" in result.flags
     
@@ -419,9 +422,9 @@ class TestWeightedAggregator:
             AgentSignal("RiskAgent", "HOLD", ConfidenceLevel.HIGH, "risk elevated", []),
         ]
         
-        result = agg.aggregate(signals)
+        result = agg.aggregate(signals, entry_triggered=True, candidate_valid=True)
         
-        assert result.signal == "LONG"  # Not vetoed
+        assert result.signal == "LONG"  # Direction based on vote_score
         assert result.risk_blocked is False
     
     def test_aggregate_empty(self):
@@ -433,19 +436,31 @@ class TestWeightedAggregator:
         assert result.confidence == ConfidenceLevel.LOW
         assert result.agents_count == 0
         assert "NO_AGENTS" in result.flags
+        assert result.trade_allowed is False
     
     def test_to_dict(self):
         """Test converting decision to dict."""
+        from app.agents.config import QUORUM_THRESHOLD_WITH_ENTRY
         decision = AggregatedDecision(
             signal="LONG",
             confidence=ConfidenceLevel.HIGH,
+            trade_allowed=True,
+            approval_ratio=1.0,
+            active_weight=1.0,
+            allow_score=1.0,
+            block_score=0.0,
+            abstain_weight=0.0,
+            risk_blocked=False,
+            veto_reason=None,
+            risk_modifier=1.0,
             vote_score=0.75,
             consensus_level="STRONG",
             agent_signals={"TechnicalAgent": "LONG"},
+            agent_votes={"TechnicalAgent": "allow"},
             agent_confidences={"TechnicalAgent": "high"},
             flags=["TREND_UP"],
             agents_count=5,
-            risk_blocked=False,
+            quorum_threshold=QUORUM_THRESHOLD_WITH_ENTRY,
         )
         
         d = decision.to_dict()
@@ -454,6 +469,8 @@ class TestWeightedAggregator:
         assert d["confidence"] == "high"
         assert d["vote_score"] == 0.75
         assert d["consensus_level"] == "STRONG"
+        assert d["trade_allowed"] is True
+        assert d["approval_ratio"] == 1.0
 
 
 class TestAllAgentsIntegration:

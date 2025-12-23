@@ -155,28 +155,76 @@ class AgentsAggregator:
         return result
 
 
+from app.models.signal_preview import SetupType
+from app.agents.config import RISK_MOD_CAP_NO_ENTRY, RISK_MOD_MIN, RISK_MOD_MAX
+
+
+def is_candidate_valid(preview: SignalPreviewV1) -> bool:
+    """
+    Check if preview is a valid candidate for trading.
+    
+    Candidate requirements (entry_triggered NOT required):
+    - setup_type != NO_TRADE
+    - direction != FLAT
+    - setup_present == True
+    """
+    if preview.setup_type == SetupType.NO_TRADE:
+        return False
+    if preview.direction == Direction.FLAT:
+        return False
+    if not preview.setup_present:
+        return False
+    return True
+
+
 def aggregate_decision(preview: SignalPreviewV1, agent_results: Dict[str, AgentResult]):
+    """
+    Aggregate rules agent results into a decision.
+    
+    Quorum Voting v2:
+    - entry_triggered is NOT a hard gate for candidate
+    - trade_allowed based on agent consensus (all must approve for rules agents)
+    - When entry_triggered=False, risk_modifier is capped
+    """
     if not agent_results:
         return {
             "trade_allowed": False,
-            "risk_modifier": preview.rr,
-            "flags": preview.flags + [FLAG_SIGNALS_RULES_NOT_SPECIFIED],
+            "risk_modifier": RISK_MOD_MIN,
+            "flags": list(preview.flags) + [FLAG_SIGNALS_RULES_NOT_SPECIFIED],
             "commentary": "agents not run",
         }
-    trade_allowed = preview.setup_present and preview.entry_triggered
+    
+    # Check candidate validity (entry_triggered NOT required)
+    candidate_valid = is_candidate_valid(preview)
+    
+    # Rules agents still use AND logic (they check data quality, regime)
+    # This is different from LLM agents which use quorum
+    trade_allowed = candidate_valid
     risk_modifier = 1.0
     flags: List[str] = list(preview.flags)
     commentary_parts: List[str] = []
+    
     for res in agent_results.values():
         trade_allowed = trade_allowed and res.trade_allowed
         risk_modifier = min(risk_modifier, res.risk_modifier)
         flags.extend(res.flags)
         if res.commentary:
             commentary_parts.append(res.commentary)
+    
+    # Apply risk_modifier cap when entry_triggered=False
+    if trade_allowed and not preview.entry_triggered:
+        risk_modifier = min(risk_modifier, RISK_MOD_CAP_NO_ENTRY)
+        flags.append("NO_ENTRY_TRIGGER_CAP")
+    
+    # Clamp risk_modifier to valid range
+    risk_modifier = max(RISK_MOD_MIN, min(RISK_MOD_MAX, risk_modifier))
+    
     flags = sorted(set(flags))
     return {
         "trade_allowed": trade_allowed,
         "risk_modifier": risk_modifier,
         "flags": flags,
         "commentary": "; ".join(commentary_parts) if commentary_parts else None,
+        "candidate_valid": candidate_valid,
+        "entry_triggered": preview.entry_triggered,
     }

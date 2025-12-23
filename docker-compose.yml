@@ -5,11 +5,13 @@ services:
     build: .
     container_name: ibkr-trading-bot
     restart: unless-stopped
-    network_mode: host
     env_file:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
+    networks:
+      - default
+      - ib-gateway_default
     logging:
       driver: json-file
       options:
@@ -21,3 +23,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+networks:
+  ib-gateway_default:
+    external: true

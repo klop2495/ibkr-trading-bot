@@ -2,6 +2,31 @@ import os
 from dataclasses import dataclass
 
 
+# =============================================================================
+# Quorum Voting Configuration
+# =============================================================================
+
+# Quorum thresholds
+QUORUM_THRESHOLD_WITH_ENTRY = float(os.getenv("QUORUM_THRESHOLD_WITH_ENTRY", "0.60"))
+QUORUM_THRESHOLD_NO_ENTRY = float(os.getenv("QUORUM_THRESHOLD_NO_ENTRY", "0.75"))
+MIN_ACTIVE_WEIGHT = float(os.getenv("MIN_ACTIVE_WEIGHT", "0.50"))
+
+# Risk modifier caps
+RISK_MOD_CAP_NO_ENTRY = float(os.getenv("RISK_MOD_CAP_NO_ENTRY", "0.70"))
+RISK_MOD_MIN = 0.50
+RISK_MOD_MAX = 1.00
+
+# Veto settings
+RISK_VETO_ENABLED = os.getenv("RISK_VETO_ENABLED", "1") == "1"
+
+# Confidence to float mapping
+CONFIDENCE_FLOAT_MAP = {
+    "low": 0.3,
+    "medium": 0.6,
+    "high": 0.9,
+}
+
+
 @dataclass
 class AgentConfig:
     enabled: bool = False

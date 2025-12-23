@@ -103,12 +103,13 @@ class ParallelDecisionRunner:
         rules_signal, rules_confidence, rules_flags = self._extract_rules_decision(preview, decision)
 
         # 2. Run GPT agents (real or stubs)
+        gpt_aggregated = None
         if self.llm_enabled and self.agents:
             gpt_result = self._run_llm_agents(preview, symbol, account_state)
+            gpt_signal, gpt_score, gpt_consensus, gpt_consensus_count, gpt_details, gpt_aggregated = gpt_result
         else:
             gpt_result = self._run_gpt_stubs()
-        
-        gpt_signal, gpt_score, gpt_consensus, gpt_consensus_count, gpt_details = gpt_result
+            gpt_signal, gpt_score, gpt_consensus, gpt_consensus_count, gpt_details = gpt_result
 
         # 3. Compute hybrid
         hybrid_signal, hybrid_score = self._compute_hybrid(
@@ -193,12 +194,12 @@ class ParallelDecisionRunner:
         preview: SignalPreviewV1,
         symbol: str,
         account_state: Optional[Dict[str, Any]] = None,
-    ) -> tuple[str, float, bool, int, List[Dict[str, Any]]]:
+    ) -> tuple[str, float, bool, int, List[Dict[str, Any]], Optional[Any]]:
         """
-        Run real LLM agents with safety gates.
+        Run real LLM agents with safety gates and quorum voting.
         
         Returns:
-            (signal, score, consensus, consensus_count, agent_details)
+            (signal, score, consensus, consensus_count, agent_details, aggregated_decision)
         """
         # Check budget
         if self.budget_limiter:
@@ -293,19 +294,29 @@ class ParallelDecisionRunner:
         if self.budget_limiter and self._llm_calls > 0:
             self.budget_limiter.record_call()
         
-        # Aggregate signals
+        # Aggregate signals with quorum voting
         if self.aggregator and agent_signals:
-            result = self.aggregator.aggregate(agent_signals)
+            # Check candidate validity and entry_triggered from preview
+            from app.agents.runner import is_candidate_valid
+            candidate_valid = is_candidate_valid(preview)
+            entry_triggered = getattr(preview, "entry_triggered", False)
+            
+            result = self.aggregator.aggregate(
+                agent_signals,
+                entry_triggered=entry_triggered,
+                candidate_valid=candidate_valid,
+            )
             return (
                 result.signal,
                 result.vote_score,
                 result.consensus_level == "STRONG",
                 len([s for s in agent_signals if s.signal == result.signal]),
                 agent_details,
+                result,  # Return full aggregated decision
             )
         
         # Fallback if no aggregator
-        return self._run_gpt_stubs()
+        return self._run_gpt_stubs() + (None,)
 
     def _run_gpt_stubs(self) -> tuple[str, float, bool, int, List[Dict[str, Any]]]:
         """Phase 0: Return HOLD stubs for GPT agents."""

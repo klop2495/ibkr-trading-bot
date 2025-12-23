@@ -63,3 +63,18 @@ def parse_confidence(value: str) -> ConfidenceLevel:
         return ConfidenceLevel.MEDIUM
     else:
         return ConfidenceLevel.LOW
+
+
+def confidence_to_float(conf: ConfidenceLevel | str) -> float:
+    """
+    Convert confidence level to float for quorum calculations.
+    
+    Args:
+        conf: ConfidenceLevel enum or string.
+    
+    Returns:
+        Float value: LOW=0.3, MEDIUM=0.6, HIGH=0.9
+    """
+    if isinstance(conf, str):
+        conf = parse_confidence(conf)
+    return CONFIDENCE_WEIGHTS.get(conf, 0.3)

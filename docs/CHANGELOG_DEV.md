@@ -1,5 +1,23 @@
 # Dev Changelog (append-only)
 
+## 2025-12-23 — IB Gateway Connection Fix (Docker Networking)
+- Summary: Fixed IB Gateway API connection issue. Bot was failing to connect with `CancelledError` due to incorrect port configuration and Docker network isolation.
+- Root cause: 
+  - IB Gateway Docker image (gnzsnz/ib-gateway) uses socat proxy: API_PORT=4002 (internal), SOCAT_PORT=4004 (external proxy)
+  - Bot was trying to connect to wrong ports (4001, 4004) instead of 4002
+  - Docker `network_mode: host` doesn't work properly; need shared Docker network
+- Solution:
+  1. Use shared Docker network `ib-gateway_default` instead of `network_mode: host`
+  2. Connect to `ib-gateway:4002` (container name + correct API port)
+  3. Set Socket port = 4002 in IB Gateway VNC settings (Configure → Settings → API → Settings)
+  4. Ensure "Allow connections from localhost only" is UNCHECKED
+- Configuration:
+  - `docker-compose.yml`: Added `networks: [default, ib-gateway_default]` with external network
+  - `.env`: `IB_GATEWAY_HOST=ib-gateway`, `IB_GATEWAY_PORT=4002`, `IBKR_HOST=ib-gateway`, `IBKR_PORT=4002`
+- Files: `docker-compose.yml`, `.env`, `deploy/ib-gateway/README.md`
+- Result: `Phase 6: Signal generation ENABLED mode=IBKR` — real market data loading successfully
+- Documentation: Created `docs/IBKR_Gateway_Connection_Guide.md` with full troubleshooting guide
+
 ## 2025-12-22 — Frontend Signal Strength Page + Dashboard Improvements
 - Summary: Created Signal Strength page with signal analysis, filtering, sorting. Improved main dashboard with better error handling, system status display, and loading states. Added navigation link in Sidebar.
 - Files (frontend): `app/admin/signal-strength/page.tsx`, `app/page.tsx`, `app/components/Sidebar.tsx`
