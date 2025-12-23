@@ -19,7 +19,7 @@ from app.models.signal_preview import (
 from app.risk.engine_v1 import RiskEngineV1
 from app.storage.bot_settings_repo import BotSettingsRepo
 from app.storage.db import SupabaseDB
-from app.storage.repositories import DecisionsRepo, RiskEventsRepo, RiskVerdictsRepo, SignalPreviewsRepo
+from app.storage.repositories import DecisionsRepo, RiskEventsRepo, RiskVerdictsRepo, SignalPreviewsRepo, TradesHistoryRepo
 from app.execution.service import ExecutionService, ExecutionMode, ExecutionResult
 
 # Phase 0: Shadow mode parallel decisions
@@ -1357,7 +1357,11 @@ def main():
 
     # Initialize ExecutionService
     owner_uuid_str = str(owner_uuid)
-    execution_service = ExecutionService(risk_events_repo=risk_events_repo)
+    trades_history_repo = TradesHistoryRepo(db)
+    execution_service = ExecutionService(
+        risk_events_repo=risk_events_repo,
+        trades_history_repo=trades_history_repo,
+    )
     default_equity = float(os.getenv("DEFAULT_EQUITY", str(DEFAULT_EQUITY)))
     execution_service.update_equity(default_equity)
     execution_mode = execution_service._determine_mode(bot_settings_repo.get(owner_uuid_str))
