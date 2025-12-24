@@ -428,7 +428,7 @@ class ParallelDecisionRunner:
         signal: str,
     ):
         """Log the hybrid tick with all scores."""
-        logger.info(
+        print(
             f"HYBRID_TICK symbol={symbol} ts={ts_utc.isoformat()} "
             f"rules_score={rules_score:.3f} llm_score={llm_score:.3f} "
             f"hybrid_score={hybrid_score:.3f} llm_active_wt={llm_active_weight:.2f} "
