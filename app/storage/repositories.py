@@ -428,6 +428,50 @@ class TradesHistoryRepo(BaseRepo):
     """Repository for trades_history table - tracks open/closed trades with P/L."""
     table = "trades_history"
 
+    def create_trade(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        entry_price: Optional[float],
+        stop_loss: Optional[float],
+        take_profit: Optional[float],
+        mode: str = "paper",
+        signal_preview_id: Optional[str] = None,
+        decision_id: Optional[str] = None,
+        ib_order_id: Optional[int] = None,
+        status: str = "PENDING",
+    ) -> str:
+        """
+        Create a new trade record with initial status.
+        
+        P0-B: Trade lifecycle:
+        - PENDING: Order created, not yet confirmed by broker
+        - SUBMITTED: Order sent to broker, awaiting fill
+        - OPEN: Order filled, position is open
+        - CLOSED: Position closed (SL/TP hit or manual)
+        - CANCELLED: Order cancelled before fill
+        - REJECTED: Order rejected by broker
+        """
+        trade_id = str(uuid4())
+        payload = {
+            "id": trade_id,
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "mode": mode,
+            "status": status,
+            "opened_at": datetime.utcnow().isoformat(),
+            "signal_preview_id": signal_preview_id,
+            "decision_id": decision_id,
+            "ib_order_id": ib_order_id,
+        }
+        self.db.client.table(self.table).insert(payload).execute()
+        return trade_id
+
     def open_trade(
         self,
         symbol: str,
@@ -440,24 +484,70 @@ class TradesHistoryRepo(BaseRepo):
         signal_preview_id: Optional[str] = None,
         decision_id: Optional[str] = None,
     ) -> str:
-        """Create a new trade record with status OPEN."""
-        trade_id = str(uuid4())
+        """Create a new trade record with status OPEN (legacy compatibility)."""
+        return self.create_trade(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            mode=mode,
+            signal_preview_id=signal_preview_id,
+            decision_id=decision_id,
+            status="OPEN",
+        )
+
+    def update_status(
+        self,
+        trade_id: str,
+        status: str,
+        entry_price: Optional[float] = None,
+        ib_order_id: Optional[int] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """
+        Update trade status.
+        
+        P0-B: Called when order status changes:
+        - PENDING -> SUBMITTED (order sent)
+        - SUBMITTED -> OPEN (order filled)
+        - SUBMITTED -> CANCELLED (order cancelled)
+        - SUBMITTED -> REJECTED (order rejected)
+        """
         payload = {
-            "id": trade_id,
-            "symbol": symbol,
-            "side": side,
-            "quantity": quantity,
-            "entry_price": entry_price,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "mode": mode,
-            "status": "OPEN",
-            "opened_at": datetime.utcnow().isoformat(),
-            "signal_preview_id": signal_preview_id,
-            "decision_id": decision_id,
+            "status": status,
+            "updated_at": datetime.utcnow().isoformat(),
         }
-        self.db.client.table(self.table).insert(payload).execute()
-        return trade_id
+        if entry_price is not None:
+            payload["entry_price"] = entry_price
+        if ib_order_id is not None:
+            payload["ib_order_id"] = ib_order_id
+        if error_message is not None:
+            payload["error_message"] = error_message
+        
+        self.db.client.table(self.table).update(payload).eq("id", trade_id).execute()
+
+    def get_trade_by_ib_order_id(self, ib_order_id: int) -> Optional[dict]:
+        """Get trade by IB order ID."""
+        res = (
+            self.db.client.table(self.table)
+            .select("*")
+            .eq("ib_order_id", ib_order_id)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+
+    def get_pending_trades(self) -> list[dict]:
+        """Get all trades in PENDING or SUBMITTED status."""
+        res = (
+            self.db.client.table(self.table)
+            .select("*")
+            .in_("status", ["PENDING", "SUBMITTED"])
+            .execute()
+        )
+        return res.data or []
 
     def close_trade(
         self,

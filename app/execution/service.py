@@ -80,13 +80,28 @@ class ExecutionResult:
 
 
 class ExecutionServiceCallback(IBKROrderCallback):
-    """Callbacks for execution events with logging to risk_events."""
+    """
+    Callbacks for execution events.
     
-    def __init__(self, risk_events_repo: Optional[RiskEventsRepo] = None):
+    P0-B: Order Lifecycle Management
+    - Logs events to risk_events table
+    - Updates trades_history status on order state changes
+    - Handles FILLED, CANCELLED, REJECTED transitions
+    """
+    
+    def __init__(
+        self,
+        risk_events_repo: Optional[RiskEventsRepo] = None,
+        trades_history_repo: Optional[TradesHistoryRepo] = None,
+    ):
         self.risk_events_repo = risk_events_repo
+        self.trades_history_repo = trades_history_repo
     
     def on_order_status(self, state: IBKROrderState) -> None:
+        """Handle order status change - update trades_history accordingly."""
         logger.info(f"Order {state.request_id} status: {state.status.value}")
+        
+        # Log to risk_events
         if self.risk_events_repo:
             data = {
                 "request_id": str(state.request_id),
@@ -106,9 +121,64 @@ class ExecutionServiceCallback(IBKROrderCallback):
                 message=f"Order status: {state.status.value}",
                 data=data,
             )
+        
+        # P0-B: Update trades_history status
+        if self.trades_history_repo and state.ib_order_id:
+            try:
+                trade = self.trades_history_repo.get_trade_by_ib_order_id(state.ib_order_id)
+                if trade:
+                    trade_id = trade.get("id")
+                    new_status = self._map_order_status_to_trade_status(state.status)
+                    
+                    if new_status and new_status != trade.get("status"):
+                        update_kwargs = {
+                            "trade_id": trade_id,
+                            "status": new_status,
+                        }
+                        
+                        # Update entry price on fill
+                        if state.status == OrderStatus.FILLED and state.avg_fill_price:
+                            update_kwargs["entry_price"] = state.avg_fill_price
+                        
+                        # Add error message for rejected/error
+                        if state.status in (OrderStatus.REJECTED, OrderStatus.ERROR):
+                            update_kwargs["error_message"] = state.error_message
+                        
+                        self.trades_history_repo.update_status(**update_kwargs)
+                        logger.info(f"Trade {trade_id} status updated: {trade.get('status')} -> {new_status}")
+            except Exception as e:
+                logger.error(f"Failed to update trade status: {e}")
+    
+    def _map_order_status_to_trade_status(self, order_status: OrderStatus) -> Optional[str]:
+        """
+        Map OMS OrderStatus to trades_history status.
+        
+        P0-B Lifecycle:
+        - PENDING -> PENDING (no change needed)
+        - SUBMITTED -> SUBMITTED
+        - ACCEPTED -> SUBMITTED (treat as submitted)
+        - PARTIALLY_FILLED -> OPEN (position exists)
+        - FILLED -> OPEN
+        - CANCELLED -> CANCELLED
+        - REJECTED -> REJECTED
+        - ERROR -> REJECTED
+        """
+        mapping = {
+            OrderStatus.PENDING: "PENDING",
+            OrderStatus.SUBMITTED: "SUBMITTED",
+            OrderStatus.ACCEPTED: "SUBMITTED",
+            OrderStatus.PARTIALLY_FILLED: "OPEN",
+            OrderStatus.FILLED: "OPEN",
+            OrderStatus.CANCELLED: "CANCELLED",
+            OrderStatus.REJECTED: "REJECTED",
+            OrderStatus.ERROR: "REJECTED",
+        }
+        return mapping.get(order_status)
     
     def on_fill(self, fill: IBKRFill) -> None:
+        """Handle order fill - update trade with actual fill price."""
         logger.info(f"Order {fill.request_id} filled: {fill.quantity} @ {fill.price}")
+        
         if self.risk_events_repo:
             self.risk_events_repo.insert(
                 event_type="EXECUTION_ORDER_FILL",
@@ -123,9 +193,25 @@ class ExecutionServiceCallback(IBKROrderCallback):
                     "commission": fill.commission,
                 },
             )
+        
+        # P0-B: Update trade entry price with actual fill price
+        if self.trades_history_repo:
+            try:
+                trade = self.trades_history_repo.get_trade_by_ib_order_id(fill.ib_order_id)
+                if trade:
+                    self.trades_history_repo.update_status(
+                        trade_id=trade["id"],
+                        status="OPEN",
+                        entry_price=fill.price,
+                    )
+                    logger.info(f"Trade {trade['id']} filled at {fill.price}")
+            except Exception as e:
+                logger.error(f"Failed to update trade on fill: {e}")
     
     def on_error(self, request_id: UUID, error: str) -> None:
+        """Handle order error - mark trade as rejected."""
         logger.error(f"Order {request_id} error: {error}")
+        
         if self.risk_events_repo:
             self.risk_events_repo.insert(
                 event_type="EXECUTION_ORDER_ERROR",
@@ -229,8 +315,11 @@ class ExecutionService:
             )
             self._position_sizer = PositionSizer(sizer_config)
             
-            # Callback
-            self._callback = ExecutionServiceCallback(self.risk_events_repo)
+            # Callback - P0-B: pass trades_history_repo for lifecycle updates
+            self._callback = ExecutionServiceCallback(
+                risk_events_repo=self.risk_events_repo,
+                trades_history_repo=self.trades_history_repo,
+            )
             
             # Connection manager
             config = self.connection_config or ConnectionConfig(
@@ -717,22 +806,26 @@ class ExecutionService:
             },
         )
         
+        # P0-B: Create trade record FIRST with PENDING status
+        trade_id = self._record_trade_pending(
+            symbol=decision.symbol,
+            side=side,
+            quantity=size_result.units,
+            entry_price=current_price,
+            stop_loss=sl_price,
+            take_profit=tp_price,
+            mode=self._mode.value,
+            signal_preview_id=decision.signal_preview_id,
+            decision_id=decision.id,
+        )
+        
         # Place order (with or without SL/TP)
         try:
             state = self._oms.place_order_with_sl_tp(request, current_price)
             
-            # Record trade in trades_history
-            self._record_trade_open(
-                symbol=decision.symbol,
-                side=side,
-                quantity=size_result.units,
-                entry_price=current_price,
-                stop_loss=sl_price,
-                take_profit=tp_price,
-                mode=self._mode.value,
-                signal_preview_id=decision.signal_preview_id,
-                decision_id=decision.id,
-            )
+            # P0-B: Update trade with ib_order_id and SUBMITTED status
+            if trade_id and state.ib_order_id:
+                self._update_trade_ib_order_id(trade_id, state.ib_order_id)
             
             return ExecutionResult(
                 executed=True,
@@ -782,6 +875,72 @@ class ExecutionService:
                 data=data or {},
             )
     
+    def _record_trade_pending(
+        self,
+        symbol: str,
+        side: OrderSide,
+        quantity: float,
+        entry_price: Optional[float],
+        stop_loss: Optional[float],
+        take_profit: Optional[float],
+        mode: str,
+        signal_preview_id: Optional[UUID],
+        decision_id: Optional[UUID],
+        ib_order_id: Optional[int] = None,
+    ) -> Optional[str]:
+        """
+        Record trade in trades_history with PENDING status.
+        
+        P0-B: Trade starts as PENDING, then gets updated to SUBMITTED/OPEN
+        based on IB Gateway callbacks.
+        """
+        if not self.trades_history_repo:
+            return None
+        
+        # Determine initial status based on mode
+        # dry_run trades go straight to OPEN (no broker callback)
+        initial_status = "OPEN" if mode == "dry_run" else "PENDING"
+        
+        try:
+            trade_id = self.trades_history_repo.create_trade(
+                symbol=symbol,
+                side=side.value,
+                quantity=quantity,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                mode=mode,
+                signal_preview_id=str(signal_preview_id) if signal_preview_id else None,
+                decision_id=str(decision_id) if decision_id else None,
+                ib_order_id=ib_order_id,
+                status=initial_status,
+            )
+            logger.info(f"Trade recorded in trades_history: {trade_id} status={initial_status}")
+            return trade_id
+        except Exception as e:
+            logger.error(f"Failed to record trade in trades_history: {e}")
+            return None
+    
+    def _update_trade_ib_order_id(self, trade_id: str, ib_order_id: int) -> None:
+        """
+        Update trade with IB order ID after order is placed.
+        
+        P0-B: This links the trade to the IB order for callback updates.
+        """
+        if not self.trades_history_repo:
+            return
+        
+        try:
+            self.trades_history_repo.update_status(
+                trade_id=trade_id,
+                status="SUBMITTED",
+                ib_order_id=ib_order_id,
+            )
+            logger.info(f"Trade {trade_id} updated with ib_order_id={ib_order_id}")
+        except Exception as e:
+            logger.error(f"Failed to update trade ib_order_id: {e}")
+
+    # Legacy method for backward compatibility
     def _record_trade_open(
         self,
         symbol: str,
@@ -794,27 +953,18 @@ class ExecutionService:
         signal_preview_id: Optional[UUID],
         decision_id: Optional[UUID],
     ) -> Optional[str]:
-        """Record trade opening in trades_history."""
-        if not self.trades_history_repo:
-            return None
-        
-        try:
-            trade_id = self.trades_history_repo.open_trade(
-                symbol=symbol,
-                side=side.value,
-                quantity=quantity,
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                mode=mode,
-                signal_preview_id=str(signal_preview_id) if signal_preview_id else None,
-                decision_id=str(decision_id) if decision_id else None,
-            )
-            logger.info(f"Trade recorded in trades_history: {trade_id}")
-            return trade_id
-        except Exception as e:
-            logger.error(f"Failed to record trade in trades_history: {e}")
-            return None
+        """Record trade opening in trades_history (legacy - use _record_trade_pending)."""
+        return self._record_trade_pending(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            mode=mode,
+            signal_preview_id=signal_preview_id,
+            decision_id=decision_id,
+        )
     
     def shutdown(self) -> None:
         """Cleanup resources."""
