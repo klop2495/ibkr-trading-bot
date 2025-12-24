@@ -1232,6 +1232,30 @@ def _create_ib_connection(host: str, port: int, client_id: int, retries: int = 3
     return None
 
 
+def _fetch_equity_from_ib(ib) -> Optional[float]:
+    """
+    Fetch account equity (NetLiquidation) from IB Gateway.
+    
+    P0-D: Use real equity for position sizing and exposure checks.
+    Returns None if unable to fetch.
+    """
+    if ib is None or not ib.isConnected():
+        return None
+    
+    try:
+        account_values = ib.accountSummary()
+        for av in account_values:
+            if av.tag == 'NetLiquidation':
+                equity = float(av.value)
+                print(f"IB equity fetched: {equity} {av.currency}")
+                return equity
+        print("Warning: NetLiquidation not found in account summary")
+        return None
+    except Exception as e:
+        print(f"Warning: Failed to fetch equity from IB: {e}")
+        return None
+
+
 def main():
     owner_user_id_raw = os.getenv("BOT_OWNER_USER_ID")
     if not owner_user_id_raw:
@@ -1371,10 +1395,37 @@ def main():
         risk_events_repo=risk_events_repo,
         trades_history_repo=trades_history_repo,
     )
+    
+    # P0-D: Get equity from IB Gateway if connected, else fallback to env
     default_equity = float(os.getenv("DEFAULT_EQUITY", str(DEFAULT_EQUITY)))
-    execution_service.update_equity(default_equity)
+    ib_conn_for_equity = None
+    if not signal_gen_mock and 'ib_conn' in dir() and ib_conn is not None:
+        ib_conn_for_equity = ib_conn
+    elif not signal_gen_mock:
+        # Create separate connection for equity fetch
+        ib_host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
+        ib_port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
+        ib_client_id = int(os.getenv("IB_CLIENT_ID_EQUITY", "102"))  # Different clientId
+        ib_conn_for_equity = _create_ib_connection(ib_host, ib_port, ib_client_id, retries=1)
+    
+    equity_from_ib = _fetch_equity_from_ib(ib_conn_for_equity)
+    if equity_from_ib is not None:
+        execution_service.update_equity(equity_from_ib)
+        print(f"ExecutionService equity from IB: {equity_from_ib}")
+    else:
+        execution_service.update_equity(default_equity)
+        print(f"ExecutionService equity from env: {default_equity}")
+    
+    # Disconnect equity connection if separate
+    if ib_conn_for_equity is not None and (not signal_gen_mock and ('ib_conn' not in dir() or ib_conn is None or ib_conn_for_equity is not ib_conn)):
+        try:
+            ib_conn_for_equity.disconnect()
+        except Exception:
+            pass
+    
     execution_mode = execution_service._determine_mode(bot_settings_repo.get(owner_uuid_str))
-    print(f"ExecutionService initialized mode={execution_mode.value} equity={default_equity}")
+    current_equity = execution_service.get_equity()
+    print(f"ExecutionService initialized mode={execution_mode.value} equity={current_equity}")
 
     batch_size = int(os.getenv("CONTROL_PLANE_BACKFILL_BATCH_SIZE", str(DEFAULT_BACKFILL_BATCH)))
     backfill_max_per_tick = int(os.getenv("CONTROL_PLANE_BACKFILL_MAX_PER_TICK", str(DEFAULT_BACKFILL_MAX_PER_TICK)))
