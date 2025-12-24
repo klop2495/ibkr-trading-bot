@@ -1210,17 +1210,26 @@ def run_signal_generation_tick(
     }
 
 
-def _create_ib_connection(host: str, port: int, client_id: int):
-    """Create IB Gateway connection."""
-    try:
-        from ib_insync import IB
-        ib = IB()
-        ib.RequestTimeout = 30
-        ib.connect(host, port, clientId=client_id, timeout=30)
-        return ib
-    except Exception as e:
-        print(f"Warning: Failed to connect to IB Gateway: {e}")
-        return None
+def _create_ib_connection(host: str, port: int, client_id: int, retries: int = 3, retry_delay: float = 5.0):
+    """Create IB Gateway connection with retry logic."""
+    from ib_insync import IB
+    
+    for attempt in range(1, retries + 1):
+        try:
+            print(f"IB Gateway connection attempt {attempt}/{retries}: {host}:{port} clientId={client_id}")
+            ib = IB()
+            ib.RequestTimeout = 60
+            ib.connect(host, port, clientId=client_id, timeout=60)
+            print(f"IB Gateway connected successfully on attempt {attempt}")
+            return ib
+        except Exception as e:
+            print(f"IB Gateway connection attempt {attempt} failed: {type(e).__name__}: {e}")
+            if attempt < retries:
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+    
+    print(f"Warning: Failed to connect to IB Gateway after {retries} attempts")
+    return None
 
 
 def main():
