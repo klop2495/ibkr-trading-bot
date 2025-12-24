@@ -382,6 +382,11 @@ class IBKROMS:
         3. Take Profit order - triggered if price moves in favor
         
         SL and TP are OCA (One-Cancels-All) - when one fills, the other is cancelled.
+        
+        IMPORTANT: Orders must be placed in correct sequence with transmit flags:
+        - Parent: transmit=False (hold until children ready)
+        - TP child: transmit=False (hold)
+        - SL child: transmit=True (sends entire bracket group)
         """
         state = IBKROrderState(
             request_id=request.id,
@@ -398,45 +403,67 @@ class IBKROMS:
             # Determine opposite action for SL/TP orders
             opposite_action = "SELL" if request.side == OrderSide.BUY else "BUY"
             
-            # Create bracket orders using ib_insync helper
-            bracket = self.ib.bracketOrder(
+            # Get next order IDs from IBKR
+            parent_id = self.ib.client.getReqId()
+            tp_id = self.ib.client.getReqId()
+            sl_id = self.ib.client.getReqId()
+            
+            # Create PARENT order (Market or Limit)
+            parent_order = Order(
+                orderId=parent_id,
                 action=request.side.value,
-                quantity=request.quantity,
-                limitPrice=request.limit_price if request.order_type == OrderType.LIMIT else request.take_profit_price,
-                takeProfitPrice=request.take_profit_price,
-                stopLossPrice=request.stop_loss_price,
+                totalQuantity=request.quantity,
+                orderType="MKT" if request.order_type == OrderType.MARKET else "LMT",
+                tif=request.tif,
+                transmit=False,  # Don't transmit yet - wait for children
+            )
+            if request.order_type == OrderType.LIMIT and request.limit_price:
+                parent_order.lmtPrice = request.limit_price
+            
+            # Create TAKE PROFIT order (Limit)
+            tp_order = Order(
+                orderId=tp_id,
+                action=opposite_action,
+                totalQuantity=request.quantity,
+                orderType="LMT",
+                lmtPrice=request.take_profit_price,
+                tif=request.tif,
+                parentId=parent_id,  # Link to parent
+                transmit=False,  # Don't transmit yet
             )
             
-            # Unpack bracket orders
-            parent_order, take_profit_order, stop_loss_order = bracket
+            # Create STOP LOSS order (Stop)
+            sl_order = Order(
+                orderId=sl_id,
+                action=opposite_action,
+                totalQuantity=request.quantity,
+                orderType="STP",
+                auxPrice=request.stop_loss_price,
+                tif=request.tif,
+                parentId=parent_id,  # Link to parent
+                transmit=True,  # Transmit entire bracket group NOW
+            )
             
-            # Set order type for parent
-            if request.order_type == OrderType.MARKET:
-                parent_order.orderType = "MKT"
-                parent_order.lmtPrice = 0
-            
-            # Set TIF
-            parent_order.tif = request.tif
-            take_profit_order.tif = request.tif
-            stop_loss_order.tif = request.tif
-            
-            # Place all orders
+            # Place orders in sequence - IBKR requires this order
+            # Parent first, then children. Last order with transmit=True sends all.
             parent_trade = self.ib.placeOrder(contract, parent_order)
-            tp_trade = self.ib.placeOrder(contract, take_profit_order)
-            sl_trade = self.ib.placeOrder(contract, stop_loss_order)
+            tp_trade = self.ib.placeOrder(contract, tp_order)
+            sl_trade = self.ib.placeOrder(contract, sl_order)
             
             # Store IDs
-            state.ib_order_id = parent_trade.order.orderId
+            state.ib_order_id = parent_id
             state.ib_perm_id = getattr(parent_trade.order, "permId", None)
-            state.take_profit_order_id = tp_trade.order.orderId
-            state.stop_loss_order_id = sl_trade.order.orderId
+            state.take_profit_order_id = tp_id
+            state.stop_loss_order_id = sl_id
             state.status = OrderStatus.SUBMITTED
             state.updated_at = datetime.now(timezone.utc)
             
             # Register mappings
-            self._ib_to_request[state.ib_order_id] = request.id
-            self._bracket_children[state.take_profit_order_id] = request.id
-            self._bracket_children[state.stop_loss_order_id] = request.id
+            self._ib_to_request[parent_id] = request.id
+            self._bracket_children[tp_id] = request.id
+            self._bracket_children[sl_id] = request.id
+            
+            print(f"BRACKET_ORDER submitted parent={parent_id} tp={tp_id} sl={sl_id} symbol={request.symbol} qty={request.quantity}")
             
             self.callback.on_order_status(state)
             
@@ -444,6 +471,7 @@ class IBKROMS:
             state.status = OrderStatus.ERROR
             state.error_message = str(exc)
             state.updated_at = datetime.now(timezone.utc)
+            print(f"BRACKET_ORDER error: {exc}")
             self.callback.on_error(request.id, state.error_message)
         
         return state
