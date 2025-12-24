@@ -1,14 +1,15 @@
 """
 Technical Analysis Agent.
 
-Phase 3: Analyzes price action, indicators, chart patterns.
-Returns categorical signals based on technical factors.
+Phase 6 Update: Uses real market data from signal_preview/snapshot.
+Always has REAL data status (technical data comes from IB Gateway).
 """
 
 from typing import Any, Dict
 
 from app.agents.llm.base_agent import BaseLLMAgent, AgentSignal
-from app.models.confidence import ConfidenceLevel
+from app.agents.llm.data_status import DataStatus
+from app.models.confidence import ConfidenceLevel, confidence_to_float
 
 
 class TechnicalAgent(BaseLLMAgent):
@@ -22,12 +23,30 @@ class TechnicalAgent(BaseLLMAgent):
     - Price action patterns
     - Support/Resistance zones
     
+    Data source: IB Gateway market data (always REAL).
     Does NOT provide: specific prices, SL/TP levels, lot sizes.
     """
     
     name = "TechnicalAgent"
-    version = "1.0"
-    weight = 0.25  # 25% contribution to final decision
+    version = "2.0"
+    weight = 0.25  # 25% contribution to LLM decision
+    
+    def check_data_status(self, context: Dict[str, Any], symbol: str) -> DataStatus:
+        """
+        Technical data is always from IB Gateway.
+        Check if we have technical context with basic indicators.
+        """
+        technical = context.get("technical", {})
+        
+        # Minimal required: trend_short exists
+        if not technical.get("trend_short"):
+            return DataStatus.MISSING
+        
+        # Check if we have RSI zone (important indicator)
+        if technical.get("rsi_zone") == "UNKNOWN":
+            return DataStatus.PARTIAL
+        
+        return DataStatus.REAL
     
     def prepare_input(self, context: Dict[str, Any], symbol: str) -> dict:
         """
@@ -78,52 +97,82 @@ OUTPUT: Respond with JSON only:
 {
   "signal": "LONG" | "SHORT" | "HOLD",
   "confidence": "low" | "medium" | "high",
+  "confidence_float": 0.0 to 1.0,
   "reasoning": "Brief explanation (max 150 chars)",
   "flags": ["FLAG1", "FLAG2"]
 }
 
+CONFIDENCE_FLOAT GUIDELINES:
+- 0.9: Multiple strong factors align (trend+momentum+pattern)
+- 0.7: Two factors align, others neutral
+- 0.5: Single factor or mixed signals
+- 0.3: Weak signal, low conviction
+
 RULES:
 1. NEVER mention specific prices, SL/TP levels, or position sizes
 2. Focus only on directional bias from technical factors
-3. Use HIGH confidence only when multiple factors align
-4. Use HOLD when signals conflict or are unclear
-5. Flags should be categorical: TREND_ALIGNED, RSI_EXTREME, DIVERGENCE, PATTERN_FORMED, etc.
+3. Use HOLD when signals conflict or are unclear
+4. Flags should be categorical: TREND_ALIGNED, RSI_EXTREME, DIVERGENCE, PATTERN_FORMED, etc.
 
 SIGNAL GUIDELINES:
 - LONG: Uptrend + bullish momentum + supportive structure
 - SHORT: Downtrend + bearish momentum + resistance
-- HOLD: Mixed signals, ranging market, or insufficient data
-
-CONFIDENCE GUIDELINES:
-- HIGH: 3+ factors strongly aligned
-- MEDIUM: 2 factors aligned, others neutral
-- LOW: Single factor or conflicting signals"""
+- HOLD: Mixed signals, ranging market, or insufficient data"""
     
     def _mock_response(self, symbol: str, input_data: dict) -> AgentSignal:
         """Generate mock response based on input data."""
         data = input_data.get("data", {})
         
-        # Simple logic for mock
+        # Extract key indicators
         trend_short = data.get("trend_short", "NEUTRAL")
         rsi_zone = data.get("rsi_zone", "NEUTRAL")
+        sma_alignment = data.get("sma_alignment", "MIXED")
         
-        if trend_short == "UP" and rsi_zone != "OVERBOUGHT":
+        # Count supporting factors
+        factors_long = 0
+        factors_short = 0
+        
+        if trend_short == "UP":
+            factors_long += 1
+        elif trend_short == "DOWN":
+            factors_short += 1
+            
+        if sma_alignment == "BULLISH":
+            factors_long += 1
+        elif sma_alignment == "BEARISH":
+            factors_short += 1
+            
+        if rsi_zone == "OVERSOLD":
+            factors_long += 1  # Reversal opportunity
+        elif rsi_zone == "OVERBOUGHT":
+            factors_short += 1  # Reversal opportunity
+        
+        # Determine signal based on factors
+        flags = ["MOCK_MODE"]
+        
+        if factors_long >= 2 and rsi_zone != "OVERBOUGHT":
             signal = "LONG"
-            confidence = ConfidenceLevel.MEDIUM
-            flags = ["TREND_UP", "MOCK_MODE"]
-        elif trend_short == "DOWN" and rsi_zone != "OVERSOLD":
+            confidence_float = 0.7 if factors_long >= 3 else 0.55
+            confidence = ConfidenceLevel.MEDIUM if confidence_float >= 0.6 else ConfidenceLevel.LOW
+            flags.extend(["TREND_UP", "BULLISH_SETUP"])
+        elif factors_short >= 2 and rsi_zone != "OVERSOLD":
             signal = "SHORT"
-            confidence = ConfidenceLevel.MEDIUM
-            flags = ["TREND_DOWN", "MOCK_MODE"]
+            confidence_float = 0.7 if factors_short >= 3 else 0.55
+            confidence = ConfidenceLevel.MEDIUM if confidence_float >= 0.6 else ConfidenceLevel.LOW
+            flags.extend(["TREND_DOWN", "BEARISH_SETUP"])
         else:
             signal = "HOLD"
+            confidence_float = 0.3
             confidence = ConfidenceLevel.LOW
-            flags = ["NO_CLEAR_SIGNAL", "MOCK_MODE"]
+            flags.append("NO_CLEAR_SIGNAL")
         
-        return AgentSignal(
+        sig = AgentSignal(
             agent_name=self.name,
             signal=signal,
             confidence=confidence,
             reasoning=f"Mock: {symbol} trend={trend_short} rsi={rsi_zone}",
+            data_status=DataStatus.REAL,
             flags=flags,
         )
+        sig.confidence_float = confidence_float
+        return sig

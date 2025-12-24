@@ -1,13 +1,14 @@
 """
 Correlation Analysis Agent.
 
-Phase 3: Analyzes cross-pair relationships, DXY impact.
-Returns categorical signals based on inter-market analysis.
+Phase 6 Update: Uses REAL DXY data from Yahoo Finance.
+data_status = REAL when DXY snapshot is fresh, PARTIAL when stale.
 """
 
 from typing import Any, Dict
 
 from app.agents.llm.base_agent import BaseLLMAgent, AgentSignal
+from app.agents.llm.data_status import DataStatus
 from app.models.confidence import ConfidenceLevel
 
 
@@ -22,12 +23,48 @@ class CorrelationAgent(BaseLLMAgent):
     - Divergence detection
     - Risk asset correlation
     
+    Data source: DXY from Yahoo Finance (REAL), correlated pairs from IB Gateway
     Does NOT provide: specific prices, SL/TP levels, lot sizes.
     """
     
     name = "CorrelationAgent"
-    version = "1.0"
-    weight = 0.15  # 15% contribution to final decision
+    version = "2.0"
+    weight = 0.15  # 15% contribution to LLM decision
+    
+    def check_data_status(self, context: Dict[str, Any], symbol: str) -> DataStatus:
+        """
+        Check if we have REAL DXY data.
+        
+        DXY is fetched from Yahoo Finance - check staleness.
+        """
+        dxy = context.get("dxy_snapshot", {})
+        
+        # Check for explicit mock indicator
+        if dxy.get("_mock_mode", False):
+            return DataStatus.MISSING
+        
+        # Check source health
+        source_health = context.get("source_health", {})
+        dxy_health = source_health.get("dxy_index", {})
+        
+        # If explicitly marked as mock
+        if dxy_health.get("mock_mode", False):
+            return DataStatus.MISSING
+        
+        # If no DXY data
+        if not dxy or not dxy.get("value"):
+            return DataStatus.MISSING
+        
+        # Check staleness (if stale_minutes provided)
+        stale_minutes = dxy_health.get("staleness_minutes", 0)
+        if stale_minutes > 60:  # More than 1 hour stale
+            return DataStatus.PARTIAL
+        
+        # If DXY has trend and value, it's real
+        if dxy.get("trend") and dxy.get("value"):
+            return DataStatus.REAL
+        
+        return DataStatus.PARTIAL
     
     def prepare_input(self, context: Dict[str, Any], symbol: str) -> dict:
         """
@@ -114,9 +151,16 @@ OUTPUT: Respond with JSON only:
 {
   "signal": "LONG" | "SHORT" | "HOLD",
   "confidence": "low" | "medium" | "high",
+  "confidence_float": 0.0 to 1.0,
   "reasoning": "Brief explanation (max 150 chars)",
   "flags": ["FLAG1", "FLAG2"]
 }
+
+CONFIDENCE_FLOAT GUIDELINES:
+- 0.9: DXY aligned + correlated pair strongly confirms
+- 0.7: DXY or correlated pair supports, other neutral
+- 0.5: No clear correlation signal
+- 0.3: Mixed signals or divergence present
 
 RULES:
 1. NEVER mention specific prices, SL/TP levels, or position sizes
@@ -128,12 +172,7 @@ RULES:
 SIGNAL GUIDELINES:
 - LONG: DXY impact supports long + correlated pair confirms
 - SHORT: DXY impact supports short + correlated pair confirms
-- HOLD: Divergence detected or conflicting correlations
-
-CONFIDENCE GUIDELINES:
-- HIGH: DXY aligned + correlated pair strongly confirms
-- MEDIUM: DXY or correlated pair supports, other neutral
-- LOW: Mixed signals or divergence present"""
+- HOLD: Divergence detected or conflicting correlations"""
     
     def _mock_response(self, symbol: str, input_data: dict) -> AgentSignal:
         """Generate mock response based on input data."""
@@ -145,35 +184,46 @@ CONFIDENCE GUIDELINES:
         
         # Check for divergence first
         if divergence:
-            return AgentSignal(
+            sig = AgentSignal(
                 agent_name=self.name,
                 signal="HOLD",
                 confidence=ConfidenceLevel.MEDIUM,
                 reasoning=f"Mock: Divergence detected in correlated pairs",
+                data_status=DataStatus.REAL,  # DXY is real
                 flags=["DIVERGENCE_WARNING", "MOCK_MODE"],
             )
+            sig.confidence_float = 0.5
+            return sig
         
         # Follow DXY impact
+        flags = ["MOCK_MODE"]
+        
         if dxy_impact == "BULLISH":
             signal = "LONG"
+            confidence_float = 0.7 if correlation_confirms else 0.5
             confidence = ConfidenceLevel.MEDIUM if correlation_confirms else ConfidenceLevel.LOW
-            flags = ["DXY_ALIGNED", "MOCK_MODE"]
+            flags.append("DXY_ALIGNED")
         elif dxy_impact == "BEARISH":
             signal = "SHORT"
+            confidence_float = 0.7 if correlation_confirms else 0.5
             confidence = ConfidenceLevel.MEDIUM if correlation_confirms else ConfidenceLevel.LOW
-            flags = ["DXY_ALIGNED", "MOCK_MODE"]
+            flags.append("DXY_ALIGNED")
         else:
             signal = "HOLD"
+            confidence_float = 0.3
             confidence = ConfidenceLevel.LOW
-            flags = ["NO_DXY_SIGNAL", "MOCK_MODE"]
+            flags.append("NO_DXY_SIGNAL")
         
         if correlation_confirms:
             flags.append("CORRELATION_CONFIRMS")
         
-        return AgentSignal(
+        sig = AgentSignal(
             agent_name=self.name,
             signal=signal,
             confidence=confidence,
             reasoning=f"Mock: {symbol} dxy_impact={dxy_impact} confirms={correlation_confirms}",
+            data_status=DataStatus.REAL,  # DXY is real from Yahoo Finance
             flags=flags,
         )
+        sig.confidence_float = confidence_float
+        return sig

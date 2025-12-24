@@ -1,13 +1,14 @@
 """
 Sentiment Analysis Agent.
 
-Phase 3: Analyzes COT positioning, retail sentiment.
-Returns categorical signals based on positioning data.
+Phase 6 Update: Returns MISSING (ABSTAIN) if COT data is not available.
+Currently COT is mock-only, so this agent ABSTAINs until real CFTC API is integrated.
 """
 
 from typing import Any, Dict
 
 from app.agents.llm.base_agent import BaseLLMAgent, AgentSignal
+from app.agents.llm.data_status import DataStatus
 from app.models.confidence import ConfidenceLevel
 
 
@@ -22,12 +23,52 @@ class SentimentAgent(BaseLLMAgent):
     - Position changes
     - Retail sentiment (contrarian)
     
+    Data source: CFTC COT Reports (CURRENTLY MOCK - returns MISSING)
     Does NOT provide: specific prices, SL/TP levels, lot sizes.
     """
     
     name = "SentimentAgent"
-    version = "1.0"
-    weight = 0.15  # 15% contribution to final decision
+    version = "2.0"
+    weight = 0.15  # 15% contribution to LLM decision
+    
+    def check_data_status(self, context: Dict[str, Any], symbol: str) -> DataStatus:
+        """
+        Check if we have REAL COT positioning data.
+        
+        CRITICAL: If COT is mock-only, return MISSING.
+        Agent must not "fantasize" about positioning.
+        """
+        cot = context.get("cot_reports", {})
+        sentiment = context.get("sentiment", {})
+        
+        # Check for explicit mock indicator
+        if sentiment.get("_mock_mode", False):
+            return DataStatus.MISSING
+        
+        # Check if COT source is mock
+        source_health = context.get("source_health", {})
+        cot_health = source_health.get("cot_reports", {})
+        if cot_health.get("mock_mode", True):  # Default to mock if not specified
+            return DataStatus.MISSING
+        
+        # If no COT data at all
+        if not cot:
+            return DataStatus.MISSING
+        
+        # Extract base currency COT
+        base_ccy = symbol[:3] if len(symbol) >= 3 else "EUR"
+        cot_data = cot.get(base_ccy, {})
+        
+        # If no data for this currency
+        if not cot_data:
+            return DataStatus.MISSING
+        
+        # Check if explicitly marked as real
+        if cot_data.get("is_real_data", False):
+            return DataStatus.REAL
+        
+        # Default: MISSING until real CFTC API is integrated
+        return DataStatus.MISSING
     
     def prepare_input(self, context: Dict[str, Any], symbol: str) -> dict:
         """
@@ -68,7 +109,6 @@ class SentimentAgent(BaseLLMAgent):
     def _get_extreme_type(self, cot_data: dict) -> str:
         """Determine type of positioning extreme."""
         bucket = cot_data.get("percentile_bucket", "MEDIUM")
-        bias = cot_data.get("bias", "NEUTRAL")
         
         if bucket == "EXTREME_HIGH":
             return "CROWDED_LONG"
@@ -99,9 +139,16 @@ OUTPUT: Respond with JSON only:
 {
   "signal": "LONG" | "SHORT" | "HOLD",
   "confidence": "low" | "medium" | "high",
+  "confidence_float": 0.0 to 1.0,
   "reasoning": "Brief explanation (max 150 chars)",
   "flags": ["FLAG1", "FLAG2"]
 }
+
+CONFIDENCE_FLOAT GUIDELINES:
+- 0.9: Extreme percentile + smart money divergence
+- 0.7: Notable positioning bias
+- 0.5: Neutral positioning
+- 0.3: Mixed or unclear signals
 
 RULES:
 1. NEVER mention specific prices, SL/TP levels, or position sizes
@@ -113,15 +160,15 @@ RULES:
 SIGNAL GUIDELINES:
 - LONG: Extreme short positioning (crowded short), commercials long
 - SHORT: Extreme long positioning (crowded long), commercials short
-- HOLD: Neutral positioning or conflicting signals
-
-CONFIDENCE GUIDELINES:
-- HIGH: Extreme percentile + smart money divergence
-- MEDIUM: Notable positioning bias, no extremes
-- LOW: Neutral positioning or mixed signals"""
+- HOLD: Neutral positioning or conflicting signals"""
     
     def _mock_response(self, symbol: str, input_data: dict) -> AgentSignal:
-        """Generate mock response based on input data."""
+        """
+        Generate mock response.
+        
+        NOTE: This should rarely be called since check_data_status returns MISSING
+        for mock mode. But if called, return conservative HOLD.
+        """
         data = input_data.get("data", {})
         
         extreme_type = data.get("extreme_type", "NONE")
@@ -130,24 +177,30 @@ CONFIDENCE GUIDELINES:
         # Contrarian logic for extremes
         if extreme_type == "CROWDED_LONG":
             signal = "SHORT"
+            confidence_float = 0.7 if smart_money else 0.5
             confidence = ConfidenceLevel.MEDIUM if smart_money else ConfidenceLevel.LOW
             flags = ["CROWDED_LONG", "CONTRARIAN_SHORT", "MOCK_MODE"]
         elif extreme_type == "CROWDED_SHORT":
             signal = "LONG"
+            confidence_float = 0.7 if smart_money else 0.5
             confidence = ConfidenceLevel.MEDIUM if smart_money else ConfidenceLevel.LOW
             flags = ["CROWDED_SHORT", "CONTRARIAN_LONG", "MOCK_MODE"]
         else:
             signal = "HOLD"
+            confidence_float = 0.3
             confidence = ConfidenceLevel.LOW
             flags = ["NEUTRAL_POSITIONING", "MOCK_MODE"]
         
         if smart_money:
             flags.append("SMART_MONEY_DIVERGENCE")
         
-        return AgentSignal(
+        sig = AgentSignal(
             agent_name=self.name,
             signal=signal,
             confidence=confidence,
             reasoning=f"Mock: {symbol} extreme={extreme_type} smart_money={smart_money}",
+            data_status=DataStatus.MISSING,  # Mark as mock
             flags=flags,
         )
+        sig.confidence_float = confidence_float
+        return sig

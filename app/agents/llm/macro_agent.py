@@ -1,13 +1,14 @@
 """
 Macro/Fundamental Agent.
 
-Phase 3: Analyzes economic calendar, central bank policy.
-Returns categorical signals based on macro factors.
+Phase 6 Update: Returns MISSING (ABSTAIN) if economic calendar is not available.
+Currently Economic Calendar is mock-only, so this agent ABSTAINs until real API is integrated.
 """
 
 from typing import Any, Dict, List
 
 from app.agents.llm.base_agent import BaseLLMAgent, AgentSignal
+from app.agents.llm.data_status import DataStatus
 from app.models.confidence import ConfidenceLevel
 
 
@@ -22,12 +23,45 @@ class MacroAgent(BaseLLMAgent):
     - Economic surprises
     - Risk events timing
     
+    Data source: Economic Calendar API (CURRENTLY MOCK - returns MISSING)
     Does NOT provide: specific prices, SL/TP levels, lot sizes.
     """
     
     name = "MacroAgent"
-    version = "1.0"
-    weight = 0.20  # 20% contribution to final decision
+    version = "2.0"
+    weight = 0.20  # 20% contribution to LLM decision
+    
+    def check_data_status(self, context: Dict[str, Any], symbol: str) -> DataStatus:
+        """
+        Check if we have REAL economic calendar data.
+        
+        CRITICAL: If calendar is mock-only, return MISSING.
+        Agent must not "fantasize" about upcoming events.
+        """
+        macro = context.get("macro", {})
+        calendar = context.get("economic_calendar", [])
+        
+        # Check for explicit mock indicator
+        if macro.get("_mock_mode", False):
+            return DataStatus.MISSING
+        
+        # Check if calendar source is mock
+        source_health = context.get("source_health", {})
+        calendar_health = source_health.get("economic_calendar", {})
+        if calendar_health.get("mock_mode", True):  # Default to mock if not specified
+            return DataStatus.MISSING
+        
+        # If no calendar events at all, might be missing
+        if not calendar and not macro.get("has_real_calendar", False):
+            return DataStatus.MISSING
+        
+        # If we have calendar but it's explicitly marked as real
+        if macro.get("has_real_calendar", False):
+            return DataStatus.REAL
+        
+        # Default: MISSING until real API is integrated
+        # This prevents agent from "fantasizing" about events
+        return DataStatus.MISSING
     
     def prepare_input(self, context: Dict[str, Any], symbol: str) -> dict:
         """
@@ -118,9 +152,16 @@ OUTPUT: Respond with JSON only:
 {
   "signal": "LONG" | "SHORT" | "HOLD",
   "confidence": "low" | "medium" | "high",
+  "confidence_float": 0.0 to 1.0,
   "reasoning": "Brief explanation (max 150 chars)",
   "flags": ["FLAG1", "FLAG2"]
 }
+
+CONFIDENCE_FLOAT GUIDELINES:
+- 0.9: Clear CB divergence + aligned economic data
+- 0.7: Some fundamental advantage, no major conflicts
+- 0.5: Neutral or balanced fundamentals
+- 0.3: Mixed signals or uncertainty
 
 RULES:
 1. NEVER mention specific prices, SL/TP levels, or position sizes
@@ -132,26 +173,29 @@ RULES:
 SIGNAL GUIDELINES:
 - LONG: Base currency fundamentally stronger (hawkish CB, improving data)
 - SHORT: Quote currency fundamentally stronger
-- HOLD: Mixed fundamentals or imminent high-impact event
-
-CONFIDENCE GUIDELINES:
-- HIGH: Clear CB divergence + aligned economic momentum
-- MEDIUM: Some fundamental advantage, no conflicts
-- LOW: Mixed signals or event risk nearby"""
+- HOLD: Mixed fundamentals or imminent high-impact event"""
     
     def _mock_response(self, symbol: str, input_data: dict) -> AgentSignal:
-        """Generate mock response based on input data."""
+        """
+        Generate mock response.
+        
+        NOTE: This should rarely be called since check_data_status returns MISSING
+        for mock mode. But if called, return conservative HOLD.
+        """
         data = input_data.get("data", {})
         
         # Check for event risk
         if data.get("high_impact_event_soon"):
-            return AgentSignal(
+            sig = AgentSignal(
                 agent_name=self.name,
                 signal="HOLD",
                 confidence=ConfidenceLevel.MEDIUM,
                 reasoning=f"Mock: High-impact event soon, avoid new positions",
+                data_status=DataStatus.MISSING,  # Mark as mock
                 flags=["EVENT_RISK", "MOCK_MODE"],
             )
+            sig.confidence_float = 0.6
+            return sig
         
         # Simple CB stance comparison
         base_stance = data.get("base_cb_stance", "NEUTRAL")
@@ -159,21 +203,27 @@ CONFIDENCE GUIDELINES:
         
         if base_stance == "HAWKISH" and quote_stance != "HAWKISH":
             signal = "LONG"
+            confidence_float = 0.6
             confidence = ConfidenceLevel.MEDIUM
             flags = ["CB_DIVERGENCE", "BASE_HAWKISH", "MOCK_MODE"]
         elif quote_stance == "HAWKISH" and base_stance != "HAWKISH":
             signal = "SHORT"
+            confidence_float = 0.6
             confidence = ConfidenceLevel.MEDIUM
             flags = ["CB_DIVERGENCE", "QUOTE_HAWKISH", "MOCK_MODE"]
         else:
             signal = "HOLD"
+            confidence_float = 0.3
             confidence = ConfidenceLevel.LOW
             flags = ["NO_CB_DIVERGENCE", "MOCK_MODE"]
         
-        return AgentSignal(
+        sig = AgentSignal(
             agent_name=self.name,
             signal=signal,
             confidence=confidence,
             reasoning=f"Mock: {symbol} base_cb={base_stance} quote_cb={quote_stance}",
+            data_status=DataStatus.MISSING,  # Mark as mock even in mock_response
             flags=flags,
         )
+        sig.confidence_float = confidence_float
+        return sig

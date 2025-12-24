@@ -1,8 +1,8 @@
 """
 Context Builder for LLM Agents.
 
-Phase 4: Collects and transforms data from all sources
-into categorical format for LLM agents.
+Phase 6 Update: Added source_health tracking for data_status detection.
+Agents use source_health to determine if data is REAL or MISSING.
 """
 
 import logging
@@ -22,6 +22,8 @@ class AgentContext:
     Context object containing all data for LLM agents.
     
     All data is categorical - no raw prices or numbers.
+    
+    Phase 6: Added source_health for agents to check data availability.
     """
     symbol: str
     timestamp: datetime
@@ -54,6 +56,9 @@ class AgentContext:
     # Sentiment data
     sentiment: Dict[str, Any] = field(default_factory=dict)
     
+    # Phase 6: Source health for data_status detection
+    source_health: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    
     def to_dict(self) -> dict:
         """Convert to dict for passing to agents."""
         return {
@@ -69,6 +74,7 @@ class AgentContext:
             "session": self.session,
             "account": self.account,
             "sentiment": self.sentiment,
+            "source_health": self.source_health,
         }
 
 
@@ -77,6 +83,8 @@ class ContextBuilder:
     Builds AgentContext from various data sources.
     
     Transforms raw data into categorical format suitable for LLM agents.
+    
+    Phase 6: Tracks source health (mock_mode) for each data source.
     """
     
     # Central bank stance mappings (simplified)
@@ -114,6 +122,7 @@ class ContextBuilder:
         symbol: str,
         signal_preview: Optional[SignalPreviewV1] = None,
         account_state: Optional[Dict[str, Any]] = None,
+        market_snapshot: Optional[Dict[str, Any]] = None,
     ) -> AgentContext:
         """
         Build complete context for LLM agents.
@@ -122,18 +131,22 @@ class ContextBuilder:
             symbol: Trading symbol (e.g., "EURUSD")
             signal_preview: Optional SignalPreviewV1 with technical data
             account_state: Optional account state dict
+            market_snapshot: Optional market data with indicators
         
         Returns:
-            AgentContext with all categorical data.
+            AgentContext with all categorical data and source_health.
         """
         ctx = AgentContext(
             symbol=symbol,
             timestamp=datetime.now(timezone.utc),
         )
         
-        # Build technical context from signal_preview
+        # Build source_health first (agents use this to detect data_status)
+        ctx.source_health = self._build_source_health()
+        
+        # Build technical context from signal_preview and market_snapshot
         if signal_preview:
-            ctx.technical = self._build_technical(signal_preview)
+            ctx.technical = self._build_technical(signal_preview, market_snapshot)
         
         # Build macro context
         ctx.macro = self._build_macro(symbol)
@@ -149,7 +162,7 @@ class ContextBuilder:
         
         # Build session/risk context
         ctx.session = self._build_session()
-        ctx.risk = self._build_risk()
+        ctx.risk = self._build_risk(market_snapshot)
         
         # Build account context
         if account_state:
@@ -157,8 +170,61 @@ class ContextBuilder:
         
         return ctx
     
-    def _build_technical(self, preview: SignalPreviewV1) -> Dict[str, Any]:
-        """Extract technical data from signal_preview."""
+    def _build_source_health(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Build source health status for each data source.
+        
+        Agents use this to determine if data is REAL or MOCK.
+        """
+        health = {}
+        
+        # Economic Calendar
+        if self.economic_calendar:
+            mock_mode = getattr(self.economic_calendar, 'mock_mode', True)
+            health["economic_calendar"] = {
+                "mock_mode": mock_mode,
+                "available": not mock_mode,
+            }
+        else:
+            health["economic_calendar"] = {"mock_mode": True, "available": False}
+        
+        # COT Reports
+        if self.cot_reports:
+            mock_mode = getattr(self.cot_reports, 'mock_mode', True)
+            health["cot_reports"] = {
+                "mock_mode": mock_mode,
+                "available": not mock_mode,
+            }
+        else:
+            health["cot_reports"] = {"mock_mode": True, "available": False}
+        
+        # DXY Index - uses real Yahoo Finance API
+        if self.dxy_fetcher:
+            mock_mode = getattr(self.dxy_fetcher, 'mock_mode', False)
+            last_fetch = getattr(self.dxy_fetcher, '_last_fetch', None)
+            staleness_minutes = 0.0
+            if last_fetch:
+                staleness_minutes = (datetime.now(timezone.utc) - last_fetch).total_seconds() / 60.0
+            health["dxy_index"] = {
+                "mock_mode": mock_mode,
+                "available": True,  # DXY uses real Yahoo Finance API
+                "staleness_minutes": staleness_minutes,
+            }
+        else:
+            health["dxy_index"] = {"mock_mode": True, "available": False}
+        
+        return health
+    
+    def _build_technical(
+        self, 
+        preview: SignalPreviewV1, 
+        market_snapshot: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract technical data from signal_preview and market_snapshot.
+        
+        Phase 6: Also includes RSI/ATR if available in market_snapshot.
+        """
         # Map direction to trend
         direction = preview.direction
         if isinstance(direction, Direction):
@@ -195,13 +261,33 @@ class ContextBuilder:
         elif "breakout" in setup_val.lower():
             pattern = "BREAKOUT"
         
-        # RSI zone from flags
+        # RSI zone from flags or market_snapshot
         rsi_zone = "NEUTRAL"
         flags = preview.flags or []
+        
         if any("overbought" in f.lower() for f in flags):
             rsi_zone = "OVERBOUGHT"
         elif any("oversold" in f.lower() for f in flags):
             rsi_zone = "OVERSOLD"
+        
+        # Phase 6: Get RSI from market_snapshot if available
+        if market_snapshot:
+            rsi_val = market_snapshot.get("rsi")
+            if rsi_val is not None:
+                if rsi_val > 70:
+                    rsi_zone = "OVERBOUGHT"
+                elif rsi_val < 30:
+                    rsi_zone = "OVERSOLD"
+        
+        # Volatility level from ATR
+        volatility_level = "NORMAL"
+        if market_snapshot:
+            atr_percentile = market_snapshot.get("atr_percentile")
+            if atr_percentile is not None:
+                if atr_percentile > 80:
+                    volatility_level = "HIGH"
+                elif atr_percentile < 20:
+                    volatility_level = "LOW"
         
         return {
             "trend_short": trend_short,
@@ -211,7 +297,7 @@ class ContextBuilder:
             "rsi_zone": rsi_zone,
             "macd_signal": trend_short if trend_short != "NEUTRAL" else "NEUTRAL",
             "momentum_divergence": "NONE",
-            "volatility_level": self._map_data_quality(preview.data_quality),
+            "volatility_level": volatility_level,
             "atr_relative": "NORMAL",
             "candle_pattern": pattern,
             "candle_direction": "BULLISH" if trend_short == "UP" else "BEARISH" if trend_short == "DOWN" else "NEUTRAL",
@@ -219,15 +305,6 @@ class ContextBuilder:
             "near_resistance": any("resistance" in f.lower() for f in flags),
             "breakout_detected": "BULLISH" if "breakout" in setup_val.lower() and trend_short == "UP" else "BEARISH" if "breakout" in setup_val.lower() and trend_short == "DOWN" else "NONE",
         }
-    
-    def _map_data_quality(self, quality: Any) -> str:
-        """Map data quality to volatility level."""
-        if quality is None:
-            return "NORMAL"
-        qual_str = str(quality).lower() if not hasattr(quality, 'value') else quality.value.lower()
-        if "poor" in qual_str or "bad" in qual_str:
-            return "HIGH"
-        return "NORMAL"
     
     def _build_macro(self, symbol: str) -> Dict[str, Any]:
         """Build macro context for symbol."""
@@ -244,6 +321,11 @@ class ContextBuilder:
         elif quote_stance == "HAWKISH" and base_stance != "HAWKISH":
             rate_diff = "WIDENING_FAVOR_QUOTE"
         
+        # Phase 6: Mark if calendar is real
+        has_real_calendar = False
+        if self.economic_calendar:
+            has_real_calendar = not getattr(self.economic_calendar, 'mock_mode', True)
+        
         return {
             f"{base}_cb_stance": base_stance,
             f"{quote}_cb_stance": quote_stance,
@@ -251,6 +333,8 @@ class ContextBuilder:
             f"{base}_momentum": "STABLE",
             f"{quote}_momentum": "STABLE",
             "risk_sentiment": "NEUTRAL",
+            "has_real_calendar": has_real_calendar,
+            "_mock_mode": not has_real_calendar,  # For agent detection
         }
     
     def _get_calendar_events(self, symbol: str) -> List[Dict[str, Any]]:
@@ -331,10 +415,23 @@ class ContextBuilder:
             "weekend_approaching": weekend_approaching,
         }
     
-    def _build_risk(self) -> Dict[str, Any]:
+    def _build_risk(self, market_snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Build risk context."""
+        volatility_regime = "NORMAL"
+        
+        # Phase 6: Get volatility from market_snapshot if available
+        if market_snapshot:
+            atr_percentile = market_snapshot.get("atr_percentile")
+            if atr_percentile is not None:
+                if atr_percentile > 90:
+                    volatility_regime = "EXTREME"
+                elif atr_percentile > 75:
+                    volatility_regime = "HIGH"
+                elif atr_percentile < 20:
+                    volatility_regime = "LOW"
+        
         return {
-            "volatility_regime": "NORMAL",
+            "volatility_regime": volatility_regime,
             "volatility_expanding": False,
             "recent_volatility_spike": False,
             "market_stress": "NORMAL",

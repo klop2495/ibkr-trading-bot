@@ -1,14 +1,10 @@
 """
-Weighted Aggregator for LLM agent signals with Quorum Voting.
+Weighted Aggregator for LLM agent signals.
 
-Phase 3: Combines signals from all agents using weighted voting.
-Phase 5: Quorum Voting v2 - replaces unanimous voting with weighted quorum.
+Phase 6: Updated to work with data_status and confidence_float.
+This file is kept for backwards compatibility with existing tests.
 
-Key changes from v1:
-- trade_allowed based on quorum (approval_ratio >= threshold), not unanimity
-- entry_triggered affects threshold: stricter quorum when no entry trigger
-- RiskAgent has absolute veto power
-- risk_modifier derived from approval_ratio with caps
+For new code, use ScoreAggregator from score_aggregator.py.
 """
 
 import logging
@@ -19,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from app.models.confidence import ConfidenceLevel, confidence_to_float
 from app.agents.llm.base_agent import AgentSignal
+from app.agents.llm.data_status import DataStatus
 from app.agents.config import (
     QUORUM_THRESHOLD_WITH_ENTRY,
     QUORUM_THRESHOLD_NO_ENTRY,
@@ -103,25 +100,29 @@ class AggregatedDecision:
             "agent_signals": self.agent_signals,
             "agent_votes": self.agent_votes,
             "agent_confidences": self.agent_confidences,
-            "flags": self.flags[:10],  # Limit flags
+            "flags": self.flags[:10],  # Limit flags for storage
             "agents_count": self.agents_count,
-            "quorum_threshold": self.quorum_threshold,
+            "quorum_threshold": round(self.quorum_threshold, 4),
         }
 
 
 class WeightedAggregator:
     """
-    Aggregates signals from multiple LLM agents using Quorum Voting.
+    Aggregates LLM agent signals using weighted quorum voting.
     
-    Quorum Voting v2:
-    - Each agent votes: ALLOW (directional signal) or BLOCK (HOLD+high conf) or ABSTAIN
-    - approval_ratio = allow_score / (allow_score + block_score)
-    - trade_allowed = (approval_ratio >= threshold) AND (active_weight >= min) AND (no veto)
-    - RiskAgent can veto any trade
-    - Stricter threshold when entry_triggered=False
+    Phase 6 Update:
+    - Agents with data_status=MISSING are treated as ABSTAIN
+    - Uses confidence_float if available
+    - RiskAgent veto only if data_status != MISSING
+    
+    Default agent weights (must sum to ~1.0):
+    - TechnicalAgent: 0.25
+    - MacroAgent: 0.20
+    - SentimentAgent: 0.15
+    - CorrelationAgent: 0.15
+    - RiskAgent: 0.25
     """
     
-    # Default weights (should sum to 1.0)
     DEFAULT_WEIGHTS = {
         "TechnicalAgent": 0.25,
         "MacroAgent": 0.20,
@@ -130,218 +131,211 @@ class WeightedAggregator:
         "RiskAgent": 0.25,
     }
     
-    # Thresholds for direction signal (legacy)
-    SIGNAL_THRESHOLD = 0.15
-    CONSENSUS_STRONG = 0.6
-    CONSENSUS_MODERATE = 0.4
-    
     def __init__(
         self,
         weights: Optional[Dict[str, float]] = None,
-        signal_threshold: float = 0.15,
-        risk_veto_enabled: bool = True,
+        risk_veto_enabled: bool = RISK_VETO_ENABLED,
     ):
         """
         Initialize aggregator.
         
         Args:
             weights: Custom agent weights (default uses DEFAULT_WEIGHTS).
-            signal_threshold: Minimum score to trigger directional signal.
-            risk_veto_enabled: If True, RiskAgent BLOCK vetoes all trades.
+            risk_veto_enabled: Whether RiskAgent can veto trades.
         """
         self.weights = weights or self.DEFAULT_WEIGHTS
-        self.signal_threshold = signal_threshold
-        self.risk_veto_enabled = risk_veto_enabled if risk_veto_enabled is not None else RISK_VETO_ENABLED
-    
-    def _map_signal_to_vote(self, signal: str, confidence: ConfidenceLevel) -> VoteType:
-        """
-        Map agent signal to vote type.
-        
-        Mapping:
-        - LONG/SHORT -> ALLOW (agent approves trade in that direction)
-        - HOLD + confidence >= MEDIUM -> BLOCK (agent explicitly against)
-        - HOLD + confidence == LOW -> ABSTAIN (agent uncertain)
-        """
-        if signal in ("LONG", "SHORT"):
-            return VoteType.ALLOW
-        # signal == "HOLD"
-        if confidence in (ConfidenceLevel.MEDIUM, ConfidenceLevel.HIGH):
-            return VoteType.BLOCK
-        return VoteType.ABSTAIN
-    
-    def _calculate_risk_modifier(self, approval_ratio: float, entry_triggered: bool) -> float:
-        """
-        Calculate risk_modifier from approval_ratio.
-        
-        Higher consensus = higher risk_modifier (larger position allowed).
-        When entry_triggered=False, cap at RISK_MOD_CAP_NO_ENTRY.
-        """
-        if approval_ratio < 0.6:
-            # Should not happen if trade_allowed=True, but fail-safe
-            base_modifier = RISK_MOD_MIN
-        elif approval_ratio < 0.75:
-            base_modifier = 0.70
-        elif approval_ratio < 0.9:
-            base_modifier = 0.85
-        else:
-            base_modifier = 1.0
-        
-        # Apply cap for no-entry trades
-        if not entry_triggered:
-            base_modifier = min(base_modifier, RISK_MOD_CAP_NO_ENTRY)
-        
-        # Clamp to valid range
-        return max(RISK_MOD_MIN, min(RISK_MOD_MAX, base_modifier))
+        self.risk_veto_enabled = risk_veto_enabled
     
     def aggregate(
         self,
         signals: List[AgentSignal],
-        entry_triggered: bool = True,
+        entry_triggered: bool = False,
         candidate_valid: bool = True,
     ) -> AggregatedDecision:
         """
-        Aggregate multiple agent signals into final decision using Quorum Voting.
+        Aggregate agent signals into final decision.
         
         Args:
             signals: List of AgentSignal from each agent.
-            entry_triggered: Whether M15 entry confirmation exists.
-            candidate_valid: Whether rules candidate is valid (setup_type!=NO_TRADE, direction!=FLAT).
+            entry_triggered: Whether rules engine detected entry trigger.
+            candidate_valid: Whether the candidate is valid for trading.
         
         Returns:
-            AggregatedDecision with quorum-based trade_allowed.
+            AggregatedDecision with quorum results.
         """
         if not signals:
-            return self._empty_decision()
+            return self._no_agents_decision()
         
-        # Choose quorum threshold based on entry_triggered
-        quorum_threshold = QUORUM_THRESHOLD_WITH_ENTRY if entry_triggered else QUORUM_THRESHOLD_NO_ENTRY
+        # Choose threshold based on entry_triggered
+        threshold = QUORUM_THRESHOLD_WITH_ENTRY if entry_triggered else QUORUM_THRESHOLD_NO_ENTRY
         
-        # Build signal/confidence/vote maps
+        # Phase 6: Check for agents with MISSING data (treat as ABSTAIN)
         agent_signals: Dict[str, str] = {}
         agent_votes: Dict[str, str] = {}
         agent_confidences: Dict[str, str] = {}
-        all_flags: List[str] = []
         
-        risk_signal: Optional[AgentSignal] = None
-        risk_vote: Optional[VoteType] = None
-        
-        # Calculate scores
         allow_score = 0.0
         block_score = 0.0
         abstain_weight = 0.0
-        total_weight = 0.0
         
-        # For direction calculation (legacy)
-        direction_score = 0.0
+        direction_weighted = 0.0  # For vote_score calculation
+        total_direction_weight = 0.0
+        
+        all_flags: List[str] = []
+        risk_blocked = False
+        risk_veto_reason: Optional[str] = None
         
         for sig in signals:
-            weight = self.weights.get(sig.agent_name, 0.1)
-            conf_float = confidence_to_float(sig.confidence)
+            agent_name = sig.agent_name
+            weight = self.weights.get(agent_name, 0.1)
+            
+            # Get confidence float (Phase 6: use confidence_float if available)
+            if hasattr(sig, 'confidence_float') and sig.confidence_float is not None:
+                conf_float = sig.confidence_float
+            else:
+                conf_float = confidence_to_float(sig.confidence)
+            
+            # Phase 6: Check data_status - MISSING = ABSTAIN
+            data_status = getattr(sig, 'data_status', DataStatus.REAL)
+            if data_status == DataStatus.MISSING:
+                vote = VoteType.ABSTAIN
+                agent_votes[agent_name] = "ABSTAIN"
+                agent_signals[agent_name] = sig.signal
+                agent_confidences[agent_name] = sig.confidence.value
+                abstain_weight += weight
+                all_flags.extend(sig.flags)
+                continue
+            
+            # Map signal to vote
             vote = self._map_signal_to_vote(sig.signal, sig.confidence)
             
-            agent_signals[sig.agent_name] = sig.signal
-            agent_votes[sig.agent_name] = vote.value
-            agent_confidences[sig.agent_name] = sig.confidence.value
+            agent_signals[agent_name] = sig.signal
+            agent_votes[agent_name] = vote.value.upper()
+            agent_confidences[agent_name] = sig.confidence.value
             all_flags.extend(sig.flags)
             
-            # Track RiskAgent
-            if sig.agent_name == "RiskAgent":
-                risk_signal = sig
-                risk_vote = vote
-            
-            # Calculate weighted scores by vote type
+            # Weighted vote
             effective_weight = weight * conf_float
             
             if vote == VoteType.ALLOW:
                 allow_score += effective_weight
             elif vote == VoteType.BLOCK:
                 block_score += effective_weight
-            else:  # ABSTAIN
+            else:
                 abstain_weight += weight
             
-            total_weight += weight
-            
-            # Direction score (for LONG/SHORT/HOLD signal)
+            # Direction for vote_score (only from participating agents)
             if sig.signal == "LONG":
-                direction_score += effective_weight
+                direction_weighted += effective_weight
+                total_direction_weight += effective_weight
             elif sig.signal == "SHORT":
-                direction_score -= effective_weight
+                direction_weighted -= effective_weight
+                total_direction_weight += effective_weight
+            
+            # Phase 6: RiskAgent veto only if data_status != MISSING
+            if (
+                self.risk_veto_enabled
+                and agent_name == "RiskAgent"
+                and data_status != DataStatus.MISSING
+            ):
+                # Check for risk_veto flag (Phase 6)
+                if getattr(sig, 'risk_veto', False):
+                    risk_blocked = True
+                    for flag in sig.flags:
+                        if flag in ("EXTREME_VOLATILITY", "CRITICAL_DRAWDOWN", "EVENT_IMMINENT"):
+                            risk_veto_reason = flag
+                            break
+                    if not risk_veto_reason:
+                        risk_veto_reason = sig.reasoning[:30] if sig.reasoning else "RISK_VETO"
+                # Also check old-style veto (HOLD with HIGH confidence)
+                elif vote == VoteType.BLOCK:
+                    risk_blocked = True
+                    risk_veto_reason = sig.flags[0] if sig.flags else "RISK_ELEVATED"
         
-        # Calculate active weight (ALLOW + BLOCK, excluding ABSTAIN)
+        # Calculate active weight and approval ratio
         active_weight = allow_score + block_score
         
-        # Check for RiskAgent veto
-        risk_blocked = False
-        veto_reason: Optional[str] = None
-        
-        if self.risk_veto_enabled and risk_vote == VoteType.BLOCK:
-            risk_blocked = True
-            veto_reason = "RISK_VETO"
-            logger.info("WeightedAggregator: RiskAgent veto - trade blocked")
-        
-        # Calculate approval_ratio (avoid div by zero)
-        if active_weight > 0:
-            approval_ratio = allow_score / active_weight
-        else:
+        if active_weight == 0:
             approval_ratio = 0.0
+        else:
+            approval_ratio = allow_score / active_weight
         
-        # Determine trade_allowed via quorum
-        trade_allowed = False
+        # Calculate vote_score for hybrid calculation
+        if total_direction_weight > 0:
+            vote_score = direction_weighted / total_direction_weight
+        else:
+            vote_score = 0.0
+        vote_score = max(-1.0, min(1.0, vote_score))
         
-        if risk_blocked:
-            trade_allowed = False
-            # veto_reason already set
-        elif not candidate_valid:
+        # Determine trade_allowed
+        veto_reason: Optional[str] = None
+        trade_allowed = True
+        
+        if not candidate_valid:
             trade_allowed = False
             veto_reason = "NO_CANDIDATE"
+        elif risk_blocked:
+            trade_allowed = False
+            veto_reason = "RISK_VETO"
+            all_flags.insert(0, "RISK_VETO")
         elif active_weight < MIN_ACTIVE_WEIGHT:
             trade_allowed = False
             veto_reason = "NO_QUORUM"
-            logger.info(f"WeightedAggregator: No quorum - active_weight={active_weight:.2f} < {MIN_ACTIVE_WEIGHT}")
-        elif approval_ratio < quorum_threshold:
+            all_flags.append("NO_QUORUM")
+        elif approval_ratio < threshold:
             trade_allowed = False
             veto_reason = "LOW_APPROVAL"
-            logger.info(f"WeightedAggregator: Low approval - ratio={approval_ratio:.2f} < threshold={quorum_threshold}")
+            all_flags.append("LOW_APPROVAL")
+        
+        # Determine signal based on vote_score
+        if vote_score > 0.15:
+            signal = "LONG"
+        elif vote_score < -0.15:
+            signal = "SHORT"
         else:
-            trade_allowed = True
+            signal = "HOLD"
         
-        # Calculate direction signal (legacy for hybrid mode)
-        normalized_direction = direction_score / total_weight if total_weight > 0 else 0.0
-        
-        if normalized_direction > self.signal_threshold:
-            final_signal = "LONG"
-        elif normalized_direction < -self.signal_threshold:
-            final_signal = "SHORT"
-        else:
-            final_signal = "HOLD"
-        
-        # If signal is HOLD, trade_allowed must be False
-        if final_signal == "HOLD" and trade_allowed:
+        # If signal is HOLD, trade not allowed
+        if signal == "HOLD":
             trade_allowed = False
-            veto_reason = "SIGNAL_HOLD"
+            if not veto_reason:
+                veto_reason = "SIGNAL_HOLD"
         
-        # Calculate consensus level (legacy)
-        consensus = self._calculate_consensus(signals, final_signal)
+        # Calculate risk_modifier
+        if not trade_allowed:
+            risk_modifier = RISK_MOD_MIN
+        else:
+            # Scale from approval_ratio
+            risk_modifier = RISK_MOD_MIN + (approval_ratio * (RISK_MOD_MAX - RISK_MOD_MIN))
+            if not entry_triggered:
+                risk_modifier = min(risk_modifier, RISK_MOD_CAP_NO_ENTRY)
+                all_flags.append("NO_ENTRY_TRIGGER")
         
-        # Calculate overall confidence
-        confidence = self._calculate_confidence(signals, consensus, risk_blocked)
+        risk_modifier = round(max(RISK_MOD_MIN, min(RISK_MOD_MAX, risk_modifier)), 4)
         
-        # Calculate risk_modifier from approval_ratio
-        risk_modifier = self._calculate_risk_modifier(approval_ratio, entry_triggered) if trade_allowed else RISK_MOD_MIN
+        # Determine consensus level
+        if approval_ratio >= 0.9:
+            consensus_level = "STRONG"
+        elif approval_ratio >= 0.7:
+            consensus_level = "MODERATE"
+        elif approval_ratio >= 0.5:
+            consensus_level = "WEAK"
+        else:
+            consensus_level = "NONE"
+        
+        # Determine confidence
+        if approval_ratio >= 0.8 and signal != "HOLD":
+            confidence = ConfidenceLevel.HIGH
+        elif approval_ratio >= 0.6:
+            confidence = ConfidenceLevel.MEDIUM
+        else:
+            confidence = ConfidenceLevel.LOW
         
         # Dedupe flags
         unique_flags = list(dict.fromkeys(all_flags))
-        if risk_blocked:
-            unique_flags.insert(0, "RISK_VETO")
-        if veto_reason == "NO_QUORUM":
-            unique_flags.insert(0, "NO_QUORUM")
-        if veto_reason == "LOW_APPROVAL":
-            unique_flags.insert(0, "LOW_APPROVAL")
-        if not entry_triggered and trade_allowed:
-            unique_flags.insert(0, "NO_ENTRY_TRIGGER")
         
         return AggregatedDecision(
-            signal=final_signal,
+            signal=signal,
             confidence=confidence,
             trade_allowed=trade_allowed,
             approval_ratio=round(approval_ratio, 4),
@@ -351,73 +345,36 @@ class WeightedAggregator:
             abstain_weight=round(abstain_weight, 4),
             risk_blocked=risk_blocked,
             veto_reason=veto_reason,
-            risk_modifier=round(risk_modifier, 4),
-            vote_score=round(normalized_direction, 4),
-            consensus_level=consensus,
+            risk_modifier=risk_modifier,
+            vote_score=round(vote_score, 4),
+            consensus_level=consensus_level,
             agent_signals=agent_signals,
             agent_votes=agent_votes,
             agent_confidences=agent_confidences,
             flags=unique_flags[:15],
             agents_count=len(signals),
-            quorum_threshold=quorum_threshold,
+            quorum_threshold=threshold,
         )
     
-    def _calculate_consensus(self, signals: List[AgentSignal], final_signal: str) -> str:
-        """Calculate level of agreement among agents."""
-        if not signals:
-            return "NONE"
+    def _map_signal_to_vote(self, signal: str, confidence: ConfidenceLevel) -> VoteType:
+        """
+        Map agent signal + confidence to vote type.
         
-        agreeing = sum(1 for s in signals if s.signal == final_signal)
-        ratio = agreeing / len(signals)
-        
-        if ratio >= self.CONSENSUS_STRONG:
-            return "STRONG"
-        elif ratio >= self.CONSENSUS_MODERATE:
-            return "MODERATE"
-        elif ratio > 0:
-            return "WEAK"
-        return "NONE"
+        LONG/SHORT → ALLOW (agent has directional opinion)
+        HOLD + HIGH/MEDIUM → BLOCK (agent actively opposes trading)
+        HOLD + LOW → ABSTAIN (agent uncertain)
+        """
+        if signal in ("LONG", "SHORT"):
+            return VoteType.ALLOW
+        elif signal == "HOLD":
+            if confidence in (ConfidenceLevel.HIGH, ConfidenceLevel.MEDIUM):
+                return VoteType.BLOCK
+            else:
+                return VoteType.ABSTAIN
+        return VoteType.ABSTAIN
     
-    def _calculate_confidence(
-        self, 
-        signals: List[AgentSignal], 
-        consensus: str,
-        risk_blocked: bool,
-    ) -> ConfidenceLevel:
-        """Calculate overall confidence from agent confidences and consensus."""
-        if risk_blocked:
-            return ConfidenceLevel.LOW
-        
-        if not signals:
-            return ConfidenceLevel.LOW
-        
-        # Average confidence weighted by agent weight
-        total_conf = 0.0
-        total_weight = 0.0
-        
-        for sig in signals:
-            weight = self.weights.get(sig.agent_name, 0.1)
-            conf_value = confidence_to_float(sig.confidence)
-            total_conf += weight * conf_value
-            total_weight += weight
-        
-        avg_conf = total_conf / total_weight if total_weight > 0 else 0.3
-        
-        # Adjust by consensus
-        if consensus == "STRONG":
-            avg_conf *= 1.1
-        elif consensus == "WEAK" or consensus == "NONE":
-            avg_conf *= 0.7
-        
-        # Map to enum
-        if avg_conf >= 0.7:
-            return ConfidenceLevel.HIGH
-        elif avg_conf >= 0.45:
-            return ConfidenceLevel.MEDIUM
-        return ConfidenceLevel.LOW
-    
-    def _empty_decision(self) -> AggregatedDecision:
-        """Return empty decision when no signals provided."""
+    def _no_agents_decision(self) -> AggregatedDecision:
+        """Return decision when no agents provided."""
         return AggregatedDecision(
             signal="HOLD",
             confidence=ConfidenceLevel.LOW,

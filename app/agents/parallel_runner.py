@@ -1,11 +1,14 @@
 """
-Parallel Decision Runner - Full Integration.
+Parallel Decision Runner - Phase 6: Two-Contour Architecture.
 
-Phase 0: Shadow mode with stubs.
-Phase 4: Real LLM agents with safety gates.
+Rules Engine (60%) + LLM Engine (40%) = Hybrid Decision.
 
-Runs rules engine (real) + GPT agents (real or stubs) + hybrid.
-All decisions are logged to parallel_decisions for comparison.
+Key changes from Phase 4:
+- LLM контур выдает llm_score ∈ [-1..+1] вместо quorum voting
+- rules_score ∈ [-1..+1] извлекается из signal_preview
+- hybrid_score = 0.6 * rules_score + 0.4 * llm_score
+- Agents with MISSING data ABSTAIN (don't affect llm_score)
+- RiskAgent veto still works but only with REAL data
 """
 
 import logging
@@ -22,23 +25,26 @@ from app.models.confidence import ConfidenceLevel
 logger = logging.getLogger(__name__)
 
 
+# Thresholds
+HYBRID_THRESHOLD = float(os.getenv("HYBRID_THRESHOLD", "0.15"))
+RULES_WEIGHT = float(os.getenv("HYBRID_RULES_WEIGHT", "0.6"))
+LLM_WEIGHT = float(os.getenv("HYBRID_LLM_WEIGHT", "0.4"))
+
+
 class ParallelDecisionRunner:
     """
-    Runs all three strategies in parallel and logs results.
+    Runs Rules + LLM engines in parallel and creates hybrid decision.
     
-    Phase 0 (Shadow Mode):
-    - rules: Uses existing AgentsAggregator logic
-    - gpt: Returns HOLD stubs
-    - hybrid: Mirrors rules (since gpt=HOLD)
-    
-    Phase 4 (Full Integration):
-    - gpt: Real LLM agents with safety gates
-    - hybrid: Weighted blend of rules + gpt
+    Phase 6 (Two-Contour Architecture):
+    - rules_score: -1.0 to +1.0 from signal_preview direction/confidence
+    - llm_score: -1.0 to +1.0 from LLM agents (ScoreAggregator)
+    - hybrid_score = 0.6 * rules_score + 0.4 * llm_score
+    - Thresholds determine final LONG/SHORT/HOLD
     """
 
     def __init__(
         self,
-        active_strategy: str = "rules",
+        active_strategy: str = "hybrid",
         llm_enabled: bool = False,
         budget_limiter: Optional[Any] = None,
         agent_cache: Optional[Any] = None,
@@ -50,14 +56,14 @@ class ParallelDecisionRunner:
         """
         Args:
             active_strategy: Which strategy to use for execution.
-                             "rules" (default), "gpt", or "hybrid".
-            llm_enabled: Whether to use real LLM agents (Phase 4+).
+                             "rules", "llm", or "hybrid" (default).
+            llm_enabled: Whether to use real LLM agents.
             budget_limiter: BudgetLimiter instance for API cost control.
             agent_cache: AgentCache instance for response caching.
             response_validator: ResponseValidator for output validation.
             context_builder: ContextBuilder for preparing agent inputs.
             agents: List of LLM agent instances.
-            aggregator: WeightedAggregator for combining agent signals.
+            aggregator: ScoreAggregator for combining agent signals.
         """
         self.active_strategy = active_strategy
         self.llm_enabled = llm_enabled
@@ -83,7 +89,7 @@ class ParallelDecisionRunner:
         account_state: Optional[Dict[str, Any]] = None,
     ) -> ParallelDecisionV1:
         """
-        Run all strategies and create a parallel decision record.
+        Run both engines and create hybrid decision.
         
         Args:
             preview: The signal preview being processed.
@@ -99,33 +105,41 @@ class ParallelDecisionRunner:
         ts_utc = getattr(preview, "ts_utc", None) or datetime.now(timezone.utc)
         symbol = getattr(preview, "symbol", "")
 
-        # 1. Extract rules decision (from existing logic)
-        rules_signal, rules_confidence, rules_flags = self._extract_rules_decision(preview, decision)
+        # 1. Extract rules_score from signal_preview
+        rules_signal, rules_score, rules_confidence, rules_flags = self._extract_rules_score(preview, decision)
 
-        # 2. Run GPT agents (real or stubs)
-        gpt_aggregated = None
+        # 2. Run LLM контур
         if self.llm_enabled and self.agents:
-            gpt_result = self._run_llm_agents(preview, symbol, account_state)
-            gpt_signal, gpt_score, gpt_consensus, gpt_consensus_count, gpt_details, gpt_aggregated = gpt_result
+            llm_result = self._run_llm_contour(preview, symbol, account_state)
         else:
-            gpt_result = self._run_gpt_stubs()
-            gpt_signal, gpt_score, gpt_consensus, gpt_consensus_count, gpt_details = gpt_result
+            llm_result = self._empty_llm_result()
+        
+        llm_signal = llm_result.get("llm_signal", "HOLD")
+        llm_score = llm_result.get("llm_score", 0.0)
+        llm_active_weight = llm_result.get("llm_active_weight", 0.0)
+        risk_veto = llm_result.get("risk_veto", False)
+        gpt_details = llm_result.get("agent_details", [])
 
-        # 3. Compute hybrid
-        hybrid_signal, hybrid_score = self._compute_hybrid(
-            rules_signal, rules_confidence,
-            gpt_signal, gpt_score,
+        # 3. Compute hybrid_score (60% rules + 40% llm)
+        hybrid_score, hybrid_signal = self._compute_hybrid_score(
+            rules_score, llm_score, risk_veto
         )
 
         # 4. Determine executed strategy
         executed_strategy, executed_signal = self._select_strategy(
-            rules_signal, gpt_signal, hybrid_signal
+            rules_signal, llm_signal, hybrid_signal
         )
 
         # 5. Build safety status
-        source_health = self._get_source_health() or {}
+        source_health = llm_result.get("source_health") or {}
         budget_status = self._get_budget_status() or "OK"
         validation_failures = self._get_validation_failures() or 0
+
+        # 6. Log the hybrid tick
+        self._log_hybrid_tick(
+            symbol, ts_utc, rules_score, llm_score, hybrid_score,
+            llm_active_weight, risk_veto, executed_strategy, executed_signal
+        )
 
         return ParallelDecisionV1(
             ts_utc=ts_utc,
@@ -134,11 +148,11 @@ class ParallelDecisionRunner:
             rules_signal=rules_signal,
             rules_confidence=rules_confidence,
             rules_flags=rules_flags,
-            # GPT
-            gpt_signal=gpt_signal,
-            gpt_score=gpt_score,
-            gpt_consensus=gpt_consensus,
-            gpt_consensus_count=gpt_consensus_count,
+            # GPT (renamed from quorum voting)
+            gpt_signal=llm_signal,
+            gpt_score=llm_score,
+            gpt_consensus=llm_active_weight >= 0.5,  # Backwards compat
+            gpt_consensus_count=llm_result.get("participating_agents", 0),
             gpt_agent_details=gpt_details,
             # Hybrid
             hybrid_signal=hybrid_signal,
@@ -149,57 +163,88 @@ class ParallelDecisionRunner:
             # Links
             signal_preview_id=preview_id,
             control_decision_id=UUID(decision_id) if decision_id else None,
-            # Safety (Phase 4)
+            # Safety
             source_health=source_health,
             budget_status=budget_status,
             cache_hits=self._cache_hits,
             validation_failures=validation_failures,
         )
 
-    def _extract_rules_decision(
+    def _extract_rules_score(
         self,
         preview: SignalPreviewV1,
         decision: Any,
-    ) -> tuple[str, str, List[str]]:
-        """Extract rules decision from existing DecisionV1."""
+    ) -> tuple[str, float, str, List[str]]:
+        """
+        Extract rules_score from signal_preview.
+        
+        Returns:
+            (signal, score, confidence, flags)
+            
+        Score calculation:
+        - direction: LONG -> +1, SHORT -> -1, FLAT -> 0
+        - confidence multiplier: HIGH -> 0.9, NORMAL -> 0.6, LOW -> 0.3
+        - trade_allowed=False -> score = 0
+        """
         direction = getattr(preview, "direction", Direction.FLAT)
         if isinstance(direction, Direction):
             direction_val = direction.value
         else:
             direction_val = str(direction) if direction else "flat"
 
+        # Direction to base score
         if direction_val == "long":
             signal = "LONG"
+            base_score = 1.0
         elif direction_val == "short":
             signal = "SHORT"
+            base_score = -1.0
         else:
             signal = "HOLD"
+            base_score = 0.0
 
-        trade_allowed = getattr(decision, "trade_allowed", False)
-        if not trade_allowed:
-            signal = "HOLD"
-
+        # Confidence multiplier
         confidence = getattr(preview, "confidence", None)
         if confidence:
             confidence_val = confidence.value if hasattr(confidence, "value") else str(confidence)
         else:
             confidence_val = "low"
+        
+        confidence_multiplier = {
+            "high": 0.9,
+            "normal": 0.6,
+            "low": 0.3,
+        }.get(confidence_val.lower(), 0.3)
+        
+        # Calculate rules_score
+        rules_score = base_score * confidence_multiplier
+
+        # If trade not allowed, reduce impact
+        trade_allowed = getattr(decision, "trade_allowed", False)
+        if not trade_allowed and signal != "HOLD":
+            rules_score *= 0.5  # Reduce score but don't zero out
+            signal = "HOLD"
 
         flags = list(getattr(decision, "flags", []) or [])
 
-        return signal, confidence_val, flags
+        return signal, rules_score, confidence_val, flags
 
-    def _run_llm_agents(
+    def _run_llm_contour(
         self,
         preview: SignalPreviewV1,
         symbol: str,
         account_state: Optional[Dict[str, Any]] = None,
-    ) -> tuple[str, float, bool, int, List[Dict[str, Any]], Optional[Any]]:
+    ) -> Dict[str, Any]:
         """
-        Run real LLM agents with safety gates and quorum voting.
+        Run LLM agents and aggregate into llm_score.
         
-        Returns:
-            (signal, score, consensus, consensus_count, agent_details, aggregated_decision)
+        Returns dict with:
+        - llm_score: -1.0 to +1.0
+        - llm_signal: LONG/SHORT/HOLD
+        - llm_active_weight: 0.0 to 1.0
+        - risk_veto: bool
+        - agent_details: list of dicts
+        - participating_agents: int
         """
         # Check budget
         if self.budget_limiter:
@@ -207,7 +252,7 @@ class ParallelDecisionRunner:
             if not allowed:
                 self._budget_blocked += 1
                 logger.warning(f"LLM call blocked: {status}")
-                return self._run_gpt_stubs()
+                return self._empty_llm_result()
         
         # Build context
         if self.context_builder:
@@ -233,23 +278,20 @@ class ParallelDecisionRunner:
                 
                 if cached:
                     self._cache_hits += 1
-                    signal_obj = type('CachedSignal', (), {
-                        'agent_name': cached.agent_name,
-                        'signal': cached.signal,
-                        'confidence': ConfidenceLevel(cached.confidence),
-                        'reasoning': cached.reasoning,
-                        'flags': cached.flags,
-                        'from_cache': True,
-                        'validation_passed': True,
-                        'to_dict': lambda s=cached: {
-                            'agent': s.agent_name,
-                            'signal': s.signal,
-                            'confidence': s.confidence,
-                            'reasoning': s.reasoning[:200],
-                            'flags': s.flags,
-                            'from_cache': True,
-                        }
-                    })()
+                    # Reconstruct AgentSignal from cache
+                    from app.agents.llm.base_agent import AgentSignal
+                    from app.agents.llm.data_status import DataStatus
+                    
+                    signal_obj = AgentSignal(
+                        agent_name=cached.agent_name,
+                        signal=cached.signal,
+                        confidence=ConfidenceLevel(cached.confidence),
+                        confidence_float=cached.confidence_float if hasattr(cached, 'confidence_float') else 0.5,
+                        reasoning=cached.reasoning,
+                        data_status=DataStatus(cached.data_status) if hasattr(cached, 'data_status') else DataStatus.REAL,
+                        flags=cached.flags,
+                        from_cache=True,
+                    )
                 else:
                     # Call agent
                     signal_obj = agent.call(context_dict, symbol)
@@ -283,10 +325,13 @@ class ParallelDecisionRunner:
                 
             except Exception as e:
                 logger.error(f"Agent {agent.name} failed: {e}")
+                from app.agents.llm.data_status import DataStatus
                 agent_details.append({
                     'agent': agent.name,
                     'signal': 'HOLD',
                     'confidence': 'low',
+                    'confidence_float': 0.0,
+                    'data_status': 'missing',
                     'error': str(e)[:100],
                 })
         
@@ -294,103 +339,101 @@ class ParallelDecisionRunner:
         if self.budget_limiter and self._llm_calls > 0:
             self.budget_limiter.record_call()
         
-        # Aggregate signals with quorum voting
+        # Aggregate signals with ScoreAggregator
         if self.aggregator and agent_signals:
-            # Check candidate validity and entry_triggered from preview
-            from app.agents.runner import is_candidate_valid
-            candidate_valid = is_candidate_valid(preview)
-            entry_triggered = getattr(preview, "entry_triggered", False)
-            
-            result = self.aggregator.aggregate(
-                agent_signals,
-                entry_triggered=entry_triggered,
-                candidate_valid=candidate_valid,
-            )
-            return (
-                result.signal,
-                result.vote_score,
-                result.consensus_level == "STRONG",
-                len([s for s in agent_signals if s.signal == result.signal]),
-                agent_details,
-                result,  # Return full aggregated decision
-            )
+            result = self.aggregator.aggregate(agent_signals)
+            return {
+                "llm_score": result.llm_score,
+                "llm_signal": result.llm_signal,
+                "llm_active_weight": result.llm_active_weight,
+                "risk_veto": result.risk_veto,
+                "agent_details": agent_details,
+                "participating_agents": result.participating_agents,
+                "source_health": context_dict.get("source_health", {}),
+            }
         
-        # Fallback if no aggregator
-        return self._run_gpt_stubs() + (None,)
+        return self._empty_llm_result()
 
-    def _run_gpt_stubs(self) -> tuple[str, float, bool, int, List[Dict[str, Any]]]:
-        """Phase 0: Return HOLD stubs for GPT agents."""
-        return (
-            "HOLD",
-            0.0,
-            False,
-            0,
-            [
-                {"agent": "TechnicalAgent", "signal": "HOLD", "confidence": "low", "stub": True},
-                {"agent": "MacroAgent", "signal": "HOLD", "confidence": "low", "stub": True},
-                {"agent": "SentimentAgent", "signal": "HOLD", "confidence": "low", "stub": True},
-                {"agent": "CorrelationAgent", "signal": "HOLD", "confidence": "low", "stub": True},
-                {"agent": "RiskAgent", "signal": "HOLD", "confidence": "low", "stub": True},
-            ],
-        )
+    def _empty_llm_result(self) -> Dict[str, Any]:
+        """Return empty LLM result when agents disabled or failed."""
+        return {
+            "llm_score": 0.0,
+            "llm_signal": "HOLD",
+            "llm_active_weight": 0.0,
+            "risk_veto": False,
+            "agent_details": [],
+            "participating_agents": 0,
+            "source_health": {},
+        }
 
-    def _compute_hybrid(
+    def _compute_hybrid_score(
         self,
-        rules_signal: str,
-        rules_confidence: str,
-        gpt_signal: str,
-        gpt_score: float,
-    ) -> tuple[str, float]:
+        rules_score: float,
+        llm_score: float,
+        risk_veto: bool,
+    ) -> tuple[float, str]:
         """
-        Compute hybrid decision.
+        Compute hybrid_score using 60/40 blend.
         
-        Phase 0: Mirrors rules.
-        Phase 4: Weighted blend with configurable weights.
+        Formula: hybrid_score = 0.6 * rules_score + 0.4 * llm_score
+        
+        If risk_veto: hybrid_signal = HOLD regardless of score.
+        
+        Returns:
+            (hybrid_score, hybrid_signal)
         """
-        # Weights (configurable via env)
-        rules_weight = float(os.getenv("HYBRID_RULES_WEIGHT", "0.6"))
-        gpt_weight = float(os.getenv("HYBRID_GPT_WEIGHT", "0.4"))
-        
-        # Convert signals to scores
-        signal_scores = {"LONG": 1.0, "SHORT": -1.0, "HOLD": 0.0}
-        confidence_multiplier = {"high": 1.0, "medium": 0.7, "low": 0.4}
-        
-        rules_score = signal_scores.get(rules_signal, 0.0)
-        rules_score *= confidence_multiplier.get(rules_confidence, 0.4)
-        
         # Weighted combination
-        hybrid_score = (rules_weight * rules_score) + (gpt_weight * gpt_score)
+        hybrid_score = (RULES_WEIGHT * rules_score) + (LLM_WEIGHT * llm_score)
         
-        # Threshold for signal
-        threshold = float(os.getenv("HYBRID_THRESHOLD", "0.2"))
+        # Clamp to [-1, 1]
+        hybrid_score = max(-1.0, min(1.0, hybrid_score))
+        hybrid_score = round(hybrid_score, 4)
         
-        if hybrid_score > threshold:
+        # Determine signal
+        if risk_veto:
+            hybrid_signal = "HOLD"
+        elif hybrid_score > HYBRID_THRESHOLD:
             hybrid_signal = "LONG"
-        elif hybrid_score < -threshold:
+        elif hybrid_score < -HYBRID_THRESHOLD:
             hybrid_signal = "SHORT"
         else:
             hybrid_signal = "HOLD"
         
-        return hybrid_signal, round(hybrid_score, 4)
+        return hybrid_score, hybrid_signal
 
     def _select_strategy(
         self,
         rules_signal: str,
-        gpt_signal: str,
+        llm_signal: str,
         hybrid_signal: str,
     ) -> tuple[str, str]:
         """Select which strategy to execute."""
-        if self.active_strategy == "gpt":
-            return "gpt", gpt_signal
-        elif self.active_strategy == "hybrid":
-            return "hybrid", hybrid_signal
-        else:
+        if self.active_strategy == "llm":
+            return "llm", llm_signal
+        elif self.active_strategy == "rules":
             return "rules", rules_signal
+        else:
+            return "hybrid", hybrid_signal
 
-    def _get_source_health(self) -> Optional[Dict[str, Any]]:
-        """Get source health status if monitor available."""
-        # Will be populated by main.py integration
-        return None
+    def _log_hybrid_tick(
+        self,
+        symbol: str,
+        ts_utc: datetime,
+        rules_score: float,
+        llm_score: float,
+        hybrid_score: float,
+        llm_active_weight: float,
+        risk_veto: bool,
+        strategy: str,
+        signal: str,
+    ):
+        """Log the hybrid tick with all scores."""
+        logger.info(
+            f"HYBRID_TICK symbol={symbol} ts={ts_utc.isoformat()} "
+            f"rules_score={rules_score:.3f} llm_score={llm_score:.3f} "
+            f"hybrid_score={hybrid_score:.3f} llm_active_wt={llm_active_weight:.2f} "
+            f"risk_veto={risk_veto} strategy={strategy} signal={signal}"
+        )
 
     def _get_budget_status(self) -> Optional[str]:
         """Get budget status."""
@@ -413,13 +456,15 @@ class ParallelDecisionRunner:
             "budget_blocked": self._budget_blocked,
             "llm_enabled": self.llm_enabled,
             "active_strategy": self.active_strategy,
+            "rules_weight": RULES_WEIGHT,
+            "llm_weight": LLM_WEIGHT,
         }
 
 
 # Factory function for creating runner with all components
 def create_parallel_runner(
     llm_enabled: bool = False,
-    active_strategy: str = "rules",
+    active_strategy: str = "hybrid",
     economic_calendar: Optional[Any] = None,
     cot_reports: Optional[Any] = None,
     dxy_fetcher: Optional[Any] = None,
@@ -430,7 +475,7 @@ def create_parallel_runner(
     
     Args:
         llm_enabled: Whether to enable LLM agents.
-        active_strategy: Strategy to use for execution.
+        active_strategy: Strategy to use for execution (rules/llm/hybrid).
         economic_calendar: EconomicCalendarFetcher instance.
         cot_reports: COTReportsFetcher instance.
         dxy_fetcher: DXYFetcher instance.
@@ -443,7 +488,7 @@ def create_parallel_runner(
     from app.agents.llm.context_builder import ContextBuilder
     from app.agents.llm import (
         TechnicalAgent, MacroAgent, SentimentAgent,
-        CorrelationAgent, RiskAgent, WeightedAggregator
+        CorrelationAgent, RiskAgent, ScoreAggregator
     )
     
     # Create safety gates
@@ -472,8 +517,8 @@ def create_parallel_runner(
         RiskAgent(llm_client=llm_client),
     ]
     
-    # Create aggregator
-    aggregator = WeightedAggregator()
+    # Create score aggregator
+    aggregator = ScoreAggregator()
     
     return ParallelDecisionRunner(
         active_strategy=active_strategy,
@@ -494,6 +539,6 @@ def create_parallel_decision_shadow(
     decision: Any,
     decision_id: Optional[str] = None,
 ) -> ParallelDecisionV1:
-    """Create a shadow mode parallel decision (Phase 0 compatibility)."""
+    """Create a shadow mode parallel decision (backwards compat)."""
     runner = ParallelDecisionRunner(active_strategy="rules", llm_enabled=False)
     return runner.run(preview, preview_id, decision, decision_id)
