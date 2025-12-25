@@ -635,4 +635,12 @@ def make_repos(db: SupabaseDB) -> dict[str, Any]:
     repos["broker_requests"] = BrokerRequestsRepo(db)
     repos["reconciliation_reports"] = ReconciliationReportsRepo(db)
     repos["execution_reports"] = ExecutionReportsRepo(db)
+    
+    # Phase 7: Performance tracker persistence
+    try:
+        from app.storage.performance_tracker_repo import PerformanceTrackerRepo
+        repos["performance_tracker"] = PerformanceTrackerRepo(db)
+    except Exception:
+        pass
+    
     return repos

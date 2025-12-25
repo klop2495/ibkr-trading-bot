@@ -7,14 +7,15 @@ Unified service for order execution with:
 - Live trading mode
 - Integration with OMS, Position Sizer, Connection Manager
 - Stop-Loss / Take-Profit support
+- Phase 7: Performance tracking on trade close
 """
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
 from app.broker.connection_manager import (
@@ -38,6 +39,13 @@ from app.models.decision import DecisionV1
 from app.models.risk_verdict import RiskVerdictV1
 from app.pm.position_sizer import PositionSizer, PositionSizerConfig, PositionSizeResult
 from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
+
+# Phase 7: Import performance tracker
+try:
+    from app.agents.performance_tracker import AgentPerformanceTracker, TradeOutcome
+    PERFORMANCE_TRACKER_AVAILABLE = True
+except ImportError:
+    PERFORMANCE_TRACKER_AVAILABLE = False
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +87,26 @@ class ExecutionResult:
     is_bracket: bool = False
 
 
+@dataclass
+class TradeCloseInfo:
+    """
+    Information about a closed trade for performance tracking.
+    
+    Phase 7: Used to record trade outcomes.
+    """
+    trade_id: str
+    symbol: str
+    direction: str  # "BUY" or "SELL"
+    entry_price: float
+    exit_price: float
+    pnl: float
+    pnl_pips: float
+    agent_votes: Dict[str, str] = field(default_factory=dict)
+    agent_confidences: Dict[str, float] = field(default_factory=dict)
+    final_signal: str = "HOLD"
+    hold_time_minutes: int = 0
+
+
 class ExecutionServiceCallback(IBKROrderCallback):
     """
     Callbacks for execution events.
@@ -87,15 +115,19 @@ class ExecutionServiceCallback(IBKROrderCallback):
     - Logs events to risk_events table
     - Updates trades_history status on order state changes
     - Handles FILLED, CANCELLED, REJECTED transitions
+    
+    Phase 7: Triggers performance tracking on trade close.
     """
     
     def __init__(
         self,
         risk_events_repo: Optional[RiskEventsRepo] = None,
         trades_history_repo: Optional[TradesHistoryRepo] = None,
+        on_trade_closed: Optional[callable] = None,  # Phase 7
     ):
         self.risk_events_repo = risk_events_repo
         self.trades_history_repo = trades_history_repo
+        self._on_trade_closed = on_trade_closed  # Phase 7: callback
     
     def on_order_status(self, state: IBKROrderState) -> None:
         """Handle order status change - update trades_history accordingly."""
@@ -238,6 +270,7 @@ class ExecutionService:
     - Automatic SL/TP calculation from signal_preview distances
     - Bracket orders for risk management
     - Position sizing based on equity and risk parameters
+    - Phase 7: Performance tracking on trade close
     """
     
     # Default equity for dry-run mode
@@ -248,6 +281,7 @@ class ExecutionService:
         risk_events_repo: Optional[RiskEventsRepo] = None,
         trades_history_repo: Optional[TradesHistoryRepo] = None,
         connection_config: Optional[ConnectionConfig] = None,
+        performance_tracker: Optional['AgentPerformanceTracker'] = None,  # Phase 7
     ):
         self.risk_events_repo = risk_events_repo
         self.trades_history_repo = trades_history_repo
@@ -259,6 +293,15 @@ class ExecutionService:
         self._position_sizer: Optional[PositionSizer] = None
         self._callback: Optional[ExecutionServiceCallback] = None
         
+        # Phase 7: Performance tracker
+        self._performance_tracker: Optional['AgentPerformanceTracker'] = performance_tracker
+        if self._performance_tracker is None and PERFORMANCE_TRACKER_AVAILABLE:
+            try:
+                self._performance_tracker = AgentPerformanceTracker()
+                logger.info("ExecutionService: AgentPerformanceTracker initialized")
+            except Exception as e:
+                logger.warning(f"ExecutionService: Failed to init performance tracker: {e}")
+        
         # State
         self._equity: float = self.DEFAULT_EQUITY
         self._mode: ExecutionMode = ExecutionMode.DISABLED
@@ -266,6 +309,14 @@ class ExecutionService:
         
         # Price cache (for SL/TP calculation)
         self._price_cache: dict[str, float] = {}
+        
+        # Phase 7: Cache agent data for trade outcomes
+        self._pending_trade_data: Dict[str, Dict[str, Any]] = {}
+    
+    @property
+    def performance_tracker(self) -> Optional['AgentPerformanceTracker']:
+        """Get performance tracker instance."""
+        return self._performance_tracker
     
     def _determine_mode(self, settings: BotSettings) -> ExecutionMode:
         """Determine execution mode from env and settings."""
@@ -319,6 +370,7 @@ class ExecutionService:
             self._callback = ExecutionServiceCallback(
                 risk_events_repo=self.risk_events_repo,
                 trades_history_repo=self.trades_history_repo,
+                on_trade_closed=self._on_trade_closed_callback,  # Phase 7
             )
             
             # Connection manager
@@ -511,6 +563,183 @@ class ExecutionService:
         except Exception as e:
             logger.error(f"Failed to calculate exposure: {e}")
             return 0.0
+    
+    # ========== Phase 7: Performance Tracking ==========
+    
+    def record_agent_data_for_trade(
+        self,
+        trade_id: str,
+        agent_votes: Dict[str, str],
+        agent_confidences: Dict[str, float],
+        final_signal: str,
+    ) -> None:
+        """
+        Phase 7: Store agent data for a pending trade.
+        
+        Call this after execute() to save agent decisions for later
+        performance tracking when the trade closes.
+        """
+        self._pending_trade_data[trade_id] = {
+            "agent_votes": agent_votes,
+            "agent_confidences": agent_confidences,
+            "final_signal": final_signal,
+            "open_time": datetime.now(timezone.utc),
+        }
+        logger.debug(f"Stored agent data for trade {trade_id}")
+    
+    def on_trade_closed(
+        self,
+        trade_id: str,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        exit_price: float,
+        pnl: float,
+    ) -> Dict[str, float]:
+        """
+        Phase 7: Record trade outcome for performance tracking.
+        
+        Call this when a trade is closed (by SL, TP, or manual).
+        
+        Args:
+            trade_id: Unique trade identifier
+            symbol: Trading symbol
+            direction: "BUY" or "SELL"
+            entry_price: Entry price
+            exit_price: Exit price
+            pnl: Realized P&L
+        
+        Returns:
+            Dict of weight changes per agent.
+        """
+        if not self._performance_tracker:
+            return {}
+        
+        # Get stored agent data
+        trade_data = self._pending_trade_data.pop(trade_id, {})
+        agent_votes = trade_data.get("agent_votes", {})
+        agent_confidences = trade_data.get("agent_confidences", {})
+        final_signal = trade_data.get("final_signal", "HOLD")
+        open_time = trade_data.get("open_time")
+        
+        # Calculate hold time
+        hold_time_minutes = 0
+        if open_time:
+            hold_time_minutes = int((datetime.now(timezone.utc) - open_time).total_seconds() / 60)
+        
+        # Calculate pnl in pips
+        pip_value = self._get_pip_value(symbol)
+        pnl_pips = (exit_price - entry_price) / pip_value
+        if direction == "SELL":
+            pnl_pips = -pnl_pips
+        
+        try:
+            outcome = TradeOutcome(
+                trade_id=trade_id,
+                symbol=symbol,
+                direction=direction,
+                entry_price=entry_price,
+                exit_price=exit_price,
+                pnl=pnl,
+                pnl_pips=pnl_pips,
+                agent_votes=agent_votes,
+                agent_confidences=agent_confidences,
+                final_signal=final_signal,
+                hold_time_minutes=hold_time_minutes,
+            )
+            
+            changes = self._performance_tracker.record_outcome(outcome)
+            
+            self._log_event(
+                "TRADE_OUTCOME_RECORDED",
+                "info",
+                f"Trade {trade_id} closed: pnl={pnl:.2f} pips={pnl_pips:.1f}",
+                {
+                    "trade_id": trade_id,
+                    "symbol": symbol,
+                    "pnl": pnl,
+                    "pnl_pips": pnl_pips,
+                    "weight_changes": changes,
+                },
+            )
+            
+            logger.info(f"Performance tracker updated for trade {trade_id}: {changes}")
+            return changes
+            
+        except Exception as e:
+            logger.error(f"Failed to record trade outcome: {e}")
+            return {}
+    
+    def _on_trade_closed_callback(self, trade: Dict[str, Any]) -> None:
+        """
+        Phase 7: Internal callback when trade is closed via broker.
+        
+        Called by ExecutionServiceCallback when SL/TP is hit.
+        """
+        trade_id = trade.get("id")
+        if not trade_id:
+            return
+        
+        self.on_trade_closed(
+            trade_id=str(trade_id),
+            symbol=trade.get("symbol", ""),
+            direction=trade.get("side", "BUY"),
+            entry_price=trade.get("entry_price", 0.0),
+            exit_price=trade.get("exit_price", 0.0),
+            pnl=trade.get("pnl", 0.0),
+        )
+    
+    def get_performance_report(self) -> Optional[Dict[str, Any]]:
+        """
+        Phase 7: Get performance report from tracker.
+        """
+        if not self._performance_tracker:
+            return None
+        
+        try:
+            return self._performance_tracker.get_performance_report()
+        except Exception as e:
+            logger.error(f"Failed to get performance report: {e}")
+            return None
+    
+    def save_performance_state(self) -> Optional[Dict[str, Any]]:
+        """
+        Phase 7: Save performance tracker state for persistence.
+        
+        Returns:
+            Dict that can be saved to database/file.
+        """
+        if not self._performance_tracker:
+            return None
+        
+        try:
+            return self._performance_tracker.to_dict()
+        except Exception as e:
+            logger.error(f"Failed to save performance state: {e}")
+            return None
+    
+    def load_performance_state(self, state: Dict[str, Any]) -> bool:
+        """
+        Phase 7: Load performance tracker state from persistence.
+        
+        Args:
+            state: Dict previously returned by save_performance_state()
+        
+        Returns:
+            True if loaded successfully.
+        """
+        if not PERFORMANCE_TRACKER_AVAILABLE:
+            return False
+        
+        try:
+            self._performance_tracker = AgentPerformanceTracker.from_dict(state)
+            logger.info(f"Performance tracker loaded: {len(state.get('outcomes', []))} outcomes")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load performance state: {e}")
+            return False
+    
+    # ========== End Phase 7 ==========
 
     def execute(
         self,
@@ -522,6 +751,9 @@ class ExecutionService:
         entry_price: Optional[float] = None,
         order_type: OrderType = OrderType.MARKET,
         direction: Optional[str] = None,
+        agent_votes: Optional[Dict[str, str]] = None,  # Phase 7
+        agent_confidences: Optional[Dict[str, float]] = None,  # Phase 7
+        final_signal: Optional[str] = None,  # Phase 7
     ) -> ExecutionResult:
         """
         Execute trade based on decision and verdict.
@@ -534,6 +766,9 @@ class ExecutionService:
             take_profit_pips: TP distance in pips (overrides signal_preview)
             entry_price: Entry price (uses cached price if not provided)
             order_type: Order type (default: MARKET)
+            agent_votes: Phase 7 - agent votes for performance tracking
+            agent_confidences: Phase 7 - agent confidences
+            final_signal: Phase 7 - final aggregated signal
         
         Returns:
             ExecutionResult with details of what was done.
@@ -732,7 +967,7 @@ class ExecutionService:
             )
             
             # Record trade in trades_history (even for dry-run)
-            self._record_trade_open(
+            trade_id = self._record_trade_open(
                 symbol=decision.symbol,
                 side=side,
                 quantity=size_result.units,
@@ -743,6 +978,15 @@ class ExecutionService:
                 signal_preview_id=decision.signal_preview_id,
                 decision_id=decision.id,
             )
+            
+            # Phase 7: Store agent data for performance tracking
+            if trade_id and agent_votes:
+                self.record_agent_data_for_trade(
+                    trade_id=trade_id,
+                    agent_votes=agent_votes,
+                    agent_confidences=agent_confidences or {},
+                    final_signal=final_signal or "HOLD",
+                )
             
             return ExecutionResult(
                 executed=True,  # "executed" in dry-run sense
@@ -818,6 +1062,15 @@ class ExecutionService:
             signal_preview_id=decision.signal_preview_id,
             decision_id=decision.id,
         )
+        
+        # Phase 7: Store agent data for performance tracking
+        if trade_id and agent_votes:
+            self.record_agent_data_for_trade(
+                trade_id=trade_id,
+                agent_votes=agent_votes,
+                agent_confidences=agent_confidences or {},
+                final_signal=final_signal or "HOLD",
+            )
         
         # Place order (with or without SL/TP)
         try:

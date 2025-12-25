@@ -1,7 +1,13 @@
+"""
+Market Data Service.
+
+Phase 7 Update: Added methods for OHLC, ATR history, 24h prices.
+"""
+
 import os
 import math
-from datetime import datetime, timezone
-from typing import Dict, List, Tuple
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.market_data.buffer import MarketDataBuffer
 from app.market_data.indicators import atr, rsi, sma
@@ -11,6 +17,16 @@ from app.storage.repositories import RiskEventsRepo, SnapshotsRepo
 
 
 class MarketDataService:
+    """
+    Service for fetching and processing market data.
+    
+    Phase 7: Added methods for:
+    - get_ohlc() - OHLC data for candlestick pattern detection
+    - get_atr_history() - ATR history for volatility regime detection
+    - get_current_prices() - Current prices for all symbols
+    - get_24h_prices() - Prices from 24 hours ago for currency strength
+    """
+    
     def __init__(
         self,
         symbols: List[str],
@@ -31,6 +47,14 @@ class MarketDataService:
         self.risk_events_repo = risk_events_repo
         self.last_bar_counts: Dict[Tuple[str, str], int] = {}
         self.last_qa_issues: Dict[Tuple[str, str], List[str]] = {}
+        
+        # Phase 7: Cache for bars data (symbol, timeframe) -> list of bars
+        self._bars_cache: Dict[Tuple[str, str], List[Any]] = {}
+        self._bars_cache_timestamp: Dict[Tuple[str, str], datetime] = {}
+        
+        # Phase 7: Cache for 24h prices
+        self._prices_24h_cache: Dict[str, float] = {}
+        self._prices_24h_timestamp: Optional[datetime] = None
 
     def is_warmup_ready(self, counts: Dict[Tuple[str, str], int]) -> bool:
         for sym in self.symbols:
@@ -77,6 +101,11 @@ class MarketDataService:
                             data={"symbol": sym, "timeframe": tf},
                         )
                 counts[(sym, tf)] = len(filtered_bars)
+                
+                # Phase 7: Cache bars for OHLC retrieval
+                if filtered_bars:
+                    self._bars_cache[(sym, tf)] = filtered_bars
+                    self._bars_cache_timestamp[(sym, tf)] = datetime.now(timezone.utc)
                 
                 if debug_log:
                     print(f"market_data symbol={sym} tf={tf} bars={len(filtered_bars)} warmup_min={self.warmup_bars_min}")
@@ -182,3 +211,233 @@ class MarketDataService:
         if self.snapshots_repo:
             self.snapshots_repo.insert(snap)
         return snap
+    
+    # ========== Phase 7: New Methods ==========
+    
+    def get_ohlc(
+        self, 
+        symbol: str, 
+        timeframe: Optional[str] = None,
+        n_bars: int = 50,
+    ) -> Dict[str, List[float]]:
+        """
+        Get OHLC data for a symbol.
+        
+        Phase 7: Used by TechnicalAgent for candlestick pattern detection.
+        
+        Args:
+            symbol: Trading symbol (e.g., "EURUSD")
+            timeframe: Timeframe (default: first available)
+            n_bars: Number of bars to return (default: 50)
+        
+        Returns:
+            Dict with 'opens', 'highs', 'lows', 'closes' lists.
+            Empty dict if data not available.
+        """
+        # Use first timeframe if not specified
+        tf = timeframe or (self.timeframes[0] if self.timeframes else "H1")
+        
+        # Get from cache
+        bars = self._bars_cache.get((symbol, tf), [])
+        
+        if not bars:
+            return {"opens": [], "highs": [], "lows": [], "closes": []}
+        
+        # Take last n_bars
+        bars = bars[-n_bars:]
+        
+        opens = []
+        highs = []
+        lows = []
+        closes = []
+        
+        for b in bars:
+            o = getattr(b, "open", None)
+            h = getattr(b, "high", None)
+            l = getattr(b, "low", None)
+            c = getattr(b, "close", None)
+            
+            if o is not None and h is not None and l is not None and c is not None:
+                opens.append(float(o))
+                highs.append(float(h))
+                lows.append(float(l))
+                closes.append(float(c))
+        
+        return {
+            "opens": opens,
+            "highs": highs,
+            "lows": lows,
+            "closes": closes,
+        }
+    
+    def get_atr_history(
+        self, 
+        symbol: str, 
+        timeframe: Optional[str] = None,
+        n_periods: int = 20,
+    ) -> List[float]:
+        """
+        Get ATR history for a symbol.
+        
+        Phase 7: Used by RiskAgent for volatility regime detection.
+        
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe (default: first available)
+            n_periods: Number of ATR values to return
+        
+        Returns:
+            List of ATR values, oldest first.
+        """
+        tf = timeframe or (self.timeframes[0] if self.timeframes else "H1")
+        
+        bars = self._bars_cache.get((symbol, tf), [])
+        
+        if len(bars) < 14:  # Need minimum for ATR calculation
+            return []
+        
+        # Extract OHLC
+        highs = [getattr(b, "high", 0) for b in bars]
+        lows = [getattr(b, "low", 0) for b in bars]
+        closes = [getattr(b, "close", 0) for b in bars]
+        
+        # Calculate rolling ATR
+        atr_values = []
+        period = 14
+        
+        for i in range(period, len(bars)):
+            h = highs[i-period:i]
+            l = lows[i-period:i]
+            c = closes[i-period:i]
+            atr_val = atr(h, l, c)
+            if atr_val is not None:
+                atr_values.append(atr_val)
+        
+        return atr_values[-n_periods:]
+    
+    def get_current_prices(self) -> Dict[str, float]:
+        """
+        Get current prices for all symbols.
+        
+        Phase 7: Used by CorrelationAgent for currency strength calculation.
+        
+        Returns:
+            Dict mapping symbol to current close price.
+        """
+        prices = {}
+        
+        for symbol in self.symbols:
+            for tf in self.timeframes:
+                bars = self._bars_cache.get((symbol, tf), [])
+                if bars:
+                    close = getattr(bars[-1], "close", None)
+                    if close is not None:
+                        prices[symbol] = float(close)
+                    break  # Use first available timeframe
+        
+        return prices
+    
+    def get_24h_prices(self) -> Dict[str, float]:
+        """
+        Get prices from 24 hours ago for all symbols.
+        
+        Phase 7: Used by CorrelationAgent for currency strength calculation.
+        
+        For H1 timeframe: look back 24 bars
+        For M15 timeframe: look back 96 bars
+        For H4 timeframe: look back 6 bars
+        
+        Returns:
+            Dict mapping symbol to price from ~24h ago.
+        """
+        prices = {}
+        
+        # Calculate lookback based on timeframe
+        lookback_bars = {
+            "M1": 1440,
+            "M5": 288,
+            "M15": 96,
+            "M30": 48,
+            "H1": 24,
+            "H4": 6,
+            "D1": 1,
+        }
+        
+        for symbol in self.symbols:
+            for tf in self.timeframes:
+                bars = self._bars_cache.get((symbol, tf), [])
+                if not bars:
+                    continue
+                
+                # Get lookback count for this timeframe
+                lb = lookback_bars.get(tf, 24)
+                
+                # Find bar from ~24h ago
+                if len(bars) > lb:
+                    target_bar = bars[-(lb + 1)]
+                elif len(bars) > 1:
+                    target_bar = bars[0]  # Use oldest available
+                else:
+                    continue
+                
+                close = getattr(target_bar, "close", None)
+                if close is not None:
+                    prices[symbol] = float(close)
+                break  # Use first available timeframe
+        
+        return prices
+    
+    def get_close_prices(
+        self,
+        symbol: str,
+        timeframe: Optional[str] = None,
+        n_bars: int = 50,
+    ) -> List[float]:
+        """
+        Get close prices for a symbol.
+        
+        Phase 7: Used by RiskAgent for volatility regime detection.
+        
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe (default: first available)
+            n_bars: Number of prices to return
+        
+        Returns:
+            List of close prices, oldest first.
+        """
+        tf = timeframe or (self.timeframes[0] if self.timeframes else "H1")
+        
+        bars = self._bars_cache.get((symbol, tf), [])
+        
+        if not bars:
+            return []
+        
+        closes = []
+        for b in bars[-n_bars:]:
+            c = getattr(b, "close", None)
+            if c is not None:
+                closes.append(float(c))
+        
+        return closes
+    
+    def get_market_data_for_context(
+        self,
+        symbol: str,
+        timeframe: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get all market data needed for context building.
+        
+        Phase 7: Convenience method for ContextBuilder.
+        
+        Returns:
+            Dict with ohlc, atr_history, current_prices, previous_24h_prices.
+        """
+        return {
+            "ohlc": self.get_ohlc(symbol, timeframe),
+            "atr_history": self.get_atr_history(symbol, timeframe),
+            "close_prices": self.get_close_prices(symbol, timeframe),
+            "current_prices": self.get_current_prices(),
+            "previous_24h_prices": self.get_24h_prices(),
+        }

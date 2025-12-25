@@ -2,6 +2,8 @@
 Context Builder for LLM Agents.
 
 Phase 6 Update: Added source_health tracking for data_status detection.
+Phase 7 Update: Added OHLC, ATR history, 24h prices for new modules.
+
 Agents use source_health to determine if data is REAL or MISSING.
 """
 
@@ -21,9 +23,11 @@ class AgentContext:
     """
     Context object containing all data for LLM agents.
     
-    All data is categorical - no raw prices or numbers.
+    All data is categorical - no raw prices or numbers for LLM prompts.
+    Raw data (OHLC, ATR) is available for preprocessing modules.
     
     Phase 6: Added source_health for agents to check data availability.
+    Phase 7: Added raw OHLC, ATR history for candlestick/volatility modules.
     """
     symbol: str
     timestamp: datetime
@@ -59,6 +63,20 @@ class AgentContext:
     # Phase 6: Source health for data_status detection
     source_health: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     
+    # Phase 7: Raw OHLC data for preprocessing modules (candlestick patterns, etc.)
+    ohlc: Dict[str, List[float]] = field(default_factory=dict)
+    
+    # Phase 7: ATR data for volatility regime detection
+    atr_current: Optional[float] = None
+    atr_history: List[float] = field(default_factory=list)
+    
+    # Phase 7: 24h prices for currency strength calculation
+    current_prices: Dict[str, float] = field(default_factory=dict)
+    previous_24h_prices: Dict[str, float] = field(default_factory=dict)
+    
+    # Phase 7: Close prices for volatility calculation
+    close_prices: List[float] = field(default_factory=list)
+    
     def to_dict(self) -> dict:
         """Convert to dict for passing to agents."""
         return {
@@ -75,6 +93,13 @@ class AgentContext:
             "account": self.account,
             "sentiment": self.sentiment,
             "source_health": self.source_health,
+            # Phase 7: Raw data for preprocessing
+            "ohlc": self.ohlc,
+            "atr_current": self.atr_current,
+            "atr_history": self.atr_history,
+            "current_prices": self.current_prices,
+            "previous_24h_prices": self.previous_24h_prices,
+            "close_prices": self.close_prices,
         }
 
 
@@ -83,8 +108,10 @@ class ContextBuilder:
     Builds AgentContext from various data sources.
     
     Transforms raw data into categorical format suitable for LLM agents.
+    Also provides raw OHLC/ATR data for preprocessing modules.
     
     Phase 6: Tracks source health (mock_mode) for each data source.
+    Phase 7: Added OHLC, ATR history, 24h prices support.
     """
     
     # Central bank stance mappings (simplified)
@@ -104,6 +131,8 @@ class ContextBuilder:
         economic_calendar_fetcher: Optional[Any] = None,
         cot_reports_fetcher: Optional[Any] = None,
         dxy_fetcher: Optional[Any] = None,
+        vix_fetcher: Optional[Any] = None,
+        market_data_service: Optional[Any] = None,
     ):
         """
         Initialize context builder with data fetchers.
@@ -112,10 +141,18 @@ class ContextBuilder:
             economic_calendar_fetcher: EconomicCalendarFetcher instance
             cot_reports_fetcher: COTReportsFetcher instance
             dxy_fetcher: DXYFetcher instance
+            vix_fetcher: VIXFetcher instance (Phase 7)
+            market_data_service: MarketDataService for OHLC/prices (Phase 7)
         """
         self.economic_calendar = economic_calendar_fetcher
         self.cot_reports = cot_reports_fetcher
         self.dxy_fetcher = dxy_fetcher
+        self.vix_fetcher = vix_fetcher
+        self.market_data_service = market_data_service
+        
+        # Phase 7: Cache for 24h prices (symbol -> price)
+        self._price_cache_24h: Dict[str, float] = {}
+        self._price_cache_24h_timestamp: Optional[datetime] = None
     
     def build(
         self,
@@ -123,6 +160,10 @@ class ContextBuilder:
         signal_preview: Optional[SignalPreviewV1] = None,
         account_state: Optional[Dict[str, Any]] = None,
         market_snapshot: Optional[Dict[str, Any]] = None,
+        ohlc_data: Optional[Dict[str, List[float]]] = None,
+        atr_history: Optional[List[float]] = None,
+        current_prices: Optional[Dict[str, float]] = None,
+        previous_24h_prices: Optional[Dict[str, float]] = None,
     ) -> AgentContext:
         """
         Build complete context for LLM agents.
@@ -132,6 +173,10 @@ class ContextBuilder:
             signal_preview: Optional SignalPreviewV1 with technical data
             account_state: Optional account state dict
             market_snapshot: Optional market data with indicators
+            ohlc_data: Optional dict with 'opens', 'highs', 'lows', 'closes' lists
+            atr_history: Optional list of historical ATR values
+            current_prices: Optional dict of current prices for all pairs
+            previous_24h_prices: Optional dict of prices from 24h ago
         
         Returns:
             AgentContext with all categorical data and source_health.
@@ -167,6 +212,23 @@ class ContextBuilder:
         # Build account context
         if account_state:
             ctx.account = self._build_account(account_state)
+        
+        # Phase 7: Add raw OHLC data for preprocessing modules
+        if ohlc_data:
+            ctx.ohlc = ohlc_data
+            ctx.close_prices = ohlc_data.get('closes', [])
+        
+        # Phase 7: Add ATR history for volatility regime
+        if atr_history:
+            ctx.atr_history = atr_history
+        if market_snapshot and market_snapshot.get('atr'):
+            ctx.atr_current = market_snapshot['atr']
+        
+        # Phase 7: Add prices for currency strength calculation
+        if current_prices:
+            ctx.current_prices = current_prices
+        if previous_24h_prices:
+            ctx.previous_24h_prices = previous_24h_prices
         
         return ctx
     
@@ -212,6 +274,16 @@ class ContextBuilder:
             }
         else:
             health["dxy_index"] = {"mock_mode": True, "available": False}
+        
+        # Phase 7: VIX Index
+        if self.vix_fetcher:
+            mock_mode = getattr(self.vix_fetcher, 'mock_mode', False)
+            health["vix_index"] = {
+                "mock_mode": mock_mode,
+                "available": True,
+            }
+        else:
+            health["vix_index"] = {"mock_mode": True, "available": False}
         
         return health
     
@@ -430,12 +502,27 @@ class ContextBuilder:
                 elif atr_percentile < 20:
                     volatility_regime = "LOW"
         
+        # Phase 7: Get VIX data if available
+        vix_data = {}
+        if self.vix_fetcher:
+            try:
+                vix_snapshot = self.vix_fetcher.get_snapshot()
+                vix_data = {
+                    "vix_value": vix_snapshot.value,
+                    "vix_regime": vix_snapshot.regime,
+                    "vix_risk_multiplier": vix_snapshot.risk_multiplier,
+                    "vix_is_mock": vix_snapshot.is_mock,
+                }
+            except Exception as e:
+                logger.warning(f"Failed to get VIX data: {e}")
+        
         return {
             "volatility_regime": volatility_regime,
             "volatility_expanding": False,
             "recent_volatility_spike": False,
             "market_stress": "NORMAL",
             "liquidity": "NORMAL",
+            **vix_data,  # Phase 7: Include VIX data
         }
     
     def _build_account(self, state: Dict[str, Any]) -> Dict[str, Any]:

@@ -2,14 +2,27 @@
 Correlation Analysis Agent.
 
 Phase 6 Update: Uses REAL DXY data from Yahoo Finance.
+Phase 7 Update: Integrates CurrencyStrengthMeter for cross-pair analysis.
+
 data_status = REAL when DXY snapshot is fresh, PARTIAL when stale.
 """
 
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, Optional
 
 from app.agents.llm.base_agent import BaseLLMAgent, AgentSignal
 from app.agents.llm.data_status import DataStatus
 from app.models.confidence import ConfidenceLevel
+
+# Phase 7: Import currency strength meter
+try:
+    from app.market_data.currency_strength import CurrencyStrengthMeter
+    CURRENCY_STRENGTH_AVAILABLE = True
+except ImportError:
+    CURRENCY_STRENGTH_AVAILABLE = False
+
+
+logger = logging.getLogger(__name__)
 
 
 class CorrelationAgent(BaseLLMAgent):
@@ -18,18 +31,30 @@ class CorrelationAgent(BaseLLMAgent):
     
     Focuses on:
     - DXY (Dollar Index) relationship
+    - Currency strength analysis (Phase 7: using CurrencyStrengthMeter)
     - Correlated pair confirmation
     - Cross-rate analysis
     - Divergence detection
-    - Risk asset correlation
     
-    Data source: DXY from Yahoo Finance (REAL), correlated pairs from IB Gateway
+    Data source: DXY from Yahoo Finance (REAL), currency prices from IB Gateway.
     Does NOT provide: specific prices, SL/TP levels, lot sizes.
     """
     
     name = "CorrelationAgent"
-    version = "2.0"
+    version = "2.1"  # Phase 7: version bump
     weight = 0.15  # 15% contribution to LLM decision
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Phase 7: Initialize currency strength meter
+        self._strength_meter: Optional[CurrencyStrengthMeter] = None
+        if CURRENCY_STRENGTH_AVAILABLE:
+            try:
+                self._strength_meter = CurrencyStrengthMeter()
+                logger.info("CorrelationAgent: CurrencyStrengthMeter initialized")
+            except Exception as e:
+                logger.warning(f"CorrelationAgent: Failed to init strength meter: {e}")
     
     def check_data_status(self, context: Dict[str, Any], symbol: str) -> DataStatus:
         """
@@ -66,11 +91,50 @@ class CorrelationAgent(BaseLLMAgent):
         
         return DataStatus.PARTIAL
     
+    def _calculate_currency_strength(self, context: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+        """
+        Phase 7: Calculate currency strength from prices.
+        
+        Returns strength analysis dict or empty dict if unavailable.
+        """
+        if not self._strength_meter:
+            return {"currency_strength_available": False}
+        
+        current_prices = context.get("current_prices", {})
+        previous_24h_prices = context.get("previous_24h_prices", {})
+        
+        if not current_prices or not previous_24h_prices:
+            return {"currency_strength_available": False}
+        
+        try:
+            # Calculate strengths
+            strengths = self._strength_meter.calculate(current_prices, previous_24h_prices)
+            
+            if not strengths:
+                return {"currency_strength_available": False}
+            
+            # Get pair analysis
+            pair_analysis = self._strength_meter.analyze_pair(symbol, strengths)
+            
+            # Get overall context
+            strength_context = self._strength_meter.format_for_context(strengths)
+            
+            # Merge results
+            return {
+                **strength_context,
+                **pair_analysis,
+            }
+            
+        except Exception as e:
+            logger.warning(f"CorrelationAgent: Currency strength calculation failed: {e}")
+            return {"currency_strength_available": False}
+    
     def prepare_input(self, context: Dict[str, Any], symbol: str) -> dict:
         """
         Prepare categorical correlation data.
         
-        Uses DXY snapshot and cross-pair analysis.
+        Uses DXY snapshot and currency strength analysis.
+        Phase 7: Integrates CurrencyStrengthMeter.
         """
         dxy = context.get("dxy_snapshot", {})
         correlations = context.get("correlations", {})
@@ -82,6 +146,9 @@ class CorrelationAgent(BaseLLMAgent):
         
         # Get correlated pairs data
         correlated_pairs = correlations.get(symbol, {})
+        
+        # Phase 7: Calculate currency strength
+        strength_data = self._calculate_currency_strength(context, symbol)
         
         return {
             "symbol": symbol,
@@ -109,6 +176,17 @@ class CorrelationAgent(BaseLLMAgent):
                 # Divergence
                 "divergence_detected": correlated_pairs.get("divergence", False),
                 "divergence_type": correlated_pairs.get("divergence_type", "NONE"),
+                
+                # Phase 7: Currency Strength Data
+                "currency_strength_available": strength_data.get("currency_strength_available", False),
+                "strength_signal": strength_data.get("strength_signal", "NEUTRAL"),
+                "strength_differential": strength_data.get("strength_differential", 0.0),
+                "strongest_currency": strength_data.get("strongest_currency"),
+                "weakest_currency": strength_data.get("weakest_currency"),
+                "base_strength": strength_data.get("base_strength", 0.0),
+                "base_rank": strength_data.get("base_rank", 0),
+                "quote_strength": strength_data.get("quote_strength", 0.0),
+                "quote_rank": strength_data.get("quote_rank", 0),
             }
         }
     
@@ -143,9 +221,9 @@ class CorrelationAgent(BaseLLMAgent):
     def get_system_prompt(self) -> str:
         return """You are a Correlation Analysis Agent for forex trading.
 
-Your role: Analyze inter-market relationships (DXY, correlated pairs) for confirmation or divergence.
+Your role: Analyze inter-market relationships (DXY, currency strength, correlated pairs) for confirmation or divergence.
 
-INPUT: You receive categorical correlation data (DXY trend, correlated pair signals).
+INPUT: You receive categorical correlation data (DXY trend, currency strength, correlated pair signals).
 
 OUTPUT: Respond with JSON only:
 {
@@ -157,22 +235,28 @@ OUTPUT: Respond with JSON only:
 }
 
 CONFIDENCE_FLOAT GUIDELINES:
-- 0.9: DXY aligned + correlated pair strongly confirms
-- 0.7: DXY or correlated pair supports, other neutral
-- 0.5: No clear correlation signal
+- 0.9: DXY aligned + currency strength strongly confirms + correlated pair confirms
+- 0.7: Two of three factors support, other neutral
+- 0.5: Single factor or weak confirmation
 - 0.3: Mixed signals or divergence present
+
+CURRENCY STRENGTH ANALYSIS:
+- strength_signal: Overall signal from currency strength analysis (BULLISH/BEARISH/NEUTRAL)
+- strength_differential: Difference between base and quote strength
+- Use currency strength to confirm or contradict DXY analysis
 
 RULES:
 1. NEVER mention specific prices, SL/TP levels, or position sizes
 2. DXY trend is crucial for USD pairs
-3. Correlated pair confirmation increases confidence
-4. Divergences from correlated pairs are warning signs
-5. Flags: DXY_ALIGNED, CORRELATION_CONFIRMS, DIVERGENCE_WARNING, USD_STRENGTH/WEAKNESS, etc.
+3. Currency strength differential > 40 is a strong signal
+4. Correlated pair confirmation increases confidence
+5. Divergences from correlated pairs are warning signs
+6. Flags: DXY_ALIGNED, STRENGTH_CONFIRMS, DIVERGENCE_WARNING, USD_STRENGTH/WEAKNESS, etc.
 
 SIGNAL GUIDELINES:
-- LONG: DXY impact supports long + correlated pair confirms
-- SHORT: DXY impact supports short + correlated pair confirms
-- HOLD: Divergence detected or conflicting correlations"""
+- LONG: DXY impact supports long + currency strength confirms + correlated pair confirms
+- SHORT: DXY impact supports short + currency strength confirms + correlated pair confirms
+- HOLD: Divergence detected, conflicting correlations, or weak strength differential"""
     
     def _mock_response(self, symbol: str, input_data: dict) -> AgentSignal:
         """Generate mock response based on input data."""
@@ -181,6 +265,11 @@ SIGNAL GUIDELINES:
         dxy_impact = data.get("dxy_expected_impact", "NEUTRAL")
         correlation_confirms = data.get("correlation_confirms", False)
         divergence = data.get("divergence_detected", False)
+        
+        # Phase 7: Consider currency strength
+        strength_available = data.get("currency_strength_available", False)
+        strength_signal = data.get("strength_signal", "NEUTRAL")
+        strength_differential = data.get("strength_differential", 0.0)
         
         # Check for divergence first
         if divergence:
@@ -195,33 +284,56 @@ SIGNAL GUIDELINES:
             sig.confidence_float = 0.5
             return sig
         
-        # Follow DXY impact
+        # Follow DXY impact and currency strength
         flags = ["MOCK_MODE"]
         
+        # Phase 7: Consider both DXY and currency strength
+        bullish_signals = 0
+        bearish_signals = 0
+        
         if dxy_impact == "BULLISH":
-            signal = "LONG"
-            confidence_float = 0.7 if correlation_confirms else 0.5
-            confidence = ConfidenceLevel.MEDIUM if correlation_confirms else ConfidenceLevel.LOW
+            bullish_signals += 1
             flags.append("DXY_ALIGNED")
         elif dxy_impact == "BEARISH":
-            signal = "SHORT"
-            confidence_float = 0.7 if correlation_confirms else 0.5
-            confidence = ConfidenceLevel.MEDIUM if correlation_confirms else ConfidenceLevel.LOW
+            bearish_signals += 1
             flags.append("DXY_ALIGNED")
+        
+        if strength_available:
+            if strength_signal in ("BULLISH", "STRONG_BULLISH") or strength_differential > 20:
+                bullish_signals += 1
+                flags.append("STRENGTH_CONFIRMS")
+            elif strength_signal in ("BEARISH", "STRONG_BEARISH") or strength_differential < -20:
+                bearish_signals += 1
+                flags.append("STRENGTH_CONFIRMS")
+        
+        if correlation_confirms:
+            # Add confirmation based on existing direction
+            if bullish_signals > bearish_signals:
+                bullish_signals += 1
+            elif bearish_signals > bullish_signals:
+                bearish_signals += 1
+            flags.append("CORRELATION_CONFIRMS")
+        
+        # Determine signal
+        if bullish_signals >= 2:
+            signal = "LONG"
+            confidence_float = 0.7 if bullish_signals >= 3 else 0.55
+            confidence = ConfidenceLevel.MEDIUM if confidence_float >= 0.6 else ConfidenceLevel.LOW
+        elif bearish_signals >= 2:
+            signal = "SHORT"
+            confidence_float = 0.7 if bearish_signals >= 3 else 0.55
+            confidence = ConfidenceLevel.MEDIUM if confidence_float >= 0.6 else ConfidenceLevel.LOW
         else:
             signal = "HOLD"
             confidence_float = 0.3
             confidence = ConfidenceLevel.LOW
-            flags.append("NO_DXY_SIGNAL")
-        
-        if correlation_confirms:
-            flags.append("CORRELATION_CONFIRMS")
+            flags.append("NO_CLEAR_SIGNAL")
         
         sig = AgentSignal(
             agent_name=self.name,
             signal=signal,
             confidence=confidence,
-            reasoning=f"Mock: {symbol} dxy_impact={dxy_impact} confirms={correlation_confirms}",
+            reasoning=f"Mock: {symbol} dxy={dxy_impact} strength={strength_signal} diff={strength_differential:.0f}",
             data_status=DataStatus.REAL,  # DXY is real from Yahoo Finance
             flags=flags,
         )
