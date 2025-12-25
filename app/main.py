@@ -1412,9 +1412,29 @@ def main():
     if equity_from_ib is not None:
         execution_service.update_equity(equity_from_ib)
         print(f"ExecutionService equity from IB: {equity_from_ib}")
+        # Save equity to Supabase for frontend access
+        try:
+            risk_events_repo.insert(
+                event_type="EQUITY_UPDATE",
+                severity="info",
+                message=f"Equity updated from IB Gateway: {equity_from_ib}",
+                data={"equity": equity_from_ib, "source": "ibkr"},
+            )
+        except Exception as e:
+            print(f"Warning: Failed to save equity to Supabase: {e}")
     else:
         execution_service.update_equity(default_equity)
         print(f"ExecutionService equity from env: {default_equity}")
+        # Save default equity to Supabase
+        try:
+            risk_events_repo.insert(
+                event_type="EQUITY_UPDATE",
+                severity="info",
+                message=f"Equity set to default: {default_equity}",
+                data={"equity": default_equity, "source": "env"},
+            )
+        except Exception as e:
+            print(f"Warning: Failed to save equity to Supabase: {e}")
     
     # Disconnect equity connection if separate
     if ib_conn_for_equity is not None and (not signal_gen_mock and ('ib_conn' not in dir() or ib_conn is None or ib_conn_for_equity is not ib_conn)):
