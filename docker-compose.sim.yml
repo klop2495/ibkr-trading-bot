@@ -1,0 +1,67 @@
+# SimulationEngine Docker Compose
+# Run alongside main trading bot as separate service
+#
+# Usage:
+#   docker-compose -f docker-compose.sim.yml up -d sim-engine
+#
+# This service:
+#   - Reads from same Supabase as trading bot
+#   - Connects to same IB Gateway for market data
+#   - Does NOT execute orders
+#   - Writes only to sim_* tables
+
+version: '3.8'
+
+services:
+  sim-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sim-engine
+    restart: unless-stopped
+    
+    # Override entrypoint to run simulation
+    command: ["python", "-m", "app.simulation.main"]
+    
+    environment:
+      # Database (same as trading bot)
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      
+      # IB Gateway connection (read-only for data)
+      - IB_GATEWAY_HOST=ib-gateway
+      - IB_GATEWAY_PORT=4004
+      - IB_CLIENT_ID_SIM=200  # Different from trading bot!
+      
+      # Default equity fallback
+      - DEFAULT_EQUITY=${DEFAULT_EQUITY:-10000}
+      
+      # Simulation parameters
+      - SIM_RISK_PER_TRADE=${SIM_RISK_PER_TRADE:-0.01}
+      - SIM_MAX_OPEN_POSITIONS=${SIM_MAX_OPEN_POSITIONS:-5}
+      - SIM_MAX_LEVERAGE=${SIM_MAX_LEVERAGE:-10}
+      - SIM_PRICE_CHECK_INTERVAL=${SIM_PRICE_CHECK_INTERVAL:-10}
+      - SIM_VERDICT_SCAN_INTERVAL=${SIM_VERDICT_SCAN_INTERVAL:-30}
+      - SIM_EQUITY_UPDATE_INTERVAL=${SIM_EQUITY_UPDATE_INTERVAL:-60}
+      - SIM_VERDICT_LOOKBACK_HOURS=${SIM_VERDICT_LOOKBACK_HOURS:-24}
+      - SIM_MIN_SIZE_POLICY=${SIM_MIN_SIZE_POLICY:-ROUND_UP}
+    
+    # Connect to same network as ib-gateway
+    networks:
+      - ibkr-network
+    
+    # Depends on IB Gateway for market data
+    depends_on:
+      - ib-gateway
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ibkr-network:
+    external: true
+    name: ibkr-trading-bot_default
