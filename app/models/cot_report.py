@@ -110,11 +110,17 @@ class COTReport:
         Convert to categorical format for LLM agents.
         
         Returns categories, NOT numbers (per v2.1 spec).
+        But includes markers for data_status checks.
         """
         return {
             "symbol": self.symbol,
             "bias": self.bias,
+            "speculator_bias": self.bias,  # Same for speculators
             "weekly_change": self.change_direction,
+            "change_direction": self.change_direction,
             "percentile": self.percentile_bucket,
+            "percentile_bucket": self.percentile_bucket,
             "is_stale": self.is_stale(),
+            "is_real_data": True,  # For data_status check
+            "net_position": self.net_position,  # For data availability check
         }

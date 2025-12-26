@@ -1316,7 +1316,7 @@ def main():
     data_sources_enabled = os.getenv("DATA_SOURCES_ENABLED", "1") != "0"
     data_sources_mock = os.getenv("DATA_SOURCES_MOCK", "0") == "1"  # Real data by default
     economic_calendar = EconomicCalendarFetcher(mock_mode=True)  # TODO: real API
-    cot_reports = COTReportsFetcher(mock_mode=True)  # TODO: real API
+    cot_reports = COTReportsFetcher(mock_mode=data_sources_mock)  # Real CFTC data
     dxy_fetcher = DXYFetcher(mock_mode=data_sources_mock)  # Real Yahoo Finance API
     source_health_monitor = SourceHealthMonitor()
     data_sources_fetch_interval = int(os.getenv("DATA_SOURCES_FETCH_INTERVAL", "300"))  # 5 min default
