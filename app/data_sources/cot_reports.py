@@ -1,21 +1,22 @@
 """
 COT Reports Fetcher.
 
-Phase 2: Fetches CFTC Commitment of Traders data for SentimentAgent.
-Source: CFTC.gov direct CSV download.
+Fetches CFTC Commitment of Traders data for SentimentAgent.
+Source: CFTC.gov - Traders in Financial Futures (TFF) report.
 
 Note: COT data is released weekly (Friday ~3:30pm ET) for Tuesday's positions.
 Data is typically 3-5 days old when released.
 
 CFTC Data URLs:
-- Current year: https://www.cftc.gov/dea/newcot/deacmesf.txt
-- Historical: https://www.cftc.gov/files/dea/history/deacmesf{YEAR}.zip
+- Current year TFF: https://www.cftc.gov/files/dea/history/fut_fin_txt_2025.zip
+- Historical: https://www.cftc.gov/files/dea/history/fut_fin_txt_{YEAR}.zip
 """
 
 import csv
 import io
 import logging
 import os
+import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -29,31 +30,36 @@ from app.models.source_health import SourceHealth
 logger = logging.getLogger(__name__)
 
 
-# CFTC contract codes for Forex futures (CME)
-# Format: (Market Name in CFTC file, CFTC Contract Code)
+# CFTC contract codes for Forex futures (CME) in TFF report
+# Market names as they appear in the TFF report
 FOREX_COT_CONTRACTS = {
-    "EUR": ("EURO FX", "099741"),
-    "GBP": ("BRITISH POUND", "096742"),
-    "JPY": ("JAPANESE YEN", "097741"),
-    "AUD": ("AUSTRALIAN DOLLAR", "232741"),
-    "CAD": ("CANADIAN DOLLAR", "090741"),
-    "CHF": ("SWISS FRANC", "092741"),
-    "NZD": ("NZ DOLLAR", "112741"),
-    "MXN": ("MEXICAN PESO", "095741"),
+    "EUR": "EURO FX - CHICAGO MERCANTILE EXCHANGE",
+    "GBP": "BRITISH POUND STERLING - CHICAGO MERCANTILE EXCHANGE",
+    "JPY": "JAPANESE YEN - CHICAGO MERCANTILE EXCHANGE",
+    "AUD": "AUSTRALIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+    "CAD": "CANADIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+    "CHF": "SWISS FRANC - CHICAGO MERCANTILE EXCHANGE",
+    "NZD": "NEW ZEALAND DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+    "MXN": "MEXICAN PESO - CHICAGO MERCANTILE EXCHANGE",
 }
 
-# CFTC CME Futures Only (Short Format) URL
-CFTC_URL = "https://www.cftc.gov/dea/newcot/deacmesf.txt"
+# CFTC Traders in Financial Futures (TFF) - contains forex data
+# Use current year file
+CFTC_TFF_URL_TEMPLATE = "https://www.cftc.gov/files/dea/history/fut_fin_txt_{year}.zip"
 
 
 class COTReportsFetcher(BaseDataSource):
     """
     Fetches CFTC Commitment of Traders reports from CFTC.gov.
     
-    Downloads weekly COT data directly from CFTC website.
-    Data is released every Friday at 3:30pm ET.
+    Downloads Traders in Financial Futures (TFF) report which contains
+    forex futures positioning data broken down by:
+    - Dealer/Intermediary
+    - Asset Manager/Institutional  
+    - Leveraged Funds (hedge funds)
+    - Other Reportables
     
-    Uses "Futures Only" short format for CME currencies.
+    We focus on Leveraged Funds as the "speculator" category.
     """
     
     source_name = "cot_reports"
@@ -146,57 +152,77 @@ class COTReportsFetcher(BaseDataSource):
         """
         Fetch real COT data from CFTC.gov.
         
-        Downloads the current year's CME Futures Only Short Format file.
-        Parses CSV and extracts forex currency data.
+        Downloads the Traders in Financial Futures (TFF) report
+        which contains forex currency futures data.
         """
         reports = {}
+        current_year = datetime.now().year
         
-        # Download COT data
-        try:
-            logger.info(f"COT: Downloading from {CFTC_URL}")
-            response = requests.get(
-                CFTC_URL,
-                timeout=30,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; TradingBot/1.0)"}
-            )
-            response.raise_for_status()
+        # Try current year first, then previous year if needed
+        years_to_try = [current_year, current_year - 1]
+        
+        for year in years_to_try:
+            url = CFTC_TFF_URL_TEMPLATE.format(year=year)
             
-            # Parse CSV
-            content = response.text
-            self._raw_data = self._parse_cftc_csv(content)
-            
-            logger.info(f"COT: Parsed {len(self._raw_data)} rows from CFTC")
-            
-        except Exception as e:
-            logger.error(f"COT: Failed to download from CFTC: {e}")
-            # Try to use cached data
-            if self._raw_data:
-                logger.info("COT: Using cached data")
-            else:
-                raise RuntimeError(f"Failed to fetch COT data: {e}")
+            try:
+                logger.info(f"COT: Downloading TFF report from {url}")
+                response = requests.get(
+                    url,
+                    timeout=60,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; TradingBot/1.0)"}
+                )
+                response.raise_for_status()
+                
+                # Extract and parse ZIP file
+                with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+                    # Find the txt file in the archive
+                    txt_files = [f for f in zf.namelist() if f.endswith('.txt')]
+                    if not txt_files:
+                        logger.warning(f"COT: No txt file found in {url}")
+                        continue
+                    
+                    with zf.open(txt_files[0]) as f:
+                        content = f.read().decode('utf-8', errors='replace')
+                        self._raw_data = self._parse_tff_csv(content)
+                
+                logger.info(f"COT: Parsed {len(self._raw_data)} rows from TFF report ({year})")
+                
+                if self._raw_data:
+                    break  # Success, don't try older years
+                    
+            except Exception as e:
+                logger.warning(f"COT: Failed to download {year} TFF report: {e}")
+                continue
+        
+        if not self._raw_data:
+            raise RuntimeError("Failed to fetch COT data from CFTC")
         
         # Extract data for each currency
         for currency in currencies:
             if currency not in FOREX_COT_CONTRACTS:
                 continue
             
-            market_name, contract_code = FOREX_COT_CONTRACTS[currency]
+            market_name = FOREX_COT_CONTRACTS[currency]
             
             # Find the latest report for this currency
-            report = self._extract_currency_report(currency, market_name, contract_code)
+            report = self._extract_currency_report(currency, market_name)
             if report:
                 reports[currency] = report
         
         return reports
     
-    def _parse_cftc_csv(self, content: str) -> List[Dict]:
+    def _parse_tff_csv(self, content: str) -> List[Dict]:
         """
-        Parse CFTC CSV content.
+        Parse TFF (Traders in Financial Futures) CSV content.
         
-        The CFTC short format columns vary but we need:
+        TFF columns include:
         - Market_and_Exchange_Names
-        - As_of_Date_In_Form_YYMMDD
-        - Asset Manager and Leveraged Money positions (speculators)
+        - Report_Date_as_YYYY-MM-DD
+        - Dealer positions (long/short/spread)
+        - Asset Manager positions (long/short/spread)
+        - Leveraged Money positions (long/short/spread) <- "speculators"
+        - Other Reportable positions
+        - Changes from previous week
         """
         rows = []
         
@@ -212,7 +238,7 @@ class COTReportsFetcher(BaseDataSource):
         col_map = {name.strip(): idx for idx, name in enumerate(header)}
         
         # Log available columns for debugging
-        logger.debug(f"COT columns: {list(col_map.keys())[:20]}...")
+        logger.debug(f"COT TFF columns: {list(col_map.keys())[:30]}...")
         
         for row in reader:
             if len(row) < 10:
@@ -221,54 +247,56 @@ class COTReportsFetcher(BaseDataSource):
             try:
                 # Get market name and date
                 market_idx = col_map.get("Market_and_Exchange_Names", 0)
-                date_idx = col_map.get("As_of_Date_In_Form_YYMMDD", 1)
+                date_idx = col_map.get("Report_Date_as_YYYY-MM-DD", col_map.get("As_of_Date_In_Form_YYYY-MM-DD", 1))
                 
                 market_name = row[market_idx].strip() if market_idx < len(row) else ""
                 date_str = row[date_idx].strip() if date_idx < len(row) else ""
                 
-                # Try different column name patterns for positions
-                # Pattern 1: Asset_Mgr_Positions_Long_All
-                # Pattern 2: Pct_of_OI_Asset_Mgr_Long_All
-                
-                asset_long = self._get_col_value(row, col_map, [
-                    "Asset_Mgr_Positions_Long_All",
-                    "AssetMgr_Positions_Long_All", 
-                    "Dealer_Positions_Long_All"
-                ])
-                asset_short = self._get_col_value(row, col_map, [
-                    "Asset_Mgr_Positions_Short_All",
-                    "AssetMgr_Positions_Short_All",
-                    "Dealer_Positions_Short_All"
-                ])
+                # Get Leveraged Money positions (hedge funds = speculators)
                 lev_long = self._get_col_value(row, col_map, [
                     "Lev_Money_Positions_Long_All",
-                    "LevMoney_Positions_Long_All"
+                    "Lev_Money_Long_All",
                 ])
                 lev_short = self._get_col_value(row, col_map, [
                     "Lev_Money_Positions_Short_All",
-                    "LevMoney_Positions_Short_All"
+                    "Lev_Money_Short_All",
                 ])
                 
-                # Combined speculator positions
-                spec_long = asset_long + lev_long
-                spec_short = asset_short + lev_short
+                # Also get Asset Manager positions as alternative speculator measure
+                asset_long = self._get_col_value(row, col_map, [
+                    "Asset_Mgr_Positions_Long_All",
+                    "AssetMgr_Long_All",
+                ])
+                asset_short = self._get_col_value(row, col_map, [
+                    "Asset_Mgr_Positions_Short_All",
+                    "AssetMgr_Short_All",
+                ])
                 
-                # Parse date (YYMMDD format)
+                # Combined speculator positions (Leveraged + Asset Managers)
+                spec_long = lev_long + asset_long
+                spec_short = lev_short + asset_short
+                
+                # If no leveraged data, try non-commercial from legacy format
+                if spec_long == 0 and spec_short == 0:
+                    spec_long = self._get_col_value(row, col_map, ["NonComm_Positions_Long_All"])
+                    spec_short = self._get_col_value(row, col_map, ["NonComm_Positions_Short_All"])
+                
+                # Parse date
                 try:
-                    report_date = datetime.strptime(date_str, "%y%m%d").replace(tzinfo=timezone.utc)
-                except ValueError:
-                    # Try alternative format YYYY-MM-DD
-                    try:
+                    if "-" in date_str:
                         report_date = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                    except ValueError:
-                        report_date = datetime.now(timezone.utc)
+                    else:
+                        report_date = datetime.strptime(date_str, "%y%m%d").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    report_date = datetime.now(timezone.utc)
                 
-                rows.append({
-                    "market_name": market_name,
-                    "report_date": report_date,
-                    "spec_long": spec_long,
-                    "spec_short": spec_short,
-                })
+                if spec_long > 0 or spec_short > 0:  # Only add if we have data
+                    rows.append({
+                        "market_name": market_name,
+                        "report_date": report_date,
+                        "spec_long": spec_long,
+                        "spec_short": spec_short,
+                    })
                 
             except (IndexError, ValueError) as e:
                 logger.debug(f"COT: Failed to parse row: {e}")
@@ -297,21 +325,21 @@ class COTReportsFetcher(BaseDataSource):
         self,
         currency: str,
         market_name: str,
-        contract_code: str,
     ) -> Optional[COTReport]:
         """
         Extract COT report for a specific currency.
         
         Finds the latest report matching the market name.
         """
-        # Find all rows matching this currency
+        # Find all rows matching this currency (partial match on market name)
+        search_terms = market_name.upper().split(" - ")[0]  # e.g., "EURO FX"
         matching_rows = [
             row for row in self._raw_data
-            if market_name.upper() in row["market_name"].upper()
+            if search_terms in row["market_name"].upper()
         ]
         
         if not matching_rows:
-            logger.warning(f"COT: No data found for {currency} ({market_name})")
+            logger.warning(f"COT: No data found for {currency} ({search_terms})")
             return None
         
         # Sort by date descending to get latest
@@ -334,7 +362,7 @@ class COTReportsFetcher(BaseDataSource):
         # Calculate 52-week percentile
         percentile = self._calculate_percentile(currency, net_position, matching_rows)
         
-        logger.info(f"COT {currency}: long={latest['spec_long']} short={latest['spec_short']} net={net_position} pct={percentile}")
+        logger.info(f"COT {currency}: long={latest['spec_long']:,} short={latest['spec_short']:,} net={net_position:+,} pct={percentile}")
         
         return COTReport(
             symbol=currency,
