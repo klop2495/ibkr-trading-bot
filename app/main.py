@@ -1211,8 +1211,10 @@ def run_signal_generation_tick(
 
 
 def _create_ib_connection(host: str, port: int, client_id: int, retries: int = 3, retry_delay: float = 5.0):
-    """Create IB Gateway connection with retry logic."""
+    """Create IB Gateway connection with retry logic and clientId collision handling."""
     from ib_insync import IB
+    
+    MAX_CLIENTID_RETRIES = 10
     
     for attempt in range(1, retries + 1):
         try:
@@ -1223,6 +1225,25 @@ def _create_ib_connection(host: str, port: int, client_id: int, retries: int = 3
             print(f"IB Gateway connected successfully on attempt {attempt}")
             return ib
         except Exception as e:
+            error_str = str(e).lower()
+            # Check for Error 326 (clientId collision)
+            if "326" in str(e) or "client id" in error_str or "already in use" in error_str:
+                print(f"clientId {client_id} collision, trying next...")
+                # Try incrementing clientId
+                for cid_attempt in range(MAX_CLIENTID_RETRIES):
+                    new_client_id = client_id + cid_attempt + 1
+                    try:
+                        ib = IB()
+                        ib.RequestTimeout = 60
+                        ib.connect(host, port, clientId=new_client_id, timeout=60)
+                        print(f"IB Gateway connected with clientId={new_client_id}")
+                        return ib
+                    except Exception as e2:
+                        if "326" in str(e2) or "client id" in str(e2).lower():
+                            continue
+                        # Other error - break inner loop
+                        break
+            
             print(f"IB Gateway connection attempt {attempt} failed: {type(e).__name__}: {e}")
             if attempt < retries:
                 print(f"Retrying in {retry_delay} seconds...")
@@ -1356,7 +1377,11 @@ def main():
             # Try to connect to IB Gateway
             ib_host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
             ib_port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
-            ib_client_id = int(os.getenv("IB_CLIENT_ID", "10"))
+            # Use role-specific clientId for main/marketdata connection
+            ib_client_id = int(os.getenv(
+                "IB_CLIENT_ID_MAIN",
+                os.getenv("IB_CLIENT_ID", "151")
+            ))
             ib_conn = _create_ib_connection(ib_host, ib_port, ib_client_id)
             if ib_conn:
                 from app.market_data.ibkr_fetcher import IBKRFetcher
@@ -1446,6 +1471,13 @@ def main():
     execution_mode = execution_service._determine_mode(bot_settings_repo.get(owner_uuid_str))
     current_equity = execution_service.get_equity()
     print(f"ExecutionService initialized mode={execution_mode.value} equity={current_equity}")
+
+    # ClientId audit log - show all configured IDs on startup
+    _audit_main = os.getenv("IB_CLIENT_ID_MAIN", os.getenv("IB_CLIENT_ID", "151"))
+    _audit_marketdata = os.getenv("IB_CLIENT_ID_MARKETDATA", os.getenv("IB_CLIENT_ID", "11"))
+    _audit_execution = os.getenv("IBKR_EXECUTION_CLIENT_ID", "153")
+    _audit_equity = os.getenv("IB_CLIENT_ID_EQUITY", "154")
+    print(f"ibkr_client_ids main={_audit_main} marketdata={_audit_marketdata} execution={_audit_execution} equity={_audit_equity}")
 
     batch_size = int(os.getenv("CONTROL_PLANE_BACKFILL_BATCH_SIZE", str(DEFAULT_BACKFILL_BATCH)))
     backfill_max_per_tick = int(os.getenv("CONTROL_PLANE_BACKFILL_MAX_PER_TICK", str(DEFAULT_BACKFILL_MAX_PER_TICK)))

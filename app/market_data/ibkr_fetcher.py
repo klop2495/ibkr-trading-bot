@@ -27,6 +27,19 @@ TIMEFRAME_MINUTES = {
 
 
 class IBKRFetcher:
+    """
+    IBKR market data fetcher.
+    
+    Connection modes:
+    1. Injected IB instance (ib=ib_conn): Fetcher does NOT own connection,
+       will NOT reconnect. If connection lost, raises error for caller to handle.
+    2. Own connection (ib=None): Fetcher creates and owns IB instance,
+       uses IB_CLIENT_ID_MARKETDATA for connection.
+    """
+    
+    # Max retries for Error 326 (clientId collision)
+    MAX_CLIENT_ID_RETRIES = 10
+    
     def __init__(
         self,
         ib: Any | None = None,
@@ -35,38 +48,54 @@ class IBKRFetcher:
         client_id: int | None = None,
     ):
         self._ib = ib
-        self._owns_connection = ib is None  # True if we created the connection
+        self._owns_connection = ib is None  # True if we need to create connection
         # Use provided values or fall back to environment variables
         self._host = host or os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
         self._port = port or int(os.getenv("IB_GATEWAY_PORT", "4004"))
-        self._client_id = client_id or int(os.getenv("IB_CLIENT_ID", "10"))
+        # Use role-specific clientId for marketdata
+        self._client_id = client_id or int(os.getenv(
+            "IB_CLIENT_ID_MARKETDATA",
+            os.getenv("IB_CLIENT_ID", "11")  # Fallback to 11 (different from main=10)
+        ))
 
     def _ensure_connected(self):
         """
         Ensure IB connection is active.
         
-        If we were given an external IB instance, we just check it's connected
-        and raise an error if not (caller is responsible for reconnection).
+        If we were given an external IB instance (injected), we NEVER reconnect.
+        We just check isConnected() and raise error if not connected.
+        Caller (main loop) is responsible for reconnection.
         
-        If we created our own IB instance, we can reconnect.
+        If we own the connection, we can connect/reconnect with retry on Error 326.
         """
         from ib_insync import IB
         
+        # Case 1: Injected IB instance - don't own connection
+        if not self._owns_connection:
+            if self._ib is None:
+                raise RuntimeError("ibkr_not_connected: no IB instance provided")
+            if not self._ib.isConnected():
+                raise RuntimeError("ibkr_not_connected: injected IB instance is disconnected")
+            return self._ib
+        
+        # Case 2: We own the connection - create if needed
         if self._ib is None:
             self._ib = IB()
-            self._owns_connection = True
         
-        if not self._ib.isConnected():
-            if not self._owns_connection:
-                # External IB instance lost connection - don't try to reconnect
-                # Let the caller handle reconnection
-                raise RuntimeError(f"ibkr_connection_lost: external IB connection is not connected")
-            
-            # We own the connection, try to reconnect
-            host = os.getenv("IB_GATEWAY_HOST", self._host)
-            port = int(os.getenv("IB_GATEWAY_PORT", str(self._port)))
-            client_id = int(os.getenv("IB_CLIENT_ID", str(self._client_id)))
-            
+        if self._ib.isConnected():
+            return self._ib
+        
+        # Need to connect - try with retry on Error 326
+        host = os.getenv("IB_GATEWAY_HOST", self._host)
+        port = int(os.getenv("IB_GATEWAY_PORT", str(self._port)))
+        base_client_id = int(os.getenv(
+            "IB_CLIENT_ID_MARKETDATA",
+            os.getenv("IB_CLIENT_ID", str(self._client_id))
+        ))
+        
+        last_error = None
+        for attempt in range(self.MAX_CLIENT_ID_RETRIES):
+            client_id = base_client_id + attempt
             try:
                 self._ib.RequestTimeout = 60
                 self._ib.connect(
@@ -75,16 +104,24 @@ class IBKRFetcher:
                     clientId=client_id, 
                     timeout=30
                 )
-                # Update instance vars on successful reconnect
-                self._host = host
-                self._port = port
+                # Success - update instance vars
                 self._client_id = client_id
-                print(f"ibkr_reconnect host={host} port={port} client_id={client_id}")
+                print(f"ibkr_marketdata_connected host={host} port={port} client_id={client_id}")
+                return self._ib
             except Exception as e:
-                print(f"ibkr_connection_failed host={host} port={port} error={e}")
+                last_error = e
+                error_str = str(e).lower()
+                # Check for Error 326 (clientId collision)
+                if "326" in str(e) or "client id" in error_str or "already in use" in error_str:
+                    print(f"ibkr_clientid_collision client_id={client_id} attempt={attempt+1}/{self.MAX_CLIENT_ID_RETRIES}")
+                    continue
+                # Other error - don't retry
+                print(f"ibkr_connection_failed host={host} port={port} client_id={client_id} error={e}")
                 raise RuntimeError(f"ibkr_connection_failed: host={host} port={port} error={e}") from e
         
-        return self._ib
+        # All retries exhausted
+        print(f"ibkr_connection_failed_all_retries host={host} port={port} base_client_id={base_client_id}")
+        raise RuntimeError(f"ibkr_connection_failed: exhausted {self.MAX_CLIENT_ID_RETRIES} clientId retries") from last_error
 
     def _make_forex_contract(self, symbol: str):
         """Convert symbol like 'EUR/USD' to Forex contract."""
