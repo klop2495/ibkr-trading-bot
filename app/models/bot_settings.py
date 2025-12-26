@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.models.signals_params import SignalsParams
 
 DEFAULT_SYMBOLS = [
+    # Major pairs (7)
     "EURUSD",
     "GBPUSD",
     "USDJPY",
@@ -14,6 +15,17 @@ DEFAULT_SYMBOLS = [
     "AUDUSD",
     "USDCAD",
     "NZDUSD",
+    # JPY crosses (6)
+    "EURJPY",
+    "GBPJPY",
+    "AUDJPY",
+    "CADJPY",
+    "CHFJPY",
+    "NZDJPY",
+    # Other crosses (3)
+    "EURGBP",
+    "EURAUD",
+    "EURCHF",
 ]
 
 class BotSettings(BaseModel):
