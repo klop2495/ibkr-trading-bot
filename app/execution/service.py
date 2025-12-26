@@ -1083,6 +1083,17 @@ class ExecutionService:
             # Check if order was rejected due to insufficient funds
             if state.status == OrderStatus.REJECTED:
                 logger.warning(f"Order rejected: {state.error_message}")
+                # Update trade status to REJECTED
+                if trade_id and self.trades_history_repo:
+                    try:
+                        self.trades_history_repo.update_status(
+                            trade_id=trade_id,
+                            status="REJECTED",
+                            error_message=state.error_message,
+                        )
+                        logger.info(f"Trade {trade_id} marked as REJECTED")
+                    except Exception as e:
+                        logger.error(f"Failed to update trade status to REJECTED: {e}")
                 return ExecutionResult(
                     executed=False,
                     mode=self._mode,
