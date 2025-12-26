@@ -113,8 +113,10 @@ class DXYSnapshot:
         Convert to categorical format for LLM agents.
         
         Returns categories, NOT numbers (per v2.1 spec).
+        But includes 'value' for data_status checks.
         """
         return {
+            "value": self.value,  # For data availability check
             "trend": self.trend,
             "vs_50sma": self.vs_sma,
             "daily_direction": self.daily_direction,
