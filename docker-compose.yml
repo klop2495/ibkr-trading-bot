@@ -24,6 +24,35 @@ services:
       retries: 3
       start_period: 10s
 
+  # Dashboard API - provides broker data to frontend
+  dashboard:
+    build: .
+    container_name: ibkr-dashboard
+    restart: unless-stopped
+    command: ["python", "-m", "app.dashboard"]
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DASHBOARD_PORT=8080
+      - IB_CLIENT_ID_BROKER_API=160
+    ports:
+      - "8080:8080"
+    networks:
+      - default
+      - ib-gateway_default
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
   # SimulationEngine - Shadow trading simulator (optional)
   # Start with: docker-compose up -d sim-engine
   sim-engine:

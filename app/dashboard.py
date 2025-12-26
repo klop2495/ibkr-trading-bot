@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.storage.db import SupabaseDB
+from app.broker.account_api import get_broker_api
 
 
 app = FastAPI(
@@ -95,6 +96,63 @@ async def health_check():
         "supabase": db.ping(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/api/broker")
+async def get_broker_data():
+    """
+    Get real-time broker account data from IB Gateway.
+    
+    Returns account summary, positions, orders, and connection status.
+    Used by the frontend /admin/broker page.
+    """
+    try:
+        broker_api = get_broker_api()
+        data = broker_api.get_account_data()
+        
+        # Merge with bot_settings for tradingEnabled and mode
+        db = get_db()
+        settings_result = db.client.table("bot_settings").select("trading_enabled, mode").order("updated_at", desc=True).limit(1).execute()
+        settings_rows = getattr(settings_result, "data", []) or []
+        
+        if settings_rows:
+            settings = settings_rows[0]
+            data["connection"]["tradingEnabled"] = settings.get("trading_enabled", False)
+            # Keep IB-detected mode if connected, otherwise use settings
+            if not data["account"]["connected"]:
+                data["connection"]["mode"] = settings.get("mode", "dry_run")
+        
+        return data
+    except Exception as e:
+        return {
+            "error": str(e),
+            "account": {
+                "accountId": "ERROR",
+                "accountType": "UNKNOWN",
+                "currency": "USD",
+                "equity": 0,
+                "availableFunds": 0,
+                "buyingPower": 0,
+                "marginUsed": 0,
+                "marginAvailable": 0,
+                "unrealizedPnl": 0,
+                "dailyPnl": 0,
+                "leverage": 0,
+                "connected": False,
+                "lastUpdate": None,
+            },
+            "connection": {
+                "ibGateway": "disconnected",
+                "dataFeed": "unknown",
+                "tradingEnabled": False,
+                "mode": "unknown",
+                "lastHeartbeat": None,
+            },
+            "positions": [],
+            "orders": [],
+            "openPositions": 0,
+            "pendingOrders": 0,
+        }
 
 
 @app.get("/api/parallel-decisions", response_model=List[ParallelDecisionSummary])
