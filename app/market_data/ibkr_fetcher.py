@@ -35,20 +35,34 @@ class IBKRFetcher:
         client_id: int | None = None,
     ):
         self._ib = ib
+        self._owns_connection = ib is None  # True if we created the connection
         # Use provided values or fall back to environment variables
         self._host = host or os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
         self._port = port or int(os.getenv("IB_GATEWAY_PORT", "4004"))
         self._client_id = client_id or int(os.getenv("IB_CLIENT_ID", "10"))
 
     def _ensure_connected(self):
-        """Ensure IB connection is active, reconnect if needed."""
+        """
+        Ensure IB connection is active.
+        
+        If we were given an external IB instance, we just check it's connected
+        and raise an error if not (caller is responsible for reconnection).
+        
+        If we created our own IB instance, we can reconnect.
+        """
         from ib_insync import IB
         
         if self._ib is None:
             self._ib = IB()
+            self._owns_connection = True
         
         if not self._ib.isConnected():
-            # Re-read env vars on reconnect in case they changed
+            if not self._owns_connection:
+                # External IB instance lost connection - don't try to reconnect
+                # Let the caller handle reconnection
+                raise RuntimeError(f"ibkr_connection_lost: external IB connection is not connected")
+            
+            # We own the connection, try to reconnect
             host = os.getenv("IB_GATEWAY_HOST", self._host)
             port = int(os.getenv("IB_GATEWAY_PORT", str(self._port)))
             client_id = int(os.getenv("IB_CLIENT_ID", str(self._client_id)))
@@ -112,8 +126,8 @@ class IBKRFetcher:
         except Exception as exc:
             # Log the error with details
             print(f"ibkr_fetch_error symbol={symbol} tf={timeframe} error={exc}")
-            # Reset connection on error so next call will reconnect
-            if self._ib:
+            # Only reset connection if we own it
+            if self._owns_connection and self._ib:
                 try:
                     self._ib.disconnect()
                 except:
