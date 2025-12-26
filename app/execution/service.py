@@ -1072,9 +1072,33 @@ class ExecutionService:
                 final_signal=final_signal or "HOLD",
             )
         
-        # Place order (with or without SL/TP)
+        # Place order with funds check (with or without SL/TP)
         try:
-            state = self._oms.place_order_with_sl_tp(request, current_price)
+            state, funds_details = self._oms.place_order_with_funds_check(
+                request,
+                current_price,
+                log_callback=lambda event_type, severity, message, data: self._log_event(event_type, severity, message, data),
+            )
+            
+            # Check if order was rejected due to insufficient funds
+            if state.status == OrderStatus.REJECTED:
+                logger.warning(f"Order rejected: {state.error_message}")
+                return ExecutionResult(
+                    executed=False,
+                    mode=self._mode,
+                    order_id=request.id,
+                    symbol=decision.symbol,
+                    side=side,
+                    quantity=size_result.units,
+                    reason=state.error_message or "insufficient_funds",
+                )
+            
+            # Log if quantity was adjusted
+            if funds_details.get("was_adjusted"):
+                logger.info(
+                    f"Order qty adjusted: {funds_details.get('original_qty')} -> {funds_details.get('adjusted_qty')} "
+                    f"({funds_details.get('reason')})"
+                )
             
             # P0-B: Update trade with ib_order_id and SUBMITTED status
             if trade_id and state.ib_order_id:

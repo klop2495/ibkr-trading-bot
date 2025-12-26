@@ -1,5 +1,42 @@
 # Dev Changelog (append-only)
 
+## 2025-12-26 — FX Funds Guard + Fix IBKR Order Execution
+- Summary: Fixed orders going Inactive due to insufficient currency balance. IB doesn't allow FX spot orders that create negative balance in quote/base currency. Added FXFundsGuard to pre-check available cash and auto-adjust order size.
+- Root cause analysis:
+  1. `EXECUTION_DRY_RUN=1` was set — orders were only simulated, not sent to IB
+  2. `IBKR_CLIENT_ID` conflict — multiple connections with same clientId caused "already in use" errors
+  3. **Main issue**: IB rejects FX orders that would create negative currency balance without explicit error (order becomes `Inactive`)
+  - Example: BUY EURUSD requires USD. If USD balance < required amount → Inactive
+  - This explained why bracket orders were SUBMITTED then immediately CANCELLED/ERROR
+- Solution:
+  1. Set `EXECUTION_DRY_RUN=0` and unique `IBKR_CLIENT_ID=151`
+  2. Created `app/broker/fx_funds_guard.py` with `FXFundsGuard` class:
+     - Pre-checks CashBalance in required currency before placing order
+     - For BUY base/quote: needs quote currency (BUY EURUSD needs USD)
+     - For SELL base/quote: needs base currency (SELL EURUSD needs EUR)
+     - AUTO_REDUCE policy: reduces qty to max affordable
+     - SKIP policy: rejects order if insufficient funds
+  3. Integrated into OMS via `place_order_with_funds_check()` method
+  4. Logs events: EXECUTION_PRECHECK_FUNDS, EXECUTION_SIZE_ADJUSTED, EXECUTION_SKIPPED_INSUFFICIENT_FUNDS
+- Configuration (env variables):
+  - `FX_FUNDS_BUFFER=0.02` — 2% safety buffer
+  - `FX_QTY_STEP=100` — round qty to nearest 100
+  - `FX_MIN_IDEALPRO=20000` — IB minimum for IDEALPRO routing
+  - `FX_ALLOW_ODD_LOTS=true` — allow below minimum (warning 399)
+  - `FX_FUNDS_POLICY=auto_reduce` — policy: auto_reduce or skip
+- Files:
+  - `app/broker/fx_funds_guard.py` — FXFundsGuard class
+  - `app/broker/oms.py` — integrated funds check, added `place_order_with_funds_check()`
+  - `scripts/test_fx_funds_guard.py` — test script
+  - `.env.example` — added FX_FUNDS_* variables
+- Verification:
+  - Manual test: BUY EURUSD 15000 → Filled @ 1.1776 ✅
+  - Manual test: SELL EURUSD 15000 → Filled ✅
+  - Orders now execute when sufficient funds available
+- Related fixes:
+  - Cleared old DRY_RUN trades from trades_history (were blocking max_positions limit)
+  - TWS API settings: verified "Read-Only API" is OFF, "Enable ActiveX and Socket Clients" is ON
+
 ## 2025-12-23 — IB Gateway Connection Fix (Docker Networking)
 - Summary: Fixed IB Gateway API connection issue. Bot was failing to connect with `CancelledError` due to incorrect port configuration and Docker network isolation.
 - Root cause: 

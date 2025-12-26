@@ -13,7 +13,7 @@ Features:
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
@@ -40,6 +40,14 @@ class FundsCheckResult:
     price_source: str  # "bid", "ask", "last", "midpoint"
     was_adjusted: bool = False
     
+    # Config fields for logging
+    buffer: float = 0.0
+    qty_step: int = 0
+    min_idealpro: int = 0
+    min_trade_qty: int = 0
+    allow_odd_lots: bool = True
+    policy: str = "auto_reduce"
+    
     def to_dict(self) -> Dict[str, Any]:
         return {
             "can_trade": self.can_trade,
@@ -52,6 +60,13 @@ class FundsCheckResult:
             "price_used": self.price_used,
             "price_source": self.price_source,
             "was_adjusted": self.was_adjusted,
+            # Config for transparency
+            "buffer": self.buffer,
+            "qty_step": self.qty_step,
+            "min_idealpro": self.min_idealpro,
+            "min_trade_qty": self.min_trade_qty,
+            "allow_odd_lots": self.allow_odd_lots,
+            "policy": self.policy,
         }
 
 
@@ -67,10 +82,11 @@ class FXFundsGuard:
     """
     
     # Configuration defaults (can be overridden via env)
-    DEFAULT_BUFFER = 0.02  # 2% safety buffer
+    DEFAULT_BUFFER = 0.02  # 2% safety buffer (only for BUY)
     DEFAULT_QTY_STEP = 100  # Round to nearest 100
     DEFAULT_MIN_IDEALPRO = 20000  # IB minimum for IDEALPRO routing
-    DEFAULT_ALLOW_ODD_LOTS = True  # Allow below minimum (warning 399)
+    DEFAULT_MIN_TRADE_QTY = 5000  # Minimum trade size to avoid micro-trades
+    DEFAULT_ALLOW_ODD_LOTS = True  # Allow below IDEALPRO minimum (warning 399)
     DEFAULT_POLICY = FundsPolicy.AUTO_REDUCE
     
     def __init__(
@@ -80,6 +96,7 @@ class FXFundsGuard:
         buffer: Optional[float] = None,
         qty_step: Optional[int] = None,
         min_idealpro: Optional[int] = None,
+        min_trade_qty: Optional[int] = None,
         allow_odd_lots: Optional[bool] = None,
         policy: Optional[FundsPolicy] = None,
     ):
@@ -89,10 +106,11 @@ class FXFundsGuard:
         Args:
             ib: ib_insync IB instance (must be connected)
             account: Account ID (optional, uses default if not specified)
-            buffer: Safety buffer percentage (default 2%)
+            buffer: Safety buffer percentage for BUY orders (default 2%)
             qty_step: Quantity rounding step (default 100)
             min_idealpro: Minimum qty for IDEALPRO routing (default 20000)
-            allow_odd_lots: Allow qty below minimum (default True)
+            min_trade_qty: Minimum trade size to execute (default 5000)
+            allow_odd_lots: Allow qty below IDEALPRO minimum (default True)
             policy: Policy for insufficient funds (default AUTO_REDUCE)
         """
         self.ib = ib
@@ -102,6 +120,7 @@ class FXFundsGuard:
         self.buffer = buffer if buffer is not None else float(os.getenv("FX_FUNDS_BUFFER", self.DEFAULT_BUFFER))
         self.qty_step = qty_step if qty_step is not None else int(os.getenv("FX_QTY_STEP", self.DEFAULT_QTY_STEP))
         self.min_idealpro = min_idealpro if min_idealpro is not None else int(os.getenv("FX_MIN_IDEALPRO", self.DEFAULT_MIN_IDEALPRO))
+        self.min_trade_qty = min_trade_qty if min_trade_qty is not None else int(os.getenv("FX_MIN_TRADE_QTY", self.DEFAULT_MIN_TRADE_QTY))
         self.allow_odd_lots = allow_odd_lots if allow_odd_lots is not None else os.getenv("FX_ALLOW_ODD_LOTS", "true").lower() == "true"
         
         policy_str = os.getenv("FX_FUNDS_POLICY", "auto_reduce")
@@ -188,7 +207,9 @@ class FXFundsGuard:
     
     def get_fx_price(self, symbol: str, side: str) -> Tuple[float, str]:
         """
-        Get current price for FX pair.
+        Get current price for FX pair with reliable data fetching.
+        
+        Uses polling loop instead of fixed sleep for better reliability.
         
         Args:
             symbol: FX pair
@@ -204,29 +225,32 @@ class FXFundsGuard:
             self.ib.qualifyContracts(contract)
             
             ticker = self.ib.reqMktData(contract, snapshot=True)
-            self.ib.sleep(1)  # Wait for data
             
-            # For BUY, use ask; for SELL, use bid
-            if side.upper() == "BUY":
-                if ticker.ask and ticker.ask > 0:
-                    return ticker.ask, "ask"
-            else:
-                if ticker.bid and ticker.bid > 0:
-                    return ticker.bid, "bid"
-            
-            # Fallbacks
-            if ticker.last and ticker.last > 0:
-                return ticker.last, "last"
-            
-            if ticker.bid and ticker.ask and ticker.bid > 0 and ticker.ask > 0:
-                midpoint = (ticker.bid + ticker.ask) / 2
-                return midpoint, "midpoint"
+            # Poll for data up to 3 seconds (30 x 0.1s)
+            for _ in range(30):
+                self.ib.sleep(0.1)
+                
+                # For BUY, prefer ask; for SELL, prefer bid
+                if side.upper() == "BUY":
+                    if ticker.ask and ticker.ask > 0:
+                        return ticker.ask, "ask"
+                else:
+                    if ticker.bid and ticker.bid > 0:
+                        return ticker.bid, "bid"
+                
+                # Accept any valid price
+                if ticker.last and ticker.last > 0:
+                    return ticker.last, "last"
+                
+                if ticker.bid and ticker.ask and ticker.bid > 0 and ticker.ask > 0:
+                    midpoint = (ticker.bid + ticker.ask) / 2
+                    return midpoint, "midpoint"
             
             # Last resort - use close
             if ticker.close and ticker.close > 0:
                 return ticker.close, "close"
             
-            logger.warning(f"No price data for {symbol}")
+            logger.warning(f"No price data for {symbol} after 3s polling")
             return 0.0, "none"
             
         except Exception as e:
@@ -256,24 +280,55 @@ class FXFundsGuard:
         if available <= 0 or price <= 0:
             return 0.0
         
-        # Calculate max qty with buffer
-        buffer_multiplier = 1 + self.buffer
-        
         if side.upper() == "BUY":
-            # BUY: need quote currency
+            # BUY: need quote currency with buffer (price fluctuates)
             # required = qty * price * (1 + buffer)
             # max_qty = available / (price * (1 + buffer))
+            buffer_multiplier = 1 + self.buffer
             max_qty = available / (price * buffer_multiplier)
         else:
-            # SELL: need base currency
-            # required = qty * (1 + buffer)
-            # max_qty = available / (1 + buffer)
-            max_qty = available / buffer_multiplier
+            # SELL: need base currency, no buffer needed (we have exact amount)
+            # required = qty (just the base currency we're selling)
+            max_qty = available
         
         # Round down to qty_step
         max_qty = (int(max_qty) // self.qty_step) * self.qty_step
         
         return float(max_qty)
+    
+    def _create_result(
+        self,
+        can_trade: bool,
+        original_qty: float,
+        adjusted_qty: float,
+        reason: str,
+        currency_needed: str,
+        available_cash: float,
+        required_cash: float,
+        price_used: float,
+        price_source: str,
+        was_adjusted: bool = False,
+    ) -> FundsCheckResult:
+        """Create FundsCheckResult with config fields populated."""
+        return FundsCheckResult(
+            can_trade=can_trade,
+            original_qty=original_qty,
+            adjusted_qty=adjusted_qty,
+            reason=reason,
+            currency_needed=currency_needed,
+            available_cash=available_cash,
+            required_cash=required_cash,
+            price_used=price_used,
+            price_source=price_source,
+            was_adjusted=was_adjusted,
+            # Config fields
+            buffer=self.buffer,
+            qty_step=self.qty_step,
+            min_idealpro=self.min_idealpro,
+            min_trade_qty=self.min_trade_qty,
+            allow_odd_lots=self.allow_odd_lots,
+            policy=self.policy.value,
+        )
     
     def check_funds(
         self,
@@ -303,7 +358,7 @@ class FXFundsGuard:
             price, price_source = self.get_fx_price(symbol, side)
         
         if price <= 0:
-            return FundsCheckResult(
+            return self._create_result(
                 can_trade=False,
                 original_qty=desired_qty,
                 adjusted_qty=0,
@@ -316,20 +371,37 @@ class FXFundsGuard:
             )
         
         # Calculate required funds
-        buffer_multiplier = 1 + self.buffer
+        # BUY: need quote currency with buffer
+        # SELL: need base currency (exact, no buffer)
         if side.upper() == "BUY":
+            buffer_multiplier = 1 + self.buffer
             required = desired_qty * price * buffer_multiplier
         else:
-            required = desired_qty * buffer_multiplier
+            # SELL: just need the base currency amount
+            required = desired_qty
         
         # Check if we have enough
         if available >= required:
-            # Sufficient funds
+            # Sufficient funds - check minimum qty
             final_qty = desired_qty
             
-            # Check minimum qty
+            # Check minimum trade qty
+            if final_qty < self.min_trade_qty:
+                return self._create_result(
+                    can_trade=False,
+                    original_qty=desired_qty,
+                    adjusted_qty=0,
+                    reason=f"below_min_trade_qty:{final_qty}<{self.min_trade_qty}",
+                    currency_needed=currency,
+                    available_cash=available,
+                    required_cash=required,
+                    price_used=price,
+                    price_source=price_source,
+                )
+            
+            # Check IDEALPRO minimum
             if final_qty < self.min_idealpro and not self.allow_odd_lots:
-                return FundsCheckResult(
+                return self._create_result(
                     can_trade=False,
                     original_qty=desired_qty,
                     adjusted_qty=0,
@@ -341,7 +413,7 @@ class FXFundsGuard:
                     price_source=price_source,
                 )
             
-            return FundsCheckResult(
+            return self._create_result(
                 can_trade=True,
                 original_qty=desired_qty,
                 adjusted_qty=final_qty,
@@ -355,7 +427,7 @@ class FXFundsGuard:
         
         # Insufficient funds - apply policy
         if self.policy == FundsPolicy.SKIP:
-            return FundsCheckResult(
+            return self._create_result(
                 can_trade=False,
                 original_qty=desired_qty,
                 adjusted_qty=0,
@@ -371,11 +443,11 @@ class FXFundsGuard:
         max_qty = self.compute_max_qty(symbol, side, price)
         
         if max_qty <= 0:
-            return FundsCheckResult(
+            return self._create_result(
                 can_trade=False,
                 original_qty=desired_qty,
                 adjusted_qty=0,
-                reason=f"insufficient_funds:max_qty=0",
+                reason="insufficient_funds:max_qty=0",
                 currency_needed=currency,
                 available_cash=available,
                 required_cash=required,
@@ -383,13 +455,42 @@ class FXFundsGuard:
                 price_source=price_source,
             )
         
-        # Check minimum qty
-        if max_qty < self.min_idealpro and not self.allow_odd_lots:
-            return FundsCheckResult(
+        # Check minimum trade qty
+        if max_qty < self.min_trade_qty:
+            return self._create_result(
                 can_trade=False,
                 original_qty=desired_qty,
                 adjusted_qty=0,
-                reason=f"adjusted_below_min:{max_qty}<{self.min_idealpro}",
+                reason=f"auto_reduced_below_min_trade:{max_qty}<{self.min_trade_qty}",
+                currency_needed=currency,
+                available_cash=available,
+                required_cash=required,
+                price_used=price,
+                price_source=price_source,
+            )
+        
+        # Key rule: if original qty was >= min_idealpro but adjusted is below,
+        # SKIP the trade even if allow_odd_lots=True (risk profile changed too much)
+        if desired_qty >= self.min_idealpro and max_qty < self.min_idealpro:
+            return self._create_result(
+                can_trade=False,
+                original_qty=desired_qty,
+                adjusted_qty=0,
+                reason=f"auto_reduced_below_min_idealpro:{max_qty}<{self.min_idealpro}_original={desired_qty}",
+                currency_needed=currency,
+                available_cash=available,
+                required_cash=required,
+                price_used=price,
+                price_source=price_source,
+            )
+        
+        # Check IDEALPRO minimum (for cases where original was also below)
+        if max_qty < self.min_idealpro and not self.allow_odd_lots:
+            return self._create_result(
+                can_trade=False,
+                original_qty=desired_qty,
+                adjusted_qty=0,
+                reason=f"adjusted_below_min_idealpro:{max_qty}<{self.min_idealpro}",
                 currency_needed=currency,
                 available_cash=available,
                 required_cash=required,
@@ -398,7 +499,7 @@ class FXFundsGuard:
             )
         
         # Can trade with reduced qty
-        return FundsCheckResult(
+        return self._create_result(
             can_trade=True,
             original_qty=desired_qty,
             adjusted_qty=max_qty,
