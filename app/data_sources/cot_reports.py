@@ -33,14 +33,14 @@ logger = logging.getLogger(__name__)
 # CFTC contract codes for Forex futures (CME) in TFF report
 # Market names as they appear in the TFF report
 FOREX_COT_CONTRACTS = {
-    "EUR": "EURO FX - CHICAGO MERCANTILE EXCHANGE",
-    "GBP": "BRITISH POUND STERLING - CHICAGO MERCANTILE EXCHANGE",
-    "JPY": "JAPANESE YEN - CHICAGO MERCANTILE EXCHANGE",
-    "AUD": "AUSTRALIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE",
-    "CAD": "CANADIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE",
-    "CHF": "SWISS FRANC - CHICAGO MERCANTILE EXCHANGE",
-    "NZD": "NEW ZEALAND DOLLAR - CHICAGO MERCANTILE EXCHANGE",
-    "MXN": "MEXICAN PESO - CHICAGO MERCANTILE EXCHANGE",
+    "EUR": "EURO FX",
+    "GBP": "BRITISH POUND",  # Without STERLING
+    "JPY": "JAPANESE YEN",
+    "AUD": "AUSTRALIAN DOLLAR",
+    "CAD": "CANADIAN DOLLAR",
+    "CHF": "SWISS FRANC",
+    "NZD": "NZ DOLLAR",  # Abbreviated in CFTC
+    "MXN": "MEXICAN PESO",
 }
 
 # CFTC Traders in Financial Futures (TFF) - contains forex data
@@ -332,14 +332,14 @@ class COTReportsFetcher(BaseDataSource):
         Finds the latest report matching the market name.
         """
         # Find all rows matching this currency (partial match on market name)
-        search_terms = market_name.upper().split(" - ")[0]  # e.g., "EURO FX"
+        search_term = market_name.upper()
         matching_rows = [
             row for row in self._raw_data
-            if search_terms in row["market_name"].upper()
+            if search_term in row["market_name"].upper()
         ]
         
         if not matching_rows:
-            logger.warning(f"COT: No data found for {currency} ({search_terms})")
+            logger.warning(f"COT: No data found for {currency} ({search_term})")
             return None
         
         # Sort by date descending to get latest
