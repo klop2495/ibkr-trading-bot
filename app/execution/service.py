@@ -1042,7 +1042,7 @@ class ExecutionService:
                 "decision_id": str(decision.id),
                 "symbol": decision.symbol,
                 "side": side.value,
-                "quantity": size_result.units,
+                "desired_qty": size_result.units,  # Before funds check
                 "mode": self._mode.value,
                 "stop_loss_price": sl_price,
                 "take_profit_price": tp_price,
@@ -1093,12 +1093,26 @@ class ExecutionService:
                     reason=state.error_message or "insufficient_funds",
                 )
             
-            # Log if quantity was adjusted
+            # Determine final quantity (may have been adjusted by funds guard)
+            final_qty = size_result.units
             if funds_details.get("was_adjusted"):
+                final_qty = funds_details.get("adjusted_qty", size_result.units)
                 logger.info(
-                    f"Order qty adjusted: {funds_details.get('original_qty')} -> {funds_details.get('adjusted_qty')} "
+                    f"Order qty adjusted: {funds_details.get('original_qty')} -> {final_qty} "
                     f"({funds_details.get('reason')})"
                 )
+                
+                # Update trades_history with actual quantity
+                if trade_id and self.trades_history_repo:
+                    try:
+                        self.trades_history_repo.update_status(
+                            trade_id=trade_id,
+                            status="SUBMITTED",
+                            quantity=final_qty,
+                        )
+                        logger.info(f"Trade {trade_id} quantity updated: {size_result.units} -> {final_qty}")
+                    except Exception as e:
+                        logger.error(f"Failed to update trade quantity: {e}")
             
             # P0-B: Update trade with ib_order_id and SUBMITTED status
             if trade_id and state.ib_order_id:
@@ -1111,7 +1125,7 @@ class ExecutionService:
                 ib_order_id=state.ib_order_id,
                 symbol=decision.symbol,
                 side=side,
-                quantity=size_result.units,
+                quantity=final_qty,  # Use adjusted qty, not original
                 status=state.status,
                 stop_loss_price=sl_price,
                 take_profit_price=tp_price,

@@ -505,6 +505,7 @@ class TradesHistoryRepo(BaseRepo):
         entry_price: Optional[float] = None,
         ib_order_id: Optional[int] = None,
         error_message: Optional[str] = None,
+        quantity: Optional[float] = None,
     ) -> None:
         """
         Update trade status.
@@ -514,6 +515,8 @@ class TradesHistoryRepo(BaseRepo):
         - SUBMITTED -> OPEN (order filled)
         - SUBMITTED -> CANCELLED (order cancelled)
         - SUBMITTED -> REJECTED (order rejected)
+        
+        Also updates quantity if it was adjusted by FX Funds Guard.
         """
         payload = {
             "status": status,
@@ -525,6 +528,8 @@ class TradesHistoryRepo(BaseRepo):
             payload["ib_order_id"] = ib_order_id
         if error_message is not None:
             payload["error_message"] = error_message
+        if quantity is not None:
+            payload["quantity"] = quantity
         
         self.db.client.table(self.table).update(payload).eq("id", trade_id).execute()
 
