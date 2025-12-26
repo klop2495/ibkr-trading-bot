@@ -1,5 +1,62 @@
 # Dev Changelog (append-only)
 
+## 2025-12-26 — Role-based ClientIds + Paper/Live UI + REJECTED Fix
+
+### Role-based ClientIds (Error 326 Fix)
+- **Problem**: IB Gateway Error 326 "clientId already in use" — multiple bot components fighting for same clientId
+- **Solution**: Dedicated clientId per role:
+  - `IB_CLIENT_ID_MAIN=151` — main runtime loop
+  - `IB_CLIENT_ID_MARKETDATA=152` — market data fetcher
+  - `IBKR_EXECUTION_CLIENT_ID=153` — order execution
+  - `IB_CLIENT_ID_EQUITY=154` — equity updates
+- **Files changed**:
+  - `app/main.py` — use role-based clientIds, ownership flag for IBKRFetcher
+  - `app/broker/ibkr_client.py` — don't disconnect if not owner
+  - `app/execution/service.py` — use dedicated execution clientId
+  - `.env` — added all clientId variables
+- **Result**: No more Error 326, each component has its own connection
+
+### REJECTED Status Update Fix
+- **Problem**: When order rejected (leverage/position limit), trade record stayed PENDING forever
+- **Solution**: Update trade status to REJECTED when `ExecutionResult.executed=False`
+- **File**: `app/execution/service.py` lines 1082-1095 — added status update on rejection
+
+### Frontend: Paper/Live Trading Accounts
+- **New feature**: Two tabs for Paper and Live accounts
+- **Changes**:
+  - Renamed "Executions" tab to "Paper Account"
+  - Renamed "Simulation" tab to "Live Account" 
+  - Yellow accent color (`#ca8a04`) for Live tab
+  - Filter only OPEN/CLOSED trades (hide SUBMITTED, REJECTED, PENDING)
+  - Added Qty column to trades table
+  - Unrealized P/L displayed for open positions
+  - API filter by `mode` parameter (`?mode=paper` or `?mode=live`)
+  - No fallback to risk_events when specific mode requested
+- **Files changed**:
+  - `app/admin/executions/page.tsx` — complete rewrite with Paper/Live tabs
+  - `app/api/admin/executions/route.ts` — added mode filter, fixed fallback logic
+  - `app/api/admin/broker/route.ts` — added await to getServerSupabaseClient
+  - `app/api/admin/performance/route.ts` — added await to getServerSupabaseClient
+
+### trades_history Cleanup
+- Deleted phantom PENDING/SUBMITTED/REJECTED records
+- Created records matching actual IB positions:
+  - USDCHF SELL 23,400 @ 0.7883
+  - NZDUSD BUY 39,400 @ 0.5838
+- Verified positions match IB Gateway via `ib.positions()`
+
+### Verified Working
+- ✅ Error 326 eliminated
+- ✅ Paper tab shows 2 open positions with Qty and P/L
+- ✅ Live tab empty (ready for future live account)
+- ✅ Positions confirmed in IB Gateway
+- ✅ REJECTED trades no longer accumulate
+
+### Known Issue (Next Session)
+- Only TechnicalAgent generates signals — other agents may be disabled or erroring
+
+---
+
 ## 2025-12-26 — FX Funds Guard + Fix IBKR Order Execution
 - Summary: Fixed orders going Inactive due to insufficient currency balance. IB doesn't allow FX spot orders that create negative balance in quote/base currency. Added FXFundsGuard to pre-check available cash and auto-adjust order size.
 - Root cause analysis:
