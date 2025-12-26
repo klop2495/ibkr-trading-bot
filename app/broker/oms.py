@@ -18,6 +18,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.order_intent import OrderIntentV1
 
+# FX Funds Guard for pre-checking available currency
+try:
+    from app.broker.fx_funds_guard import FXFundsGuard, FundsCheckResult
+    FX_FUNDS_GUARD_AVAILABLE = True
+except ImportError:
+    FX_FUNDS_GUARD_AVAILABLE = False
+
 
 class OrderStatus(str, Enum):
     """IBKR order statuses mapped to internal statuses."""
@@ -187,6 +194,7 @@ class IBKROMS:
         ib: Any,
         callback: Optional[IBKROrderCallback] = None,
         default_account: Optional[str] = None,
+        enable_funds_guard: bool = True,
     ) -> None:
         self.ib = ib
         self.callback = callback or IBKROrderCallback()
@@ -198,6 +206,14 @@ class IBKROMS:
         
         # Track bracket order relationships
         self._bracket_children: Dict[int, UUID] = {}  # child_order_id -> parent_request_id
+        
+        # FX Funds Guard - pre-check available currency before placing orders
+        self._funds_guard: Optional[FXFundsGuard] = None
+        if enable_funds_guard and FX_FUNDS_GUARD_AVAILABLE:
+            try:
+                self._funds_guard = FXFundsGuard(ib=ib, account=default_account)
+            except Exception as e:
+                print(f"Warning: Failed to initialize FXFundsGuard: {e}")
         
         # Register event handlers
         self._register_handlers()
@@ -549,6 +565,105 @@ class IBKROMS:
             self.callback.on_error(request.id, state.error_message)
         
         return state
+    
+    def check_funds(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: Optional[float] = None,
+        log_callback: Optional[callable] = None,
+    ) -> Tuple[bool, float, Dict[str, Any]]:
+        """
+        Check if sufficient funds are available for FX order.
+        
+        Args:
+            symbol: FX pair (e.g., "EURUSD")
+            side: "BUY" or "SELL"
+            quantity: Desired quantity
+            price: Current price (optional)
+            log_callback: Optional callback for logging events
+        
+        Returns:
+            Tuple of (can_trade, adjusted_qty, details_dict)
+        """
+        if not self._funds_guard:
+            # No funds guard - allow order as-is
+            return True, quantity, {"reason": "funds_guard_disabled"}
+        
+        return self._funds_guard.precheck_order(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+            log_event_callback=log_callback,
+        )
+    
+    def place_order_with_funds_check(
+        self,
+        request: IBKROrderRequest,
+        current_price: Optional[float] = None,
+        log_callback: Optional[callable] = None,
+    ) -> Tuple[IBKROrderState, Dict[str, Any]]:
+        """
+        Place order with pre-check for available funds.
+        
+        This method checks if sufficient currency is available before placing
+        the order. If funds are insufficient, it either adjusts the quantity
+        (AUTO_REDUCE policy) or returns an error state (SKIP policy).
+        
+        Args:
+            request: Order request
+            current_price: Current market price
+            log_callback: Optional callback for logging events
+        
+        Returns:
+            Tuple of (order_state, funds_check_details)
+        """
+        # Check funds
+        can_trade, adjusted_qty, details = self.check_funds(
+            symbol=request.symbol,
+            side=request.side.value,
+            quantity=request.quantity,
+            price=current_price,
+            log_callback=log_callback,
+        )
+        
+        if not can_trade:
+            # Cannot trade - return error state
+            state = IBKROrderState(
+                request_id=request.id,
+                status=OrderStatus.REJECTED,
+                error_message=f"Insufficient funds: {details.get('reason', 'unknown')}",
+            )
+            self._orders[request.id] = state
+            return state, details
+        
+        # Adjust quantity if needed
+        if adjusted_qty != request.quantity:
+            # Create modified request with adjusted quantity
+            request = IBKROrderRequest(
+                id=request.id,
+                symbol=request.symbol,
+                side=request.side,
+                quantity=adjusted_qty,
+                order_type=request.order_type,
+                limit_price=request.limit_price,
+                stop_price=request.stop_price,
+                tif=request.tif,
+                stop_loss_price=request.stop_loss_price,
+                take_profit_price=request.take_profit_price,
+                trailing_stop_enabled=request.trailing_stop_enabled,
+                trailing_stop_distance=request.trailing_stop_distance,
+                trailing_stop_distance_pips=request.trailing_stop_distance_pips,
+                signal_preview_id=request.signal_preview_id,
+                decision_id=request.decision_id,
+                order_intent_id=request.order_intent_id,
+            )
+        
+        # Place order with SL/TP
+        state = self.place_order_with_sl_tp(request, current_price)
+        return state, details
     
     def place_order_with_sl_tp(
         self,
