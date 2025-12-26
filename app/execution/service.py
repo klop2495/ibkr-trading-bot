@@ -373,11 +373,11 @@ class ExecutionService:
                 on_trade_closed=self._on_trade_closed_callback,  # Phase 7
             )
             
-            # Connection manager
+            # Connection manager - use separate client ID for execution
             config = self.connection_config or ConnectionConfig(
                 host=os.getenv("IBKR_HOST", "127.0.0.1"),
                 port=int(os.getenv("IBKR_PORT", "7497")),
-                client_id=int(os.getenv("IBKR_CLIENT_ID", "1")),
+                client_id=int(os.getenv("IBKR_EXECUTION_CLIENT_ID", os.getenv("IBKR_CLIENT_ID", "1"))) + 1,  # Use different clientId
                 readonly=False,
             )
             self._connection_manager = IBKRConnectionManager(
