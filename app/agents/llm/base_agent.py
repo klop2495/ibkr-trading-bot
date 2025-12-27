@@ -48,6 +48,7 @@ class AgentSignal:
     risk_veto: bool = False
     
     flags: List[str] = field(default_factory=list)
+    observations: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     # Metadata
@@ -70,6 +71,7 @@ class AgentSignal:
             "risk_veto": self.risk_veto,
             "reasoning": self.reasoning[:200],  # Truncate for storage
             "flags": self.flags[:10],  # Limit flags
+            "observations": self.observations,
             "from_cache": self.from_cache,
             "validation_passed": self.validation_passed,
         }
