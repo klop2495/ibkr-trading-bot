@@ -71,6 +71,8 @@ def test_qa_logs_duplicates_and_gaps():
     assert len(snaps) == 1
     issues = {e[0] for e in risk_repo.events}
     assert "DATA_DUP" in issues or "DATA_GAP" in issues
+    # data_quality mapped
+    assert svc.last_qa_issues[("EURUSD", "M15")]
 
 
 class SpreadFetcher:

@@ -13,3 +13,4 @@ class MarketSnapshot(BaseModel):
     ma_fast: float
     ma_slow: float
     spread: float
+    data_quality: Literal["ok", "gap", "dup", "stale", "unknown"] = "ok"

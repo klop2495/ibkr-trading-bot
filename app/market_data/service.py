@@ -68,6 +68,7 @@ class MarketDataService:
         counts: Dict[Tuple[str, str], int] = {}
         fetch_errors: List[str] = []
         debug_log = os.getenv("CONTROL_PLANE_LOG_LEVEL", "INFO").upper() == "DEBUG"
+        self.last_qa_issues.clear()
         
         for sym in self.symbols:
             for tf in self.timeframes:
@@ -197,6 +198,7 @@ class MarketDataService:
             spread_raw = None
 
         spread = self._convert_spread_to_pips(symbol, spread_raw)
+        data_quality = self._data_quality_from_issues(self.last_qa_issues.get((symbol, timeframe), []))
 
         snap = MarketSnapshot(
             schema_version=1,
@@ -209,6 +211,7 @@ class MarketDataService:
             ma_fast=sma50 or 0.0,
             ma_slow=sma200 or 0.0,
             spread=spread,
+            data_quality=data_quality,
         )
         if self.snapshots_repo:
             self.snapshots_repo.insert(snap)
@@ -248,6 +251,19 @@ class MarketDataService:
         if pip_size <= 0:
             return 0.0
         return float(spread_raw) / pip_size
+
+    @staticmethod
+    def _data_quality_from_issues(issues: List[str]) -> str:
+        """Map QA issues to data_quality."""
+        if not issues:
+            return "ok"
+        if "DATA_GAP" in issues:
+            return "gap"
+        if "DATA_DUP" in issues:
+            return "dup"
+        if "DATA_STALE" in issues:
+            return "stale"
+        return "unknown"
     
     # ========== Phase 7: New Methods ==========
     
