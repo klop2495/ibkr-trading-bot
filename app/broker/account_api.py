@@ -2,14 +2,15 @@
 Broker Account API.
 
 Provides real-time account data from IB Gateway for the frontend dashboard.
-Uses synchronous approach with ib_insync.util.run() to avoid event loop conflicts.
 """
 
 import os
 import logging
+import asyncio
 from datetime import datetime, timezone
-from threading import Lock
+from threading import Lock, Thread
 from typing import Optional, Dict, Any, List
+from queue import Queue
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +18,6 @@ logger = logging.getLogger(__name__)
 class BrokerAccountAPI:
     """
     Fetches real account data from IB Gateway.
-    
-    Uses a separate thread for IB connection to avoid FastAPI event loop conflicts.
     """
     
     def __init__(self):
@@ -28,9 +27,7 @@ class BrokerAccountAPI:
         self._lock = Lock()
     
     def get_account_data(self) -> Dict[str, Any]:
-        """
-        Get comprehensive account data from IB Gateway.
-        """
+        """Get comprehensive account data from IB Gateway."""
         now = datetime.now(timezone.utc)
         
         # Check cache
@@ -38,14 +35,13 @@ class BrokerAccountAPI:
             (now - self._last_fetch).total_seconds() < self._cache_ttl_seconds):
             return self._cached_data
         
-        # Thread-safe fetch
         with self._lock:
-            # Double-check cache after acquiring lock
+            # Double-check after lock
             if (self._cached_data and self._last_fetch and 
                 (now - self._last_fetch).total_seconds() < self._cache_ttl_seconds):
                 return self._cached_data
             
-            result = self._fetch_from_ib()
+            result = self._fetch_sync()
             
             if result["account"]["connected"]:
                 self._cached_data = result
@@ -53,96 +49,107 @@ class BrokerAccountAPI:
             
             return result
     
-    def _fetch_from_ib(self) -> Dict[str, Any]:
-        """Fetch data from IB in a thread-safe way."""
-        import concurrent.futures
-        import asyncio
+    def _fetch_sync(self) -> Dict[str, Any]:
+        """Fetch from IB using a separate thread with its own event loop."""
+        result_queue: Queue = Queue()
         
-        def sync_fetch():
-            """Run in a separate thread with its own event loop."""
-            from ib_insync import IB
-            
-            # Create new event loop for this thread
+        def worker():
+            # Create fresh event loop for this thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-            ib = IB()
             try:
+                from ib_insync import IB
+                
                 host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
                 port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
                 client_id = int(os.getenv("IB_CLIENT_ID_BROKER_API", "160"))
                 
-                # Connect synchronously in this thread's loop
-                ib.connect(host, port, clientId=client_id, timeout=10, readonly=True)
+                ib = IB()
                 
-                if not ib.isConnected():
-                    return self._get_disconnected_response()
-                
-                logger.info(f"BrokerAccountAPI: Connected to {host}:{port}")
-                
-                # Fetch data
-                account_summary = ib.accountSummary()
-                positions = ib.positions()
-                orders = ib.openOrders()
-                
-                # Parse
-                account_values = self._parse_account_summary(account_summary)
-                parsed_positions = self._parse_positions(positions)
-                parsed_orders = self._parse_orders(orders)
-                
-                now = datetime.now(timezone.utc)
-                
-                return {
-                    "account": {
-                        "accountId": account_values.get("account_id", "Unknown"),
-                        "accountType": account_values.get("account_type", "MARGIN"),
-                        "currency": "USD",
-                        "equity": account_values.get("net_liquidation", 0),
-                        "availableFunds": account_values.get("available_funds", 0),
-                        "buyingPower": account_values.get("buying_power", 0),
-                        "marginUsed": account_values.get("margin_used", 0),
-                        "marginAvailable": account_values.get("margin_available", 0),
-                        "unrealizedPnl": account_values.get("unrealized_pnl", 0),
-                        "dailyPnl": account_values.get("daily_pnl", 0),
-                        "leverage": account_values.get("leverage", 0),
-                        "connected": True,
-                        "lastUpdate": now.isoformat(),
-                    },
-                    "connection": {
-                        "ibGateway": "connected",
-                        "dataFeed": "live",
-                        "tradingEnabled": True,
-                        "mode": "paper" if "DU" in account_values.get("account_id", "") else "live",
-                        "lastHeartbeat": now.isoformat(),
-                    },
-                    "positions": parsed_positions,
-                    "orders": parsed_orders,
-                    "openPositions": len(parsed_positions),
-                    "pendingOrders": len(parsed_orders),
-                }
-                
+                try:
+                    # Run connect in the thread's event loop
+                    loop.run_until_complete(
+                        ib.connectAsync(host, port, clientId=client_id, timeout=10, readonly=True)
+                    )
+                    
+                    if not ib.isConnected():
+                        result_queue.put(self._get_disconnected_response())
+                        return
+                    
+                    logger.info(f"BrokerAccountAPI: Connected to {host}:{port}")
+                    
+                    # Fetch data - these are sync when event loop is running
+                    account_summary = ib.accountSummary()
+                    positions = ib.positions()
+                    orders = ib.openOrders()
+                    
+                    # Parse
+                    account_values = self._parse_account_summary(account_summary)
+                    parsed_positions = self._parse_positions(positions)
+                    parsed_orders = self._parse_orders(orders)
+                    
+                    now = datetime.now(timezone.utc)
+                    
+                    result_queue.put({
+                        "account": {
+                            "accountId": account_values.get("account_id", "Unknown"),
+                            "accountType": account_values.get("account_type", "MARGIN"),
+                            "currency": "USD",
+                            "equity": account_values.get("net_liquidation", 0),
+                            "availableFunds": account_values.get("available_funds", 0),
+                            "buyingPower": account_values.get("buying_power", 0),
+                            "marginUsed": account_values.get("margin_used", 0),
+                            "marginAvailable": account_values.get("margin_available", 0),
+                            "unrealizedPnl": account_values.get("unrealized_pnl", 0),
+                            "dailyPnl": account_values.get("daily_pnl", 0),
+                            "leverage": account_values.get("leverage", 0),
+                            "connected": True,
+                            "lastUpdate": now.isoformat(),
+                        },
+                        "connection": {
+                            "ibGateway": "connected",
+                            "dataFeed": "live",
+                            "tradingEnabled": True,
+                            "mode": "paper" if "DU" in account_values.get("account_id", "") else "live",
+                            "lastHeartbeat": now.isoformat(),
+                        },
+                        "positions": parsed_positions,
+                        "orders": parsed_orders,
+                        "openPositions": len(parsed_positions),
+                        "pendingOrders": len(parsed_orders),
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"BrokerAccountAPI IB error: {e}")
+                    result_queue.put(self._get_disconnected_response())
+                finally:
+                    try:
+                        if ib.isConnected():
+                            ib.disconnect()
+                    except:
+                        pass
             except Exception as e:
-                logger.error(f"BrokerAccountAPI fetch error: {e}")
-                return self._get_disconnected_response()
+                logger.error(f"BrokerAccountAPI worker error: {e}")
+                result_queue.put(self._get_disconnected_response())
             finally:
                 try:
-                    if ib.isConnected():
-                        ib.disconnect()
+                    loop.close()
                 except:
                     pass
-                loop.close()
         
-        # Run in thread pool to isolate event loop
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(sync_fetch)
-                return future.result(timeout=15)
-        except Exception as e:
-            logger.error(f"BrokerAccountAPI thread error: {e}")
+        # Run in separate thread
+        thread = Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(timeout=15)
+        
+        if result_queue.empty():
+            logger.error("BrokerAccountAPI: Timeout waiting for IB data")
             return self._get_disconnected_response()
+        
+        return result_queue.get()
     
     def _parse_positions(self, positions) -> List[Dict[str, Any]]:
-        """Parse IB positions."""
         result = []
         for p in positions:
             contract = getattr(p, "contract", None)
@@ -157,7 +164,6 @@ class BrokerAccountAPI:
         return result
     
     def _parse_orders(self, orders) -> List[Dict[str, Any]]:
-        """Parse IB orders."""
         result = []
         for trade in orders:
             contract = trade.contract if hasattr(trade, 'contract') else None
@@ -176,7 +182,6 @@ class BrokerAccountAPI:
         return result
     
     def _parse_account_summary(self, summary) -> Dict[str, Any]:
-        """Parse account summary values."""
         values = {}
         
         for item in summary:
@@ -227,7 +232,6 @@ class BrokerAccountAPI:
         return values
     
     def _get_disconnected_response(self) -> Dict[str, Any]:
-        """Return response when IB is not connected."""
         return {
             "account": {
                 "accountId": "NOT_CONNECTED",
@@ -262,7 +266,6 @@ _broker_api: Optional[BrokerAccountAPI] = None
 
 
 def get_broker_api() -> BrokerAccountAPI:
-    """Get or create the broker API singleton."""
     global _broker_api
     if _broker_api is None:
         _broker_api = BrokerAccountAPI()
