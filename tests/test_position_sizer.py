@@ -6,6 +6,9 @@ import pytest
 
 from app.pm.position_sizer import PositionSizer, PositionSizerConfig
 
+EURUSD_PRICE = 1.1
+USDJPY_PRICE = 150.0
+
 
 class TestPositionSizer:
     """Tests for position sizing calculations."""
@@ -19,6 +22,7 @@ class TestPositionSizer:
             stop_loss_pips=20,
             symbol="EURUSD",
             risk_modifier=1.0,
+            entry_price=EURUSD_PRICE,
         )
         
         assert result.units > 0
@@ -36,6 +40,7 @@ class TestPositionSizer:
             stop_loss_pips=20,
             symbol="EURUSD",
             risk_modifier=1.0,
+            entry_price=EURUSD_PRICE,
         )
         
         half_risk = sizer.calculate(
@@ -43,6 +48,7 @@ class TestPositionSizer:
             stop_loss_pips=20,
             symbol="EURUSD",
             risk_modifier=0.5,
+            entry_price=EURUSD_PRICE,
         )
         
         assert half_risk.units < full_risk.units
@@ -57,6 +63,7 @@ class TestPositionSizer:
             stop_loss_pips=20,
             symbol="EURUSD",
             risk_modifier=0.0,
+            entry_price=EURUSD_PRICE,
         )
         
         # With risk_modifier=0, adjusted risk = 0, but clamped to min
@@ -71,6 +78,7 @@ class TestPositionSizer:
             equity=0,
             stop_loss_pips=20,
             symbol="EURUSD",
+            entry_price=EURUSD_PRICE,
         )
         
         assert result.units == 0
@@ -85,6 +93,7 @@ class TestPositionSizer:
             equity=10000,
             stop_loss_pips=0,
             symbol="EURUSD",
+            entry_price=EURUSD_PRICE,
         )
         
         assert result.units == 0
@@ -100,6 +109,7 @@ class TestPositionSizer:
             equity=1000000,  # Large equity
             stop_loss_pips=5,  # Small stop
             symbol="EURUSD",
+            entry_price=EURUSD_PRICE,
         )
         
         assert result.units <= 50000
@@ -116,6 +126,7 @@ class TestPositionSizer:
             equity=100,  # Small equity
             stop_loss_pips=100,  # Large stop
             symbol="EURUSD",
+            entry_price=EURUSD_PRICE,
         )
         
         if result.units == 0:
@@ -160,6 +171,7 @@ class TestPositionSizer:
             equity=10000,
             stop_loss_pips=20,
             symbol="EURUSD",
+            entry_price=EURUSD_PRICE,
         )
         
         # Position should be multiple of 1000
@@ -173,6 +185,7 @@ class TestPositionSizer:
             equity=10000,
             stop_loss_pips=20,
             symbol="EURUSD",
+            entry_price=EURUSD_PRICE,
         )
         
         custom_risk = sizer.calculate(
@@ -180,6 +193,7 @@ class TestPositionSizer:
             stop_loss_pips=20,
             symbol="EURUSD",
             custom_risk_pct=0.5,
+            entry_price=EURUSD_PRICE,
         )
         
         assert custom_risk.units < default_risk.units

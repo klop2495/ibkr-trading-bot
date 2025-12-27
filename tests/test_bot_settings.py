@@ -50,3 +50,17 @@ def test_signals_params_configured_and_forbid_extra():
     assert params.is_configured() is True
     with pytest.raises(ValidationError):
         SignalsParams.model_validate({**cfg, "extra": True})  # type: ignore[arg-type]
+
+
+def test_default_symbols_constant():
+    from app.models.bot_settings import DEFAULT_SYMBOLS
+    assert DEFAULT_SYMBOLS == [
+        "EURUSD",
+        "GBPUSD",
+        "USDJPY",
+        "USDCHF",
+        "AUDUSD",
+        "USDCAD",
+        "NZDUSD",
+    ]
+    assert len(DEFAULT_SYMBOLS) == 7

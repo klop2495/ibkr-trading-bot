@@ -554,6 +554,7 @@ class ExecutionService:
         symbol: str,
         risk_modifier: float,
         stop_loss_pips: float = 20.0,
+        entry_price: Optional[float] = None,
     ) -> PositionSizeResult:
         """Calculate position size."""
         sizer = self._ensure_position_sizer()
@@ -562,6 +563,7 @@ class ExecutionService:
             stop_loss_pips=stop_loss_pips,
             symbol=symbol,
             risk_modifier=risk_modifier,
+            entry_price=entry_price,
         )
     
     def _get_open_trades_count(self) -> int:
@@ -918,6 +920,7 @@ class ExecutionService:
             symbol=decision.symbol,
             risk_modifier=verdict.risk_modifier,
             stop_loss_pips=effective_sl_pips,
+            entry_price=current_price,
         )
         
         if size_result.units <= 0:

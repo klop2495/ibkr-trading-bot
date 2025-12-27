@@ -63,7 +63,11 @@ def mock_verdict():
 @pytest.fixture
 def execution_service():
     """Create ExecutionService instance."""
-    return ExecutionService(risk_events_repo=None)
+    svc = ExecutionService(risk_events_repo=None)
+    # Provide a price for sizing logic
+    svc.update_price("EURUSD", 1.1)
+    svc.update_equity(100000)
+    return svc
 
 
 class TestExecutionMode:

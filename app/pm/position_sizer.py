@@ -14,6 +14,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.pm.fx_pip_value import pip_value_per_unit
+
 
 @dataclass
 class PositionSizeResult:
@@ -51,46 +53,11 @@ class PositionSizer:
     Calculate position size based on risk parameters.
     
     Uses the formula:
-    Position Size = (Account Equity × Risk%) / (Stop Loss Pips × Pip Value)
+    Position Size = (Account Equity × Risk%) / (Stop Loss Pips × Pip Value per unit)
     """
-    
-    # Pip values for major pairs (per standard lot = 100,000 units)
-    # These are approximate and should be updated with live rates
-    PIP_VALUES = {
-        "EURUSD": 10.0,    # $10 per pip per standard lot
-        "GBPUSD": 10.0,
-        "AUDUSD": 10.0,
-        "NZDUSD": 10.0,
-        "USDCAD": 7.5,     # Varies with CAD rate
-        "USDCHF": 10.5,    # Varies with CHF rate
-        "USDJPY": 6.5,     # Varies with JPY rate (per 0.01 move)
-        "EURGBP": 12.5,    # Varies with GBP rate
-        "EURJPY": 6.5,
-        "GBPJPY": 6.5,
-    }
-    
-    # Default pip value for unknown pairs
-    DEFAULT_PIP_VALUE = 10.0
     
     def __init__(self, config: Optional[PositionSizerConfig] = None):
         self.config = config or PositionSizerConfig()
-    
-    def get_pip_value(self, symbol: str, units: float = 100000.0) -> float:
-        """
-        Get pip value for a symbol.
-        
-        Args:
-            symbol: Currency pair (e.g., "EURUSD")
-            units: Position size in base currency units
-            
-        Returns:
-            Pip value in account currency per pip move
-        """
-        symbol_upper = symbol.upper()
-        base_pip_value = self.PIP_VALUES.get(symbol_upper, self.DEFAULT_PIP_VALUE)
-        
-        # Scale to position size (base values are for 100k units)
-        return base_pip_value * (units / 100000.0)
     
     def calculate(
         self,
@@ -99,6 +66,7 @@ class PositionSizer:
         symbol: str,
         risk_modifier: float = 1.0,
         custom_risk_pct: Optional[float] = None,
+        entry_price: Optional[float] = None,
     ) -> PositionSizeResult:
         """
         Calculate position size.
@@ -109,6 +77,7 @@ class PositionSizer:
             symbol: Currency pair
             risk_modifier: Multiplier from control plane (0.0 to 2.0)
             custom_risk_pct: Override default risk percentage
+            entry_price: Current/entry price for pip value calculation
             
         Returns:
             PositionSizeResult with calculated position size
@@ -136,6 +105,17 @@ class PositionSizer:
                 reason="invalid_stop_loss",
             )
         
+        if entry_price is None or entry_price <= 0:
+            return PositionSizeResult(
+                units=0,
+                risk_amount=0,
+                stop_distance_pips=stop_loss_pips,
+                pip_value=0,
+                risk_percent_actual=0,
+                capped=True,
+                reason="invalid_price",
+            )
+        
         # Determine risk percentage
         base_risk_pct = custom_risk_pct or self.config.max_risk_per_trade_pct
         
@@ -152,12 +132,9 @@ class PositionSizer:
         # Calculate risk amount in account currency
         risk_amount = equity * (adjusted_risk_pct / 100.0)
         
-        # Get pip value per standard lot
-        pip_value_per_lot = self.PIP_VALUES.get(symbol.upper(), self.DEFAULT_PIP_VALUE)
-        
-        # Calculate position size
-        # Position = Risk Amount / (Stop Loss Pips × Pip Value per standard lot / 100000)
-        if pip_value_per_lot <= 0:
+        # Pip value per unit in account currency
+        pip_value_unit = pip_value_per_unit(symbol, entry_price, self.config.account_currency)
+        if pip_value_unit is None or pip_value_unit <= 0:
             return PositionSizeResult(
                 units=0,
                 risk_amount=risk_amount,
@@ -168,11 +145,8 @@ class PositionSizer:
                 reason="invalid_pip_value",
             )
         
-        # Pip value per unit
-        pip_value_per_unit = pip_value_per_lot / 100000.0
-        
-        # Raw position size
-        raw_units = risk_amount / (stop_loss_pips * pip_value_per_unit)
+        # Raw position size: risk amount divided by risk per unit (SL pips × pip value per unit)
+        raw_units = risk_amount / (stop_loss_pips * pip_value_unit)
         
         # Round down to lot step
         units = (raw_units // self.config.lot_step) * self.config.lot_step
@@ -196,7 +170,7 @@ class PositionSizer:
                 cap_reason = "below_min_position"
         
         # Calculate actual pip value and risk
-        actual_pip_value = self.get_pip_value(symbol, units)
+        actual_pip_value = pip_value_unit * units
         actual_risk_amount = stop_loss_pips * actual_pip_value
         actual_risk_pct = (actual_risk_amount / equity) * 100 if equity > 0 else 0
         
@@ -247,4 +221,5 @@ class PositionSizer:
             symbol=symbol,
             risk_modifier=risk_modifier,
             custom_risk_pct=custom_risk_pct,
+            entry_price=entry_price,
         )
