@@ -190,11 +190,13 @@ class MarketDataService:
         rsi_val = rsi(closes)
         sma50 = sma(closes, 50)
         sma200 = sma(closes, 200)
-        spread = None
+        spread_raw = None
         try:
-            spread = self.fetcher.fetch_spread(symbol)
+            spread_raw = self.fetcher.fetch_spread(symbol)
         except Exception:
-            spread = None
+            spread_raw = None
+
+        spread = self._convert_spread_to_pips(symbol, spread_raw)
 
         snap = MarketSnapshot(
             schema_version=1,
@@ -206,11 +208,46 @@ class MarketDataService:
             rsi=rsi_val or 0.0,
             ma_fast=sma50 or 0.0,
             ma_slow=sma200 or 0.0,
-            spread=0.0 if spread is None or (isinstance(spread, float) and math.isnan(spread)) else spread,
+            spread=spread,
         )
         if self.snapshots_repo:
             self.snapshots_repo.insert(snap)
         return snap
+
+    @staticmethod
+    def _pip_size(symbol: str) -> float:
+        """
+        Return pip size for a symbol.
+
+        JPY pairs use 0.01, all others 0.0001.
+        """
+        if symbol and symbol.upper().endswith("JPY"):
+            return 0.01
+        return 0.0001
+
+    def _convert_spread_to_pips(self, symbol: str, spread_raw: Optional[float]) -> float:
+        """
+        Convert spread in price terms to pips.
+
+        Args:
+            symbol: FX symbol (e.g., "EURUSD")
+            spread_raw: price difference ask - bid
+
+        Returns:
+            Spread in pips (float), defaults to 0.0 on missing/NaN.
+        """
+        if spread_raw is None:
+            return 0.0
+        try:
+            if isinstance(spread_raw, float) and math.isnan(spread_raw):
+                return 0.0
+        except Exception:
+            return 0.0
+
+        pip_size = self._pip_size(symbol)
+        if pip_size <= 0:
+            return 0.0
+        return float(spread_raw) / pip_size
     
     # ========== Phase 7: New Methods ==========
     

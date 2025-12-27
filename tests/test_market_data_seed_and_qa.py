@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.market_data.seed_fetcher import SeedFetcher, SeedBar
 from app.market_data.service import MarketDataService
 
@@ -69,3 +71,43 @@ def test_qa_logs_duplicates_and_gaps():
     assert len(snaps) == 1
     issues = {e[0] for e in risk_repo.events}
     assert "DATA_DUP" in issues or "DATA_GAP" in issues
+
+
+class SpreadFetcher:
+    def __init__(self, price_spread: float):
+        self.price_spread = price_spread
+
+    def fetch_historical_bars(self, symbol, timeframe, end_dt_utc, warmup_bars_min):
+        ts = end_dt_utc.replace(tzinfo=timezone.utc)
+        return [
+            SeedBar(date=ts - timedelta(minutes=3), open=1.0, high=1.1, low=0.9, close=1.0),
+            SeedBar(date=ts - timedelta(minutes=2), open=1.0, high=1.1, low=0.9, close=1.0),
+            SeedBar(date=ts - timedelta(minutes=1), open=1.0, high=1.1, low=0.9, close=1.0),
+        ]
+
+    def fetch_spread(self, symbol):
+        return self.price_spread
+
+
+@pytest.mark.parametrize(
+    "symbol,price_spread,expected_pips",
+    [
+        ("EURUSD", 0.0002, 2.0),  # pip size 0.0001
+        ("USDJPY", 0.02, 2.0),    # pip size 0.01
+    ],
+)
+def test_spread_converted_to_pips(symbol, price_spread, expected_pips):
+    fetcher = SpreadFetcher(price_spread=price_spread)
+    snap_repo = DummySnapshotsRepo()
+    svc = MarketDataService(
+        symbols=[symbol],
+        timeframes=["M15"],
+        warmup_bars_min=2,
+        fetcher=fetcher,
+        snapshots_repo=snap_repo,
+        risk_events_repo=None,
+    )
+    ready, snaps = svc.process(end_dt_utc=datetime.now(timezone.utc))
+    assert ready is True
+    assert len(snap_repo.rows) == 1
+    assert snap_repo.rows[0].spread == pytest.approx(expected_pips)
