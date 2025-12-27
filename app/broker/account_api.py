@@ -95,7 +95,7 @@ class BrokerAccountAPI:
                         "account": {
                             "accountId": account_values.get("account_id", "Unknown"),
                             "accountType": account_values.get("account_type", "MARGIN"),
-                            "currency": "USD",
+                            "currency": account_values.get("currency", "USD"),
                             "equity": account_values.get("net_liquidation", 0),
                             "availableFunds": account_values.get("available_funds", 0),
                             "buyingPower": account_values.get("buying_power", 0),
@@ -204,7 +204,12 @@ class BrokerAccountAPI:
             except (ValueError, TypeError):
                 num_value = 0
             
-            if currency in ("USD", "BASE", ""):
+            # Accept the first currency we see (IBKR returns EUR here). Store it and
+            # only overwrite fields when the currency matches the chosen one.
+            if "currency" not in values and currency:
+                values["currency"] = currency
+            effective_currency = values.get("currency")
+            if not effective_currency or currency == effective_currency or currency in ("BASE", ""):
                 if tag == "NetLiquidation":
                     values["net_liquidation"] = num_value
                 elif tag == "AvailableFunds":
