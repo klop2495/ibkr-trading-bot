@@ -95,7 +95,7 @@ class BrokerAccountAPI:
                         "account": {
                             "accountId": account_values.get("account_id", "Unknown"),
                             "accountType": account_values.get("account_type", "MARGIN"),
-                            "currency": "USD",
+                            "currency": account_values.get("base_currency", "EUR"),
                             "equity": account_values.get("net_liquidation", 0),
                             "availableFunds": account_values.get("available_funds", 0),
                             "buyingPower": account_values.get("buying_power", 0),
@@ -204,7 +204,12 @@ class BrokerAccountAPI:
             except (ValueError, TypeError):
                 num_value = 0
             
-            if currency in ("USD", "BASE", ""):
+            # Extract base currency from account
+            if tag == "BaseCurrency":
+                values["base_currency"] = value
+            
+            # Accept USD, EUR, BASE or empty currency for main account metrics
+            if currency in ("USD", "EUR", "BASE", ""):
                 if tag == "NetLiquidation":
                     values["net_liquidation"] = num_value
                 elif tag == "AvailableFunds":
