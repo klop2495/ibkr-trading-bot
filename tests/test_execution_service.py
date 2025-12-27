@@ -26,7 +26,7 @@ def mock_settings():
         owner_user_id=uuid4(),
         trading_enabled=True,
         mode="paper",
-        risk_per_trade=0.01,
+        risk_per_trade=0.5,
     )
 
 
@@ -184,7 +184,21 @@ class TestExecutionService:
         result = execution_service.execute(mock_decision, mock_verdict, mock_settings)
         assert result.executed is True
         assert result.side == OrderSide.SELL
-    
+        assert result.mode == ExecutionMode.DRY_RUN
+
+    @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "EXECUTION_DRY_RUN": "1"})
+    def test_position_sizer_uses_settings_risk_percent(self, execution_service, mock_decision, mock_verdict):
+        settings = BotSettings(
+            owner_user_id=uuid4(),
+            trading_enabled=True,
+            mode="paper",
+            risk_per_trade=0.5,  # 0.5%
+        )
+        result = execution_service.execute(mock_decision, mock_verdict, settings)
+        assert result.mode == ExecutionMode.DRY_RUN
+        assert execution_service._position_sizer is not None
+        assert execution_service._position_sizer.config.max_risk_per_trade_pct == 0.5
+
     def test_calculate_position_size(self, execution_service):
         result = execution_service._calculate_position_size(
             symbol="EURUSD",

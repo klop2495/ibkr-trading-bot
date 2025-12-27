@@ -36,7 +36,8 @@ class BotSettings(BaseModel):
     trading_enabled: bool = False
     mode: Literal["paper", "live"] = "paper"
 
-    risk_per_trade: float = Field(default=0.005, ge=0.0, le=0.05)
+    # Percent risk per trade (e.g., 0.5 = 0.5%)
+    risk_per_trade: float = Field(default=0.5, gt=0.0, le=5.0)
     max_open_positions: int = Field(default=3, ge=0, le=20)
 
     max_trades_per_day_portfolio: int = Field(default=2, ge=0, le=50)

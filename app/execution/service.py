@@ -347,8 +347,40 @@ class ExecutionService:
         
         return ExecutionMode.PAPER
     
-    def _init_components(self) -> bool:
+    def _init_components(self, settings: BotSettings) -> bool:
         """Initialize IBKR components if needed."""
+        # Always ensure position sizer is configured from settings
+        risk_pct = self._get_risk_per_trade_pct(settings)
+        if risk_pct is None:
+            self._log_event(
+                "EXECUTION_BLOCKED",
+                "error",
+                "Invalid risk_per_trade in settings",
+                {"risk_per_trade": getattr(settings, "risk_per_trade", None)},
+            )
+            return False
+        
+        try:
+            sizer_config = PositionSizerConfig(
+                max_risk_per_trade_pct=risk_pct,
+                min_risk_per_trade_pct=min(risk_pct, 0.1) if risk_pct > 0 else 0.01,
+                max_position_size=100000.0,
+                min_position_size=1000.0,
+            )
+            self._position_sizer = PositionSizer(sizer_config)
+        except Exception as e:
+            self._log_event(
+                "EXECUTION_BLOCKED",
+                "error",
+                f"Failed to configure position sizer: {e}",
+                {"risk_per_trade": getattr(settings, "risk_per_trade", None)},
+            )
+            return False
+        
+        if self._initialized and self._mode in (ExecutionMode.DISABLED, ExecutionMode.DRY_RUN):
+            # In dry_run/disabled we only need position sizing
+            return True
+        
         if self._initialized:
             return True
         
@@ -357,15 +389,6 @@ class ExecutionService:
             return True
         
         try:
-            # Position sizer
-            sizer_config = PositionSizerConfig(
-                max_risk_per_trade_pct=1.0,
-                min_risk_per_trade_pct=0.1,
-                max_position_size=100000.0,
-                min_position_size=1000.0,
-            )
-            self._position_sizer = PositionSizer(sizer_config)
-            
             # Callback - P0-B: pass trades_history_repo for lifecycle updates
             self._callback = ExecutionServiceCallback(
                 risk_events_repo=self.risk_events_repo,
@@ -411,6 +434,20 @@ class ExecutionService:
         if self._position_sizer is None:
             self._position_sizer = PositionSizer()
         return self._position_sizer
+
+    def _get_risk_per_trade_pct(self, settings: BotSettings) -> Optional[float]:
+        """
+        Get validated risk per trade (percent) from settings.
+        
+        Returns None if invalid.
+        """
+        try:
+            value = float(getattr(settings, "risk_per_trade", 0))
+        except Exception:
+            return None
+        if value <= 0 or value > 10:
+            return None
+        return value
     
     def update_equity(self, equity: float) -> None:
         """Update account equity for position sizing."""
@@ -776,6 +813,15 @@ class ExecutionService:
         # Determine mode
         self._mode = self._determine_mode(settings)
         
+        # Initialize components (position sizer always, IB components when needed)
+        if not self._init_components(settings):
+            return ExecutionResult(
+                executed=False,
+                mode=self._mode,
+                symbol=decision.symbol,
+                reason="execution_init_failed",
+            )
+        
         # Check if execution is allowed
         if self._mode == ExecutionMode.DISABLED:
             return ExecutionResult(
@@ -1004,14 +1050,6 @@ class ExecutionService:
             )
         
         # PAPER or LIVE mode — actually place order
-        if not self._init_components():
-            return ExecutionResult(
-                executed=False,
-                mode=self._mode,
-                symbol=decision.symbol,
-                reason="ibkr_not_connected",
-            )
-        
         if self._oms is None:
             return ExecutionResult(
                 executed=False,
