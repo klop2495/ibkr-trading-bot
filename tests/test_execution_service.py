@@ -4,7 +4,7 @@ Tests for ExecutionService
 
 import pytest
 from datetime import datetime, timezone
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, MagicMock, patch
 from uuid import uuid4
 
 from app.execution.service import (
@@ -209,6 +209,58 @@ class TestExecutionService:
     def test_shutdown(self, execution_service):
         execution_service.shutdown()
         assert execution_service._initialized is False
+
+    @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "EXECUTION_DRY_RUN": "1"})
+    def test_block_duplicate_decision(self, execution_service, mock_decision, mock_verdict, mock_settings):
+        repo = MagicMock()
+        repo.exists_by_decision_id.return_value = True
+        repo.count_active_trades.return_value = 0
+        repo.get_active_trades.return_value = []
+        execution_service.trades_history_repo = repo
+        execution_service.update_price("EURUSD", 1.1)
+        result = execution_service.execute(mock_decision, mock_verdict, mock_settings)
+        assert result.executed is False
+        assert result.reason == "duplicate_decision"
+
+    @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "EXECUTION_DRY_RUN": "1"})
+    def test_block_active_symbol_trade(self, execution_service, mock_decision, mock_verdict, mock_settings):
+        repo = MagicMock()
+        repo.exists_by_decision_id.return_value = False
+        repo.count_active_trades.return_value = 0
+        repo.get_active_trades.return_value = [{"id": "t1", "symbol": "EURUSD"}]
+        execution_service.trades_history_repo = repo
+        execution_service.update_price("EURUSD", 1.1)
+        result = execution_service.execute(mock_decision, mock_verdict, mock_settings)
+        assert result.executed is False
+        assert "active_trade_exists" in (result.reason or "")
+
+    @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "EXECUTION_DRY_RUN": "1"})
+    def test_fail_safe_state_error(self, execution_service, mock_decision, mock_verdict, mock_settings):
+        repo = MagicMock()
+        repo.exists_by_decision_id.side_effect = Exception("db_fail")
+        execution_service.trades_history_repo = repo
+        result = execution_service.execute(mock_decision, mock_verdict, mock_settings)
+        assert result.executed is False
+        assert result.reason == "state_check_failed"
+
+    @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "IBKR_ENABLED": "1"})
+    def test_block_missing_sl_in_paper(self, execution_service, mock_decision, mock_verdict):
+        repo = MagicMock()
+        repo.exists_by_decision_id.return_value = False
+        repo.count_active_trades.return_value = 0
+        repo.get_active_trades.return_value = []
+        execution_service.trades_history_repo = repo
+        execution_service.update_price("EURUSD", 1.1)
+        settings = BotSettings(
+            owner_user_id=uuid4(),
+            trading_enabled=True,
+            mode="paper",
+            risk_per_trade=0.5,
+        )
+        with patch.object(execution_service, "_init_components", return_value=True):
+            result = execution_service.execute(mock_decision, mock_verdict, settings, stop_loss_pips=None)
+        assert result.executed is False
+        assert result.reason == "missing_sl_required"
 
 
 class TestExecutionResult:

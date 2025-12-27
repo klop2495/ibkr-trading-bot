@@ -567,25 +567,30 @@ class ExecutionService:
         )
     
     def _get_open_trades_count(self) -> int:
-        """Get count of currently open trades."""
+        """Get count of active trades (PENDING/SUBMITTED/OPEN)."""
         if not self.trades_history_repo:
             return 0
         try:
+            if hasattr(self.trades_history_repo, "count_active_trades"):
+                return self.trades_history_repo.count_active_trades()
             return self.trades_history_repo.count_open_trades()
         except Exception as e:
-            logger.error(f"Failed to get open trades count: {e}")
-            return 0
-    
+            logger.error(f"Failed to get active trades count: {e}")
+            raise
+
     def _get_open_trades_for_symbol(self, symbol: str) -> int:
-        """Get count of open trades for a specific symbol."""
+        """Get count of active trades for a specific symbol."""
         if not self.trades_history_repo:
             return 0
         try:
-            trades = self.trades_history_repo.get_open_trades(symbol)
+            if hasattr(self.trades_history_repo, "get_active_trades"):
+                trades = self.trades_history_repo.get_active_trades(symbol)
+            else:
+                trades = self.trades_history_repo.get_open_trades(symbol)
             return len(trades)
         except Exception as e:
-            logger.error(f"Failed to get open trades for {symbol}: {e}")
-            return 0
+            logger.error(f"Failed to get active trades for {symbol}: {e}")
+            raise
     
     def _calculate_total_exposure(self) -> float:
         """Calculate total exposure from all open trades."""
@@ -832,39 +837,69 @@ class ExecutionService:
                 reason="execution_disabled",
             )
         
-        # ========== MONEY MANAGEMENT CHECKS ==========
-        
-        # 1. Check max concurrent trades
-        max_positions = getattr(settings, 'max_open_positions', 3)
-        current_open = self._get_open_trades_count()
-        if current_open >= max_positions:
+        # ========== STATE & MONEY MANAGEMENT CHECKS ==========
+        try:
+            # Idempotency: block duplicate decision_id
+            if self.trades_history_repo and getattr(decision, "id", None):
+                if getattr(self.trades_history_repo, "exists_by_decision_id", None) and \
+                        self.trades_history_repo.exists_by_decision_id(str(decision.id)):
+                    self._log_event(
+                        "EXECUTION_BLOCKED",
+                        "warn",
+                        f"Duplicate decision {decision.id} - already executed",
+                        {"decision_id": str(decision.id), "symbol": decision.symbol},
+                    )
+                    return ExecutionResult(
+                        executed=False,
+                        mode=self._mode,
+                        symbol=decision.symbol,
+                        reason="duplicate_decision",
+                    )
+            
+            # 1. Check max concurrent trades
+            max_positions = getattr(settings, 'max_open_positions', 3)
+            current_open = self._get_open_trades_count()
+            if current_open >= max_positions:
+                self._log_event(
+                    "EXECUTION_BLOCKED",
+                    "warn",
+                    f"Max open positions reached: {current_open}/{max_positions}",
+                    {"decision_id": str(decision.id), "symbol": decision.symbol, "current_open": current_open},
+                )
+                return ExecutionResult(
+                    executed=False,
+                    mode=self._mode,
+                    symbol=decision.symbol,
+                    reason=f"max_positions_reached:{current_open}/{max_positions}",
+                )
+            
+            # 2. Check if already have position in this symbol
+            symbol_positions = self._get_open_trades_for_symbol(decision.symbol)
+            if symbol_positions > 0:
+                self._log_event(
+                    "EXECUTION_BLOCKED",
+                    "info",
+                    f"Already have active position in {decision.symbol}",
+                    {"decision_id": str(decision.id), "symbol": decision.symbol, "existing_positions": symbol_positions},
+                )
+                return ExecutionResult(
+                    executed=False,
+                    mode=self._mode,
+                    symbol=decision.symbol,
+                    reason=f"active_trade_exists:{decision.symbol}",
+                )
+        except Exception as exc:
             self._log_event(
                 "EXECUTION_BLOCKED",
-                "warn",
-                f"Max open positions reached: {current_open}/{max_positions}",
-                {"decision_id": str(decision.id), "symbol": decision.symbol, "current_open": current_open},
+                "error",
+                f"State check failed: {exc}",
+                {"decision_id": str(getattr(decision, 'id', None)), "symbol": decision.symbol},
             )
             return ExecutionResult(
                 executed=False,
                 mode=self._mode,
                 symbol=decision.symbol,
-                reason=f"max_positions_reached:{current_open}/{max_positions}",
-            )
-        
-        # 2. Check if already have position in this symbol
-        symbol_positions = self._get_open_trades_for_symbol(decision.symbol)
-        if symbol_positions > 0:
-            self._log_event(
-                "EXECUTION_BLOCKED",
-                "info",
-                f"Already have open position in {decision.symbol}",
-                {"decision_id": str(decision.id), "symbol": decision.symbol, "existing_positions": symbol_positions},
-            )
-            return ExecutionResult(
-                executed=False,
-                mode=self._mode,
-                symbol=decision.symbol,
-                reason=f"already_have_position:{decision.symbol}",
+                reason="state_check_failed",
             )
         
         # 3. Check leverage limit
@@ -908,6 +943,21 @@ class ExecutionService:
         # Get SL/TP distances (prefer passed values, fallback to signal_preview)
         sl_pips = stop_loss_pips
         tp_pips = take_profit_pips
+        
+        # Enforce SL in paper/live modes
+        if self._mode in (ExecutionMode.PAPER, ExecutionMode.LIVE) and sl_pips is None:
+            self._log_event(
+                "EXECUTION_BLOCKED",
+                "warn",
+                f"Missing stop loss for {decision.symbol} in {self._mode.value} mode",
+                {"decision_id": str(decision.id), "symbol": decision.symbol},
+            )
+            return ExecutionResult(
+                executed=False,
+                mode=self._mode,
+                symbol=decision.symbol,
+                reason="missing_sl_required",
+            )
         
         # Default SL for position sizing if not provided
         effective_sl_pips = sl_pips if sl_pips is not None else 20.0

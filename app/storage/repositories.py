@@ -472,6 +472,37 @@ class TradesHistoryRepo(BaseRepo):
         self.db.client.table(self.table).insert(payload).execute()
         return trade_id
 
+    def exists_by_decision_id(self, decision_id: str) -> bool:
+        """Check if a trade already exists for the given decision_id."""
+        if not decision_id:
+            return False
+        res = (
+            self.db.client.table(self.table)
+            .select("id")
+            .eq("decision_id", decision_id)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+        return len(rows) > 0
+
+    def get_active_trades(self, symbol: Optional[str] = None) -> list[dict]:
+        """Get active trades (PENDING/SUBMITTED/OPEN), optionally filtered by symbol."""
+        query = (
+            self.db.client.table(self.table)
+            .select("id, symbol, status, decision_id, ib_order_id")
+            .in_("status", ["PENDING", "SUBMITTED", "OPEN"])
+        )
+        if symbol:
+            query = query.eq("symbol", symbol)
+        res = query.execute()
+        return getattr(res, "data", None) or []
+
+    def count_active_trades(self, symbol: Optional[str] = None) -> int:
+        """Count active trades (PENDING/SUBMITTED/OPEN), optionally by symbol."""
+        active = self.get_active_trades(symbol=symbol)
+        return len(active)
+
     def open_trade(
         self,
         symbol: str,
