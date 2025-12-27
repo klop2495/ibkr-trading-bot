@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from unittest.mock import MagicMock, patch
 
+# Skip module if Supabase SDK not available in local environment
+pytest.importorskip("supabase")
+
 from app.models.signal_preview import (
     SignalPreviewV1, Direction, Confidence, SetupType,
     DataQuality, SpreadQuality, TimeframeTrigger

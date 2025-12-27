@@ -160,7 +160,7 @@ class TestParallelDecisionRunner:
         """Test default initialization."""
         runner = ParallelDecisionRunner()
         
-        assert runner.active_strategy == "rules"
+        assert runner.active_strategy == "hybrid"
         assert runner.llm_enabled is False
         assert runner.agents == []
     
@@ -176,7 +176,7 @@ class TestParallelDecisionRunner:
     
     def test_run_shadow_mode(self):
         """Test running in shadow mode (Phase 0)."""
-        runner = ParallelDecisionRunner(llm_enabled=False)
+        runner = ParallelDecisionRunner(active_strategy="rules", llm_enabled=False)
         
         preview = SignalPreviewV1(
             ts_utc=datetime.now(timezone.utc),
@@ -207,13 +207,13 @@ class TestParallelDecisionRunner:
         assert result.symbol == "EURUSD"
         assert result.rules_signal == "LONG"
         assert result.rules_confidence == "high"
-        assert result.gpt_signal == "HOLD"  # Stub
+        assert result.gpt_signal == "HOLD"  # LLM contour disabled -> HOLD
         assert result.executed_strategy == "rules"
         assert result.executed_signal == "LONG"
     
     def test_run_with_trade_not_allowed(self):
         """Test running when trade not allowed."""
-        runner = ParallelDecisionRunner(llm_enabled=False)
+        runner = ParallelDecisionRunner(active_strategy="rules", llm_enabled=False)
         
         preview = SignalPreviewV1(
             ts_utc=datetime.now(timezone.utc),
@@ -255,11 +255,11 @@ class TestParallelDecisionRunner:
     
     def test_strategy_selection_gpt(self):
         """Test strategy selection - gpt."""
-        runner = ParallelDecisionRunner(active_strategy="gpt")
+        runner = ParallelDecisionRunner(active_strategy="llm")
         
         strategy, signal = runner._select_strategy("LONG", "SHORT", "HOLD")
         
-        assert strategy == "gpt"
+        assert strategy == "llm"
         assert signal == "SHORT"
     
     def test_strategy_selection_hybrid(self):
@@ -275,8 +275,8 @@ class TestParallelDecisionRunner:
         """Test hybrid computation favoring LONG."""
         runner = ParallelDecisionRunner()
         
-        # Rules LONG high confidence + GPT positive score
-        signal, score = runner._compute_hybrid("LONG", "high", "LONG", 0.5)
+        # Positive rules + positive llm score
+        score, signal = runner._compute_hybrid_score(rules_score=0.9, llm_score=0.5, risk_veto=False)
         
         assert signal == "LONG"
         assert score > 0
@@ -285,11 +285,12 @@ class TestParallelDecisionRunner:
         """Test hybrid computation with mixed signals."""
         runner = ParallelDecisionRunner()
         
-        # Rules LONG low confidence + GPT negative score
-        signal, score = runner._compute_hybrid("LONG", "low", "SHORT", -0.3)
+        # Opposing contributions should cancel out
+        score, signal = runner._compute_hybrid_score(rules_score=0.3, llm_score=-0.3, risk_veto=False)
         
         # Should be close to zero or HOLD
-        assert abs(score) < 0.5
+        assert abs(score) < 0.2
+        assert signal == "HOLD"
     
     def test_get_stats(self):
         """Test getting runner stats."""
@@ -299,7 +300,7 @@ class TestParallelDecisionRunner:
         
         assert stats["calls_total"] == 0
         assert stats["llm_enabled"] is True
-        assert stats["active_strategy"] == "rules"
+        assert stats["active_strategy"] == "hybrid"
 
 
 class TestCreateParallelRunner:
@@ -333,7 +334,7 @@ class TestIntegrationPipeline:
     def test_full_pipeline_shadow(self):
         """Test full pipeline in shadow mode."""
         # Create runner
-        runner = create_parallel_runner(llm_enabled=False)
+        runner = create_parallel_runner(llm_enabled=False, active_strategy="rules")
         
         # Create preview
         preview = SignalPreviewV1(

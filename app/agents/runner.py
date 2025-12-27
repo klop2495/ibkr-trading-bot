@@ -182,9 +182,9 @@ def aggregate_decision(preview: SignalPreviewV1, agent_results: Dict[str, AgentR
     Aggregate rules agent results into a decision.
     
     Quorum Voting v2:
-    - entry_triggered is NOT a hard gate for candidate
+    - entry_triggered is a hard gate (fail-safe: no trigger → no trade)
     - trade_allowed based on agent consensus (all must approve for rules agents)
-    - When entry_triggered=False, risk_modifier is capped
+    - When entry_triggered=False, risk_modifier is capped and trade disallowed
     """
     if not agent_results:
         return {
@@ -194,7 +194,7 @@ def aggregate_decision(preview: SignalPreviewV1, agent_results: Dict[str, AgentR
             "commentary": "agents not run",
         }
     
-    # Check candidate validity (entry_triggered NOT required)
+    # Check candidate validity
     candidate_valid = is_candidate_valid(preview)
     
     # Rules agents still use AND logic (they check data quality, regime)
@@ -211,10 +211,11 @@ def aggregate_decision(preview: SignalPreviewV1, agent_results: Dict[str, AgentR
         if res.commentary:
             commentary_parts.append(res.commentary)
     
-    # Apply risk_modifier cap when entry_triggered=False
-    if trade_allowed and not preview.entry_triggered:
+    # Hard gate: entry not triggered -> block trade
+    if not preview.entry_triggered:
+        trade_allowed = False
         risk_modifier = min(risk_modifier, RISK_MOD_CAP_NO_ENTRY)
-        flags.append("NO_ENTRY_TRIGGER_CAP")
+        flags.append(FLAG_ENTRY_NOT_TRIGGERED)
     
     # Clamp risk_modifier to valid range
     risk_modifier = max(RISK_MOD_MIN, min(RISK_MOD_MAX, risk_modifier))

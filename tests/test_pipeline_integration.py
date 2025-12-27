@@ -50,14 +50,21 @@ class TestContextBuilderIntegration:
     def test_context_includes_ohlc(self, context_builder, sample_ohlc):
         """Context should include OHLC data when provided"""
         from app.models.signal_preview import SignalPreviewV1, Direction, Confidence, SetupType
-        
+        from app.models.signal_preview import DataQuality, SpreadQuality, TimeframeTrigger
+        from datetime import datetime, timezone
+
         preview = SignalPreviewV1(
-            id="test",
+            ts_utc=datetime.now(timezone.utc),
             symbol="EURUSD",
-            timeframe="H1",
+            timeframe_trigger=TimeframeTrigger.M15,
+            setup_type=SetupType.SWING_CONTINUATION,
             direction=Direction.LONG,
-            confidence=Confidence.MEDIUM,
-            setup_type=SetupType.TREND_CONTINUATION,
+            setup_present=True,
+            entry_triggered=True,
+            confidence=Confidence.NORMAL,
+            rr=2.0,
+            data_quality=DataQuality.OK,
+            spread_quality=SpreadQuality.OK,
         )
         
         ctx = context_builder.build(
@@ -73,14 +80,21 @@ class TestContextBuilderIntegration:
     def test_context_includes_atr_history(self, context_builder):
         """Context should include ATR history when provided"""
         from app.models.signal_preview import SignalPreviewV1, Direction, Confidence, SetupType
-        
+        from app.models.signal_preview import DataQuality, SpreadQuality, TimeframeTrigger
+        from datetime import datetime, timezone
+
         preview = SignalPreviewV1(
-            id="test",
+            ts_utc=datetime.now(timezone.utc),
             symbol="EURUSD",
-            timeframe="H1",
+            timeframe_trigger=TimeframeTrigger.M15,
+            setup_type=SetupType.SWING_CONTINUATION,
             direction=Direction.LONG,
-            confidence=Confidence.MEDIUM,
-            setup_type=SetupType.TREND_CONTINUATION,
+            setup_present=True,
+            entry_triggered=True,
+            confidence=Confidence.NORMAL,
+            rr=2.0,
+            data_quality=DataQuality.OK,
+            spread_quality=SpreadQuality.OK,
         )
         
         atr_history = [0.0045, 0.0048, 0.0050, 0.0052, 0.0055]
@@ -99,14 +113,21 @@ class TestContextBuilderIntegration:
     def test_context_includes_24h_prices(self, context_builder, sample_prices):
         """Context should include 24h prices when provided"""
         from app.models.signal_preview import SignalPreviewV1, Direction, Confidence, SetupType
-        
+        from app.models.signal_preview import DataQuality, SpreadQuality, TimeframeTrigger
+        from datetime import datetime, timezone
+
         preview = SignalPreviewV1(
-            id="test",
+            ts_utc=datetime.now(timezone.utc),
             symbol="EURUSD",
-            timeframe="H1",
+            timeframe_trigger=TimeframeTrigger.M15,
+            setup_type=SetupType.SWING_CONTINUATION,
             direction=Direction.LONG,
-            confidence=Confidence.MEDIUM,
-            setup_type=SetupType.TREND_CONTINUATION,
+            setup_present=True,
+            entry_triggered=True,
+            confidence=Confidence.NORMAL,
+            rr=2.0,
+            data_quality=DataQuality.OK,
+            spread_quality=SpreadQuality.OK,
         )
         
         ctx = context_builder.build(
@@ -122,14 +143,21 @@ class TestContextBuilderIntegration:
     def test_context_to_dict_includes_phase7_fields(self, context_builder, sample_ohlc, sample_prices):
         """to_dict should include all Phase 7 fields"""
         from app.models.signal_preview import SignalPreviewV1, Direction, Confidence, SetupType
-        
+        from app.models.signal_preview import DataQuality, SpreadQuality, TimeframeTrigger
+        from datetime import datetime, timezone
+
         preview = SignalPreviewV1(
-            id="test",
+            ts_utc=datetime.now(timezone.utc),
             symbol="EURUSD",
-            timeframe="H1",
+            timeframe_trigger=TimeframeTrigger.M15,
+            setup_type=SetupType.SWING_CONTINUATION,
             direction=Direction.LONG,
-            confidence=Confidence.MEDIUM,
-            setup_type=SetupType.TREND_CONTINUATION,
+            setup_present=True,
+            entry_triggered=True,
+            confidence=Confidence.NORMAL,
+            rr=2.0,
+            data_quality=DataQuality.OK,
+            spread_quality=SpreadQuality.OK,
         )
         
         ctx = context_builder.build(
@@ -490,17 +518,24 @@ class TestEndToEndPipeline:
         from app.agents.llm.risk_agent import RiskAgent
         from app.agents.llm.score_aggregator import ScoreAggregator
         from app.models.signal_preview import SignalPreviewV1, Direction, Confidence, SetupType
-        
+        from app.models.signal_preview import DataQuality, SpreadQuality, TimeframeTrigger
+        from datetime import datetime, timezone
+
         # 1. Build context
         builder = ContextBuilder()
-        
+
         preview = SignalPreviewV1(
-            id="test",
             symbol="EURUSD",
-            timeframe="H1",
+            ts_utc=datetime.now(timezone.utc),
+            timeframe_trigger=TimeframeTrigger.M15,
             direction=Direction.LONG,
-            confidence=Confidence.MEDIUM,
-            setup_type=SetupType.TREND_CONTINUATION,
+            confidence=Confidence.NORMAL,
+            setup_type=SetupType.SWING_CONTINUATION,
+            setup_present=True,
+            entry_triggered=True,
+            rr=2.0,
+            data_quality=DataQuality.OK,
+            spread_quality=SpreadQuality.OK,
         )
         
         ohlc = {
