@@ -4,6 +4,8 @@ Dashboard API for LLM Agents Monitoring.
 Phase 5: Real-time monitoring of parallel decisions and LLM agents.
 """
 
+import asyncio
+import logging
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
@@ -17,6 +19,7 @@ from pydantic import BaseModel
 from app.storage.db import SupabaseDB
 from app.broker.account_api import get_broker_api
 
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="IBKR Trading Bot Dashboard",
@@ -68,6 +71,19 @@ class SignalComparison(BaseModel):
     gpt_short: int
     gpt_hold: int
     agreement_rate: float
+
+
+class CloseTradeRequest(BaseModel):
+    trade_id: str
+
+
+class CloseTradeResponse(BaseModel):
+    status: str
+    trade_id: str
+    symbol: str
+    closed_quantity: float
+    exit_price: Optional[float]
+    message: Optional[str] = None
 
 
 # Database connection
@@ -165,6 +181,152 @@ async def reconnect_broker():
         "status": "connected" if connected else "disconnected",
         "data": data,
     }
+
+
+def _normalize_symbol(symbol: str) -> str:
+    return symbol.replace(".", "").replace("/", "").replace(" ", "").upper()
+
+
+def _match_position_symbol(contract, symbol: str) -> bool:
+    base = getattr(contract, "symbol", "") or ""
+    quote = getattr(contract, "currency", "") or ""
+    combined = f"{base}{quote}".upper()
+    return combined == _normalize_symbol(symbol)
+
+
+def _pip_size(symbol: str) -> float:
+    return 0.01 if symbol.upper().endswith("JPY") else 0.0001
+
+
+def _close_trade_sync(trade: dict) -> dict:
+    from ib_insync import IB, Forex, MarketOrder
+
+    host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
+    port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
+    client_id = int(os.getenv("IB_CLIENT_ID_MANUAL_CLOSE", "161"))
+
+    ib = IB()
+    try:
+        ib.connect(host, port, clientId=client_id, timeout=10, readonly=False)
+        if not ib.isConnected():
+            return {"ok": False, "error": "ib_not_connected"}
+
+        symbol = trade.get("symbol") or ""
+        position = 0.0
+        contract = None
+        for p in ib.positions():
+            c = getattr(p, "contract", None)
+            if c and _match_position_symbol(c, symbol):
+                position = float(getattr(p, "position", 0) or 0)
+                contract = c
+                break
+
+        if not contract or position == 0:
+            return {"ok": False, "error": "position_not_found"}
+
+        parent_id = trade.get("ib_order_id")
+        if parent_id:
+            for open_trade in ib.openTrades():
+                order = getattr(open_trade, "order", None)
+                if not order:
+                    continue
+                if getattr(order, "parentId", None) == parent_id:
+                    try:
+                        ib.cancelOrder(order)
+                    except Exception:
+                        pass
+
+        action = "SELL" if position > 0 else "BUY"
+        qty = abs(position)
+        fx_contract = contract or Forex(_normalize_symbol(symbol))
+        order = MarketOrder(action, qty)
+        ib_trade = ib.placeOrder(fx_contract, order)
+
+        timeout_s = 10
+        waited = 0.0
+        while not ib_trade.isDone() and waited < timeout_s:
+            ib.sleep(0.5)
+            waited += 0.5
+
+        exit_price = None
+        status = getattr(ib_trade, "orderStatus", None)
+        if status:
+            exit_price = getattr(status, "avgFillPrice", None)
+        if exit_price in (None, 0):
+            fills = getattr(ib_trade, "fills", []) or []
+            if fills:
+                exit_price = getattr(fills[-1], "execution", None)
+                exit_price = getattr(exit_price, "price", None)
+
+        return {"ok": True, "exit_price": exit_price, "closed_qty": qty}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        try:
+            if ib.isConnected():
+                ib.disconnect()
+        except Exception:
+            pass
+
+
+@app.post("/api/broker/close", response_model=CloseTradeResponse)
+async def close_trade(req: CloseTradeRequest):
+    db = get_db()
+    trade_res = (
+        db.client.table("trades_history")
+        .select("*")
+        .eq("id", req.trade_id)
+        .limit(1)
+        .execute()
+    )
+    trade_rows = getattr(trade_res, "data", None) or []
+    if not trade_rows:
+        raise HTTPException(status_code=404, detail="trade_not_found")
+    trade = trade_rows[0]
+    if trade.get("status") != "OPEN":
+        raise HTTPException(status_code=400, detail="trade_not_open")
+
+    result = await asyncio.to_thread(_close_trade_sync, trade)
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error") or "close_failed")
+
+    exit_price = result.get("exit_price")
+    qty = float(result.get("closed_qty") or trade.get("quantity") or 0)
+    entry = trade.get("entry_price")
+    side = (trade.get("side") or "BUY").upper()
+    pnl = None
+    pnl_pips = None
+    if entry is not None and exit_price is not None and qty:
+        if side == "BUY":
+            pnl = (exit_price - entry) * qty
+        else:
+            pnl = (entry - exit_price) * qty
+        pip = _pip_size(trade.get("symbol") or "")
+        if pip > 0:
+            pnl_pips = (exit_price - entry) / pip
+            if side == "SELL":
+                pnl_pips = -pnl_pips
+
+    try:
+        db.client.table("trades_history").update({
+            "status": "CLOSED",
+            "exit_price": exit_price,
+            "close_reason": "MANUAL",
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "pnl": pnl,
+            "pnl_pips": pnl_pips,
+        }).eq("id", req.trade_id).execute()
+    except Exception as exc:
+        logger.error(f"Failed to update trade close: {exc}")
+
+    return CloseTradeResponse(
+        status="closed",
+        trade_id=req.trade_id,
+        symbol=trade.get("symbol") or "",
+        closed_quantity=qty,
+        exit_price=exit_price,
+        message="ok",
+    )
 
 
 @app.get("/api/parallel-decisions", response_model=List[ParallelDecisionSummary])
