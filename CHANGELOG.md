@@ -2,6 +2,18 @@
 
 Все изменения в проектах ibkr-trading-bot и ibkr-trading-fronend.
 
+## [2025-12-29] — IB SL/TP Sync + Live Status
+
+### ✅ Backend
+- Синхронизация SL/TP с IB: различение bracket‑children, закрытие сделки при срабатывании SL/TP, обновление P&L.
+- Привязка `request_id → trade_id` для ранних статусов и записи `ib_order_id`.
+- Запрет статуса `OPEN` без `ib_order_id`; dry‑run пишет `DRY_RUN`.
+- `/api/broker` теперь отдаёт `parentId/auxPrice/lmtPrice` для open orders.
+- Dashboard слушает только `127.0.0.1:8080` (не публичен).
+
+### 🖥️ Frontend
+- `/admin/executions` показывает фактический SL/TP из IB Open Orders и статус `ACTIVE/MISSING`.
+
 ## [2025-12-23] — Quorum Voting v2 + IB Gateway Connection Fix
 
 ### 🎯 Quorum Voting v2
