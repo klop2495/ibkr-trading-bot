@@ -14,6 +14,15 @@ DEFAULT_SYMBOLS = [
     "AUDUSD",
     "USDCAD",
     "NZDUSD",
+    "EURJPY",
+    "GBPJPY",
+    "AUDJPY",
+    "CADJPY",
+    "CHFJPY",
+    "NZDJPY",
+    "EURGBP",
+    "EURAUD",
+    "EURCHF",
 ]
 
 class BotSettings(BaseModel):
