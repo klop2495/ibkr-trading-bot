@@ -163,6 +163,8 @@ class MarketDataService:
         interval = timeframe_seconds(timeframe)
         for prev, curr in zip(deduped, deduped[1:]):
             if (curr[0] - prev[0]).total_seconds() > 1.5 * interval:
+                if self._is_weekend_gap(prev[0], curr[0]):
+                    continue
                 issues.append("DATA_GAP")
                 break
 
@@ -175,6 +177,21 @@ class MarketDataService:
         trimmed = deduped[-self.buffer.max_bars :]
         self.last_bar_counts[(symbol, timeframe)] = len(trimmed)
         return [b for _, b in trimmed], issues
+
+    @staticmethod
+    def _is_weekend_gap(prev_ts: datetime, curr_ts: datetime) -> bool:
+        """
+        Ignore expected FX weekend gaps (Fri close -> Sun open).
+        """
+        if curr_ts <= prev_ts:
+            return False
+        day = prev_ts.date()
+        end_day = curr_ts.date()
+        while day <= end_day:
+            if day.weekday() in (5, 6):  # Saturday/Sunday
+                return True
+            day += timedelta(days=1)
+        return False
 
     def _handle_bars(self, symbol: str, timeframe: str, bars):
         latest = bars[-1]
