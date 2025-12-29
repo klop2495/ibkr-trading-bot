@@ -687,6 +687,9 @@ def _hybrid_execution_gates(
         return False, "preview_missing"
     if preview.get("setup_type") == "NO_TRADE" or not preview.get("setup_present", False):
         return False, "setup_missing"
+    direction = (preview.get("direction") or "").lower()
+    if direction not in ("long", "short"):
+        return False, "direction_flat"
     if require_entry_triggered and not preview.get("entry_triggered", False):
         return False, "entry_not_triggered"
     if require_data_ok and preview.get("data_quality") != "ok":
