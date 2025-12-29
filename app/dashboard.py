@@ -201,8 +201,12 @@ def _pip_size(symbol: str) -> float:
 def _close_trade_sync(trade: dict) -> dict:
     from ib_insync import IB, Forex, MarketOrder
 
-    host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
-    port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
+    host = os.getenv("IB_GATEWAY_HOST") or os.getenv("IBKR_HOST", "127.0.0.1")
+    port = int(os.getenv("IB_GATEWAY_PORT") or os.getenv("IBKR_PORT", "4004"))
+    if host in ("127.0.0.1", "localhost"):
+        alt_host = os.getenv("IBKR_HOST")
+        if alt_host and alt_host not in ("127.0.0.1", "localhost"):
+            host = alt_host
     client_id = int(os.getenv("IB_CLIENT_ID_MANUAL_CLOSE", "161"))
 
     ib = IB()
