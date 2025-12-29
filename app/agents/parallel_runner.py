@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 # Thresholds
-HYBRID_THRESHOLD = float(os.getenv("HYBRID_THRESHOLD", "0.15"))
+HYBRID_THRESHOLD = float(os.getenv("HYBRID_THRESHOLD", "0.35"))
 RULES_WEIGHT = float(os.getenv("HYBRID_RULES_WEIGHT", "0.6"))
 LLM_WEIGHT = float(os.getenv("HYBRID_LLM_WEIGHT", "0.4"))
 

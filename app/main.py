@@ -2,7 +2,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from app.agents.runner import AgentsAggregator, aggregate_decision
@@ -676,6 +676,258 @@ def run_backfill_tick(
     )
 
 
+def _hybrid_execution_gates(
+    preview: Dict[str, Any],
+    *,
+    require_entry_triggered: bool,
+    require_data_ok: bool,
+    require_spread_ok: bool,
+) -> tuple[bool, str | None]:
+    if not preview:
+        return False, "preview_missing"
+    if preview.get("setup_type") == "NO_TRADE" or not preview.get("setup_present", False):
+        return False, "setup_missing"
+    if require_entry_triggered and not preview.get("entry_triggered", False):
+        return False, "entry_not_triggered"
+    if require_data_ok and preview.get("data_quality") != "ok":
+        return False, "data_quality_block"
+    if require_spread_ok and preview.get("spread_quality") != "ok":
+        return False, "spread_quality_block"
+    return True, None
+
+
+def _run_execution_tick_hybrid(
+    *,
+    client: Any,
+    settings: Any,
+    execution_service: ExecutionService,
+    risk_events_repo: Optional[RiskEventsRepo],
+    limit: int = 10,
+) -> Dict[str, Any]:
+    if client is None:
+        return {"executed": 0, "skipped": 0, "errors": 0}
+
+    executed = 0
+    skipped = 0
+    errors = 0
+
+    trading_enabled = getattr(settings, "trading_enabled", False)
+    if isinstance(trading_enabled, property) or not trading_enabled:
+        return {"executed": 0, "skipped": 0, "errors": 0}
+
+    hybrid_threshold = float(os.getenv("HYBRID_EXECUTION_THRESHOLD", os.getenv("HYBRID_THRESHOLD", "0.35")))
+    require_entry_triggered = os.getenv("HYBRID_REQUIRE_ENTRY_TRIGGERED", "1") != "0"
+    params = getattr(settings, "signals_params", None)
+    gates = getattr(params, "gates", None)
+    require_data_ok = True
+    require_spread_ok = True
+    if gates:
+        require_data_ok = bool(getattr(gates, "require_data_ok", True))
+        require_spread_ok = bool(getattr(gates, "require_spread_ok", True))
+
+    try:
+        parallel_res = (
+            client.table("parallel_decisions")
+            .select("id, ts_utc, symbol, hybrid_signal, hybrid_score, signal_preview_id, control_decision_id")
+            .order("ts_utc", desc=True)
+            .limit(limit * 5)
+            .execute()
+        )
+        parallel_rows = getattr(parallel_res, "data", None) or []
+        if not parallel_rows:
+            return {"executed": 0, "skipped": 0, "errors": 0}
+
+        candidates: List[Dict[str, Any]] = []
+        for row in parallel_rows:
+            score = row.get("hybrid_score")
+            if score is None:
+                continue
+            try:
+                score_val = float(score)
+            except Exception:
+                continue
+            if abs(score_val) < hybrid_threshold:
+                continue
+            signal = (row.get("hybrid_signal") or "").upper()
+            if signal not in ("LONG", "SHORT"):
+                signal = "LONG" if score_val > 0 else "SHORT"
+            preview_id = row.get("signal_preview_id")
+            if not preview_id:
+                continue
+            decision_id = row.get("control_decision_id")
+            if not decision_id:
+                continue
+            candidates.append(
+                {
+                    "decision_id": str(decision_id),
+                    "parallel_id": str(row.get("id")),
+                    "symbol": row.get("symbol") or "",
+                    "signal": signal,
+                    "score": score_val,
+                    "signal_preview_id": str(preview_id),
+                    "ts_utc": row.get("ts_utc"),
+                }
+            )
+            if len(candidates) >= limit:
+                break
+
+        if not candidates:
+            return {"executed": 0, "skipped": 0, "errors": 0}
+
+        # Load decisions for risk_modifier/flags if available
+        decision_ids = [row.get("decision_id") for row in candidates if row.get("decision_id")]
+        decisions_map: Dict[str, Dict[str, Any]] = {}
+        if decision_ids:
+            decisions_res = (
+                client.table("control_decisions")
+                .select("id, symbol, signal_preview_id, trade_allowed, risk_modifier, flags, commentary, created_at")
+                .in_("id", decision_ids)
+                .execute()
+            )
+            decisions_rows = getattr(decisions_res, "data", None) or []
+            decisions_map = {str(row.get("id")): row for row in decisions_rows}
+
+        # Load current prices from market_snapshots
+        symbols_to_load = list(set(row.get("symbol") for row in candidates if row.get("symbol")))
+        if symbols_to_load:
+            prices_res = (
+                client.table("market_snapshots")
+                .select("symbol, close, ts")
+                .in_("symbol", symbols_to_load)
+                .eq("timeframe", "M15")
+                .order("ts", desc=True)
+                .execute()
+            )
+            prices_rows = getattr(prices_res, "data", None) or []
+            seen_symbols: set = set()
+            for row in prices_rows:
+                symbol = row.get("symbol")
+                if symbol and symbol not in seen_symbols:
+                    price = row.get("close")
+                    if price is not None:
+                        execution_service.update_price(symbol, float(price))
+                        seen_symbols.add(symbol)
+
+        # Load signal previews
+        preview_ids = [row.get("signal_preview_id") for row in candidates if row.get("signal_preview_id")]
+        previews_map: Dict[str, Dict[str, Any]] = {}
+        if preview_ids:
+            previews_res = (
+                client.table("signal_previews")
+                .select(
+                    "id, sl_distance_pips, tp_distance_pips, direction, entry_triggered, setup_present, setup_type, data_quality, spread_quality"
+                )
+                .in_("id", preview_ids)
+                .execute()
+            )
+            previews_rows = getattr(previews_res, "data", None) or []
+            previews_map = {str(row.get("id")): row for row in previews_rows}
+
+        # Deduplicate already executed decisions (last 24h)
+        from datetime import timedelta
+        dedup_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        executed_check = (
+            client.table("risk_events")
+            .select("data")
+            .in_("event_type", ["EXECUTION_SUBMIT", "EXECUTION_DRY_RUN"])
+            .gte("created_at", dedup_cutoff)
+            .execute()
+        )
+        executed_rows = getattr(executed_check, "data", None) or []
+        already_executed = set()
+        for row in executed_rows:
+            data = row.get("data") or {}
+            if isinstance(data, dict):
+                dec_id = data.get("decision_id")
+                if dec_id:
+                    already_executed.add(dec_id)
+
+        risk_engine = RiskEngineV1()
+        for row in candidates:
+            decision_id = row.get("decision_id")
+            if not decision_id:
+                skipped += 1
+                continue
+            if decision_id in already_executed:
+                skipped += 1
+                continue
+
+            preview = previews_map.get(row.get("signal_preview_id"))
+            allowed, _ = _hybrid_execution_gates(
+                preview,
+                require_entry_triggered=require_entry_triggered,
+                require_data_ok=require_data_ok,
+                require_spread_ok=require_spread_ok,
+            )
+            if not allowed:
+                skipped += 1
+                continue
+
+            decision_row = decisions_map.get(decision_id, {})
+            risk_modifier = decision_row.get("risk_modifier")
+            if risk_modifier is None:
+                risk_modifier = 1.0
+            flags = decision_row.get("flags") or []
+            commentary = decision_row.get("commentary")
+
+            sl_pips = preview.get("sl_distance_pips") if preview else None
+            tp_pips = preview.get("tp_distance_pips") if preview else None
+            direction = "long" if row.get("signal") == "LONG" else "short"
+
+            try:
+            decision_ts = decision_row.get("created_at") or row.get("ts_utc")
+            decision = DecisionV1(
+                ts_utc=decision_ts if isinstance(decision_ts, datetime) else datetime.fromisoformat(decision_ts) if decision_ts else datetime.now(timezone.utc),
+                symbol=row.get("symbol") or "",
+                signal_preview_id=_safe_uuid(row.get("signal_preview_id")),
+                trade_allowed=True,
+                risk_modifier=risk_modifier,
+                flags=flags,
+                commentary=commentary,
+            )
+            decision.id = _safe_uuid(decision_id)
+
+                verdict = risk_engine.evaluate(decision, settings)
+                result = execution_service.execute(
+                    decision,
+                    verdict,
+                    settings,
+                    stop_loss_pips=float(sl_pips) if sl_pips is not None else None,
+                    take_profit_pips=float(tp_pips) if tp_pips is not None else None,
+                    direction=direction,
+                    final_signal=row.get("signal"),
+                )
+
+                if result.executed:
+                    executed += 1
+                    if os.getenv("CONTROL_PLANE_LOG_LEVEL", "INFO").upper() == "DEBUG":
+                        sl_tp_info = f" SL={result.stop_loss_price} TP={result.take_profit_price}" if result.is_bracket else ""
+                        print(f"execution_tick strategy=hybrid symbol={decision.symbol} mode={result.mode.value} side={result.side.value if result.side else 'N/A'} qty={result.quantity}{sl_tp_info}")
+                else:
+                    skipped += 1
+            except Exception as exc:
+                errors += 1
+                if risk_events_repo:
+                    risk_events_repo.insert(
+                        event_type="EXECUTION_TICK_ERROR",
+                        severity="error",
+                        message=f"Execution tick error: {exc}",
+                        data={"decision_id": decision_id, "error": str(exc)},
+                    )
+
+    except Exception as exc:
+        if risk_events_repo:
+            risk_events_repo.insert(
+                event_type="EXECUTION_TICK_ERROR",
+                severity="error",
+                message=f"Execution tick failed: {exc}",
+                data={"error": str(exc)},
+            )
+        errors += 1
+
+    return {"executed": executed, "skipped": skipped, "errors": errors}
+
+
 def run_execution_tick(
     *,
     client: Any,
@@ -692,11 +944,21 @@ def run_execution_tick(
     """
     if client is None:
         return {"executed": 0, "skipped": 0, "errors": 0}
-    
+
+    execution_strategy = os.getenv("EXECUTION_STRATEGY") or os.getenv("ACTIVE_STRATEGY", "rules")
+    if execution_strategy == "hybrid":
+        return _run_execution_tick_hybrid(
+            client=client,
+            settings=settings,
+            execution_service=execution_service,
+            risk_events_repo=risk_events_repo,
+            limit=limit,
+        )
+
     executed = 0
     skipped = 0
     errors = 0
-    
+
     try:
         # Get recent verdicts with trade_allowed=True
         verdicts_res = (
