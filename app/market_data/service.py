@@ -170,6 +170,8 @@ class MarketDataService:
             if gap_seconds > gap_threshold:
                 if self._is_weekend_gap(prev[0], curr[0]):
                     continue
+                if self._is_fx_rollover_gap(prev[0], curr[0], interval):
+                    continue
                 issues.append("DATA_GAP")
                 print(
                     f"data_gap_detected symbol={symbol} tf={timeframe} "
@@ -203,6 +205,33 @@ class MarketDataService:
                 return True
             day += timedelta(days=1)
         return False
+
+    @staticmethod
+    def _is_fx_rollover_gap(prev_ts: datetime, curr_ts: datetime, interval_seconds: int) -> bool:
+        """
+        Ignore expected FX daily rollover gap around 17:00 New York.
+        """
+        if curr_ts <= prev_ts:
+            return False
+        gap_seconds = (curr_ts - prev_ts).total_seconds()
+        if gap_seconds <= interval_seconds:
+            return False
+        if gap_seconds > 2 * interval_seconds:
+            return False
+        try:
+            from zoneinfo import ZoneInfo
+        except Exception:
+            return False
+        try:
+            ny = ZoneInfo("America/New_York")
+        except Exception:
+            return False
+        prev_local = prev_ts.astimezone(ny)
+        curr_local = curr_ts.astimezone(ny)
+        rollover = prev_local.replace(hour=17, minute=0, second=0, microsecond=0)
+        if prev_local >= rollover:
+            rollover = rollover + timedelta(days=1)
+        return prev_local < rollover <= curr_local
 
     def _handle_bars(self, symbol: str, timeframe: str, bars):
         latest = bars[-1]
