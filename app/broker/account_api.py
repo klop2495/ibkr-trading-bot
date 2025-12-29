@@ -26,26 +26,39 @@ class BrokerAccountAPI:
         self._cache_ttl_seconds = 5
         self._lock = Lock()
     
-    def get_account_data(self) -> Dict[str, Any]:
+    def get_account_data(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Get comprehensive account data from IB Gateway."""
         now = datetime.now(timezone.utc)
         
         # Check cache
-        if (self._cached_data and self._last_fetch and 
-            (now - self._last_fetch).total_seconds() < self._cache_ttl_seconds):
+        if not force_refresh and (
+            self._cached_data
+            and self._last_fetch
+            and (now - self._last_fetch).total_seconds() < self._cache_ttl_seconds
+        ):
             return self._cached_data
         
         with self._lock:
             # Double-check after lock
-            if (self._cached_data and self._last_fetch and 
-                (now - self._last_fetch).total_seconds() < self._cache_ttl_seconds):
+            if not force_refresh and (
+                self._cached_data
+                and self._last_fetch
+                and (now - self._last_fetch).total_seconds() < self._cache_ttl_seconds
+            ):
                 return self._cached_data
+            
+            if force_refresh:
+                self._cached_data = None
+                self._last_fetch = None
             
             result = self._fetch_sync()
             
             if result["account"]["connected"]:
                 self._cached_data = result
                 self._last_fetch = now
+            elif force_refresh:
+                self._cached_data = None
+                self._last_fetch = None
             
             return result
     

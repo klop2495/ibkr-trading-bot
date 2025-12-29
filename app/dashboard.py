@@ -155,6 +155,18 @@ async def get_broker_data():
         }
 
 
+@app.post("/api/broker/reconnect")
+async def reconnect_broker():
+    """Force IB Gateway reconnect attempt for the dashboard."""
+    broker_api = get_broker_api()
+    data = broker_api.get_account_data(force_refresh=True)
+    connected = bool(data.get("account", {}).get("connected"))
+    return {
+        "status": "connected" if connected else "disconnected",
+        "data": data,
+    }
+
+
 @app.get("/api/parallel-decisions", response_model=List[ParallelDecisionSummary])
 async def get_parallel_decisions(
     limit: int = Query(50, ge=1, le=500),
