@@ -67,6 +67,12 @@ class SignalEngineV1:
             ts = ts.replace(tzinfo=timezone.utc)
         return ts
 
+    @staticmethod
+    def _pip_size(symbol: str) -> float:
+        if symbol and symbol.upper().endswith("JPY"):
+            return 0.01
+        return 0.0001
+
     def _direction_from_ma(self, snap: MarketSnapshot | None) -> Direction:
         if snap is None:
             return Direction.FLAT
@@ -99,7 +105,7 @@ class SignalEngineV1:
             return SpreadQuality.UNKNOWN
         return SpreadQuality.WIDE if spread_val > wide_threshold else SpreadQuality.OK
 
-    def _m15_confirm(self, snap_m15: MarketSnapshot | None, direction: Direction) -> bool:
+    def _m15_confirm(self, symbol: str, snap_m15: MarketSnapshot | None, direction: Direction) -> bool:
         if snap_m15 is None:
             return False
         rsi_val = getattr(snap_m15, "rsi", None)
@@ -107,16 +113,34 @@ class SignalEngineV1:
         sma_val = getattr(snap_m15, "ma_fast", None)
         if rsi_val is None or close_val is None or sma_val is None:
             return False
+        if close_val <= 0 or sma_val <= 0:
+            return False
+
+        atr_val = getattr(snap_m15, "atr", None)
+        atr_mult = self.params.m15_confirm.pullback_atr_mult
+        band = None
+        if atr_val is not None and atr_val > 0 and atr_mult is not None:
+            band = atr_val * atr_mult
+        if band is None:
+            max_pips = self.params.m15_confirm.pullback_max_pips
+            if max_pips is not None:
+                band = max_pips * self._pip_size(symbol)
+
+        near_ma = False
+        if band is not None and band > 0:
+            near_ma = abs(close_val - sma_val) <= band
+        else:
+            near_ma = close_val >= sma_val if direction == Direction.LONG else close_val <= sma_val
+
+        rsi_overbought = self.params.m15_confirm.rsi_overbought or 70.0
+        rsi_oversold = self.params.m15_confirm.rsi_oversold or 30.0
+
         if direction == Direction.LONG:
-            return (
-                rsi_val >= (self.params.m15_confirm.rsi_long_min or 0)
-                and close_val > sma_val
-            )
+            rsi_min = self.params.m15_confirm.rsi_long_min or 0
+            return rsi_val >= rsi_min and rsi_val <= rsi_overbought and near_ma
         if direction == Direction.SHORT:
-            return (
-                rsi_val <= (self.params.m15_confirm.rsi_short_max or 0)
-                and close_val < sma_val
-            )
+            rsi_max = self.params.m15_confirm.rsi_short_max or 100
+            return rsi_val <= rsi_max and rsi_val >= rsi_oversold and near_ma
         return False
 
     def _compute_confidence(
@@ -288,12 +312,25 @@ class SignalEngineV1:
 
         if dir_h4 != dir_h1:
             flags.append(FLAG_TF_MISMATCH_H4_H1)
+            return SignalPreviewV1(
+                ts_utc=ts,
+                symbol=symbol,
+                setup_type=SetupType.NO_TRADE,
+                direction=Direction.FLAT,
+                setup_present=False,
+                entry_triggered=False,
+                confidence=Confidence.LOW,
+                rr=self.params.rr.base_rr or 0.0,
+                data_quality=data_quality,
+                spread_quality=spread_quality,
+                flags=flags,
+            )
 
-        # Minimal deterministic setup detection placeholder
-        setup_type = SetupType.SWING_CONTINUATION if dir_h4 == dir_h1 else SetupType.SWING_REVERSAL
+        # Trend continuation only (H4 == H1)
+        setup_type = SetupType.SWING_CONTINUATION
         setup_present = True
 
-        confirm = self._m15_confirm(snap_m15, dir_h4 if dir_h4 == dir_h1 else dir_m15)
+        confirm = self._m15_confirm(symbol, snap_m15, dir_h4)
         if confirm:
             entry_triggered = True
         else:
@@ -302,7 +339,7 @@ class SignalEngineV1:
         confidence = self._compute_confidence(dir_h4, dir_h1, confirm)
         rr = self.params.rr.high_conf_rr if confidence == Confidence.HIGH else self.params.rr.base_rr or 0.0
 
-        direction = dir_h4 if dir_h4 == dir_h1 else dir_m15
+        direction = dir_h4
         if not setup_present:
             direction = Direction.FLAT
 

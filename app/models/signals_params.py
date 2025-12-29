@@ -63,7 +63,11 @@ class SignalsM15Confirm(BaseModel):
     rsi_period: int | None = Field(default=None, ge=1)
     rsi_long_min: float | None = None
     rsi_short_max: float | None = None
+    rsi_overbought: float | None = Field(default=70.0, ge=50.0, le=100.0)
+    rsi_oversold: float | None = Field(default=30.0, ge=0.0, le=50.0)
     sma_period: int | None = Field(default=None, ge=1)
+    pullback_atr_mult: float | None = Field(default=0.35, ge=0.0)
+    pullback_max_pips: float | None = Field(default=15.0, ge=0.0)
 
 
 class SignalsParams(BaseModel):
