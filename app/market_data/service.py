@@ -159,9 +159,12 @@ class MarketDataService:
             seen_ts.add(ts)
             deduped.append((ts, bar))
 
-        # gap detection
+        # gap detection (focus on recent window)
         interval = timeframe_seconds(timeframe)
-        for prev, curr in zip(deduped, deduped[1:]):
+        gap_window_bars = max(10, int((24 * 60 * 60) / interval)) if interval > 0 else len(deduped)
+        start_idx = max(0, len(deduped) - gap_window_bars)
+        recent = deduped[start_idx:]
+        for prev, curr in zip(recent, recent[1:]):
             if (curr[0] - prev[0]).total_seconds() > 1.5 * interval:
                 if self._is_weekend_gap(prev[0], curr[0]):
                     continue
