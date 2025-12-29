@@ -219,10 +219,10 @@ class ParallelDecisionRunner:
         # Calculate rules_score
         rules_score = base_score * confidence_multiplier
 
-        # If trade not allowed, reduce impact
+        # If rules are HOLD or blocked, they contribute 0 to hybrid score
         trade_allowed = getattr(decision, "trade_allowed", False)
-        if not trade_allowed and signal != "HOLD":
-            rules_score *= 0.5  # Reduce score but don't zero out
+        if signal == "HOLD" or not trade_allowed:
+            rules_score = 0.0
             signal = "HOLD"
 
         flags = list(getattr(decision, "flags", []) or [])
