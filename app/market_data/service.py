@@ -163,16 +163,19 @@ class MarketDataService:
         interval = timeframe_seconds(timeframe)
         cutoff = end_dt_utc - timedelta(hours=24)
         recent = [pair for pair in deduped if pair[0] >= cutoff]
+        gap_multiplier = float(os.getenv("MARKET_DATA_GAP_MULTIPLIER", "2.1"))
+        gap_threshold = gap_multiplier * interval
         for prev, curr in zip(recent, recent[1:]):
             gap_seconds = (curr[0] - prev[0]).total_seconds()
-            if gap_seconds > 1.5 * interval:
+            if gap_seconds > gap_threshold:
                 if self._is_weekend_gap(prev[0], curr[0]):
                     continue
                 issues.append("DATA_GAP")
                 print(
                     f"data_gap_detected symbol={symbol} tf={timeframe} "
                     f"prev={prev[0].isoformat()} curr={curr[0].isoformat()} "
-                    f"gap_minutes={gap_seconds/60:.1f} interval_minutes={interval/60:.1f}"
+                    f"gap_minutes={gap_seconds/60:.1f} interval_minutes={interval/60:.1f} "
+                    f"threshold_minutes={gap_threshold/60:.1f}"
                 )
                 break
 
