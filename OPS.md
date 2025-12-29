@@ -7,16 +7,16 @@
 ```
 pydantic>=2.7
 python-dotenv>=1.0
-supabase==2.6.0
-httpx==0.26.0
-postgrest==0.13.0
+supabase==2.14.0
+httpx==0.28.1
+postgrest==0.19.3
 ib-insync>=0.9.86
 ```
 
 **Почему зафиксированы версии:**
-- `supabase==2.6.0` — проверенная совместимость с postgrest/httpx
-- `httpx==0.26.0` — стабильная версия для supabase client
-- `postgrest==0.13.0` — совместимость с `.insert().execute()` паттерном
+- `supabase==2.14.0` — совместимость с gotrue/httpx proxy API
+- `httpx==0.28.1` — поддержка `proxy` параметра (требуется gotrue)
+- `postgrest==0.19.3` — совместимость с supabase 2.14.x
 
 **Обновление:** При обновлении supabase SDK убедитесь, что httpx/postgrest совместимы.
 
