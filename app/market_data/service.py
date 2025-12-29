@@ -164,10 +164,16 @@ class MarketDataService:
         cutoff = end_dt_utc - timedelta(hours=24)
         recent = [pair for pair in deduped if pair[0] >= cutoff]
         for prev, curr in zip(recent, recent[1:]):
-            if (curr[0] - prev[0]).total_seconds() > 1.5 * interval:
+            gap_seconds = (curr[0] - prev[0]).total_seconds()
+            if gap_seconds > 1.5 * interval:
                 if self._is_weekend_gap(prev[0], curr[0]):
                     continue
                 issues.append("DATA_GAP")
+                print(
+                    f"data_gap_detected symbol={symbol} tf={timeframe} "
+                    f"prev={prev[0].isoformat()} curr={curr[0].isoformat()} "
+                    f"gap_minutes={gap_seconds/60:.1f} interval_minutes={interval/60:.1f}"
+                )
                 break
 
         # stale detection
