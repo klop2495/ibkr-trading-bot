@@ -875,17 +875,17 @@ def _run_execution_tick_hybrid(
             direction = "long" if row.get("signal") == "LONG" else "short"
 
             try:
-            decision_ts = decision_row.get("created_at") or row.get("ts_utc")
-            decision = DecisionV1(
-                ts_utc=decision_ts if isinstance(decision_ts, datetime) else datetime.fromisoformat(decision_ts) if decision_ts else datetime.now(timezone.utc),
-                symbol=row.get("symbol") or "",
-                signal_preview_id=_safe_uuid(row.get("signal_preview_id")),
-                trade_allowed=True,
-                risk_modifier=risk_modifier,
-                flags=flags,
-                commentary=commentary,
-            )
-            decision.id = _safe_uuid(decision_id)
+                decision_ts = decision_row.get("created_at") or row.get("ts_utc")
+                decision = DecisionV1(
+                    ts_utc=decision_ts if isinstance(decision_ts, datetime) else datetime.fromisoformat(decision_ts) if decision_ts else datetime.now(timezone.utc),
+                    symbol=row.get("symbol") or "",
+                    signal_preview_id=_safe_uuid(row.get("signal_preview_id")),
+                    trade_allowed=True,
+                    risk_modifier=risk_modifier,
+                    flags=flags,
+                    commentary=commentary,
+                )
+                decision.id = _safe_uuid(decision_id)
 
                 verdict = risk_engine.evaluate(decision, settings)
                 result = execution_service.execute(
