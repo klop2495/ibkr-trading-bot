@@ -149,6 +149,11 @@ class IBKROrderState(BaseModel):
     trailing_stop_order_id: Optional[int] = None
     trailing_stop_distance: Optional[float] = None
 
+    # Last update info (helps distinguish bracket child events)
+    last_update_order_id: Optional[int] = None
+    last_update_order_role: Optional[str] = None  # PARENT, SL, TP
+    last_update_order_status: Optional[OrderStatus] = None
+
 
 class IBKRFill(BaseModel):
     """Individual fill event."""
@@ -161,6 +166,8 @@ class IBKRFill(BaseModel):
     quantity: float
     price: float
     commission: float = 0.0
+    order_role: Optional[str] = None  # PARENT, SL, TP
+    parent_ib_order_id: Optional[int] = None
     
     
 class IBKROrderCallback:
@@ -206,6 +213,7 @@ class IBKROMS:
         
         # Track bracket order relationships
         self._bracket_children: Dict[int, UUID] = {}  # child_order_id -> parent_request_id
+        self._bracket_child_types: Dict[int, str] = {}  # child_order_id -> SL/TP
         
         # FX Funds Guard - pre-check available currency before placing orders
         self._funds_guard: Optional[FXFundsGuard] = None
@@ -269,12 +277,24 @@ class IBKROMS:
         if state is None:
             return
         
+        role = None
+        if ib_order_id == state.ib_order_id:
+            role = "PARENT"
+        elif ib_order_id in self._bracket_children:
+            role = self._bracket_child_types.get(ib_order_id, "CHILD")
+        
         order_status = getattr(trade, "orderStatus", None)
         if order_status:
-            state.status = self._map_status(order_status.status)
-            state.filled_quantity = getattr(order_status, "filled", 0.0)
-            state.avg_fill_price = getattr(order_status, "avgFillPrice", None)
+            mapped_status = self._map_status(order_status.status)
+            state.last_update_order_id = ib_order_id
+            state.last_update_order_role = role
+            state.last_update_order_status = mapped_status
             state.updated_at = datetime.now(timezone.utc)
+            
+            if role == "PARENT" or role is None:
+                state.status = mapped_status
+                state.filled_quantity = getattr(order_status, "filled", 0.0)
+                state.avg_fill_price = getattr(order_status, "avgFillPrice", None)
             
             self.callback.on_order_status(state)
     
@@ -283,10 +303,18 @@ class IBKROMS:
         ib_order_id = getattr(trade.order, "orderId", None)
         if ib_order_id is None:
             return
-            
+        
+        role = None
+        parent_ib_order_id = None
+        
         request_id = self._ib_to_request.get(ib_order_id)
         if request_id is None:
             request_id = self._bracket_children.get(ib_order_id)
+            if request_id is not None:
+                role = self._bracket_child_types.get(ib_order_id, "CHILD")
+        else:
+            role = "PARENT"
+        
         if request_id is None:
             return
         
@@ -296,6 +324,11 @@ class IBKROMS:
         price = getattr(fill.execution, "price", 0.0)
         commission = getattr(fill.commissionReport, "commission", 0.0) if fill.commissionReport else 0.0
         
+        # Map child fill to parent order id (used for trade close)
+        state = self._orders.get(request_id)
+        if state and state.ib_order_id:
+            parent_ib_order_id = state.ib_order_id
+        
         ibkr_fill = IBKRFill(
             request_id=request_id,
             ib_order_id=ib_order_id,
@@ -304,6 +337,8 @@ class IBKROMS:
             quantity=quantity,
             price=price,
             commission=commission,
+            order_role=role,
+            parent_ib_order_id=parent_ib_order_id,
         )
         
         # Update state
@@ -478,6 +513,8 @@ class IBKROMS:
             self._ib_to_request[parent_id] = request.id
             self._bracket_children[tp_id] = request.id
             self._bracket_children[sl_id] = request.id
+            self._bracket_child_types[tp_id] = "TP"
+            self._bracket_child_types[sl_id] = "SL"
             
             print(f"BRACKET_ORDER submitted parent={parent_id} tp={tp_id} sl={sl_id} symbol={request.symbol} qty={request.quantity}")
             

@@ -128,17 +128,41 @@ class ExecutionServiceCallback(IBKROrderCallback):
         self.risk_events_repo = risk_events_repo
         self.trades_history_repo = trades_history_repo
         self._on_trade_closed = on_trade_closed  # Phase 7: callback
+        self._request_trade_map: Dict[str, str] = {}
+
+    def register_request_trade(self, request_id: UUID, trade_id: str) -> None:
+        """Link OMS request_id to trades_history trade_id for early updates."""
+        self._request_trade_map[str(request_id)] = trade_id
+
+    def _lookup_trade(self, request_id: UUID, ib_order_id: Optional[int]) -> Optional[dict]:
+        if not self.trades_history_repo:
+            return None
+        if ib_order_id:
+            trade = self.trades_history_repo.get_trade_by_ib_order_id(ib_order_id)
+            if trade:
+                return trade
+        trade_id = self._request_trade_map.get(str(request_id))
+        if trade_id:
+            return self.trades_history_repo.get_trade_by_id(trade_id)
+        return None
+
+    def _get_pip_value(self, symbol: str) -> float:
+        if "JPY" in (symbol or "").upper():
+            return PIP_VALUES["JPY"]
+        return PIP_VALUES["DEFAULT"]
     
     def on_order_status(self, state: IBKROrderState) -> None:
         """Handle order status change - update trades_history accordingly."""
-        logger.info(f"Order {state.request_id} status: {state.status.value}")
+        role = getattr(state, "last_update_order_role", None)
+        last_status = getattr(state, "last_update_order_status", None) or state.status
+        logger.info(f"Order {state.request_id} status: {last_status.value}")
         
         # Log to risk_events
         if self.risk_events_repo:
             data = {
                 "request_id": str(state.request_id),
                 "ib_order_id": state.ib_order_id,
-                "status": state.status.value,
+                "status": last_status.value,
                 "filled_quantity": state.filled_quantity,
                 "avg_fill_price": state.avg_fill_price,
             }
@@ -146,20 +170,33 @@ class ExecutionServiceCallback(IBKROrderCallback):
                 data["is_bracket"] = True
                 data["stop_loss_order_id"] = state.stop_loss_order_id
                 data["take_profit_order_id"] = state.take_profit_order_id
+            if role:
+                data["order_role"] = role
+            if getattr(state, "last_update_order_id", None):
+                data["last_update_order_id"] = state.last_update_order_id
             
             self.risk_events_repo.insert(
                 event_type="EXECUTION_ORDER_STATUS",
                 severity="info",
-                message=f"Order status: {state.status.value}",
+                message=f"Order status: {last_status.value}",
                 data=data,
             )
         
         # P0-B: Update trades_history status
-        if self.trades_history_repo and state.ib_order_id:
+        if role and role != "PARENT":
+            return
+        
+        if self.trades_history_repo:
             try:
-                trade = self.trades_history_repo.get_trade_by_ib_order_id(state.ib_order_id)
+                trade = self._lookup_trade(state.request_id, state.ib_order_id)
                 if trade:
                     trade_id = trade.get("id")
+                    if state.ib_order_id and not trade.get("ib_order_id"):
+                        self.trades_history_repo.update_status(
+                            trade_id=trade_id,
+                            status=trade.get("status", "PENDING"),
+                            ib_order_id=state.ib_order_id,
+                        )
                     new_status = self._map_order_status_to_trade_status(state.status)
                     
                     if new_status and new_status != trade.get("status"):
@@ -178,6 +215,8 @@ class ExecutionServiceCallback(IBKROrderCallback):
                         
                         self.trades_history_repo.update_status(**update_kwargs)
                         logger.info(f"Trade {trade_id} status updated: {trade.get('status')} -> {new_status}")
+                        if new_status in ("CANCELLED", "REJECTED"):
+                            self._request_trade_map.pop(str(state.request_id), None)
             except Exception as e:
                 logger.error(f"Failed to update trade status: {e}")
     
@@ -223,13 +262,59 @@ class ExecutionServiceCallback(IBKROrderCallback):
                     "quantity": fill.quantity,
                     "price": fill.price,
                     "commission": fill.commission,
+                    "order_role": getattr(fill, "order_role", None),
+                    "parent_ib_order_id": getattr(fill, "parent_ib_order_id", None),
                 },
             )
         
         # P0-B: Update trade entry price with actual fill price
         if self.trades_history_repo:
             try:
-                trade = self.trades_history_repo.get_trade_by_ib_order_id(fill.ib_order_id)
+                role = getattr(fill, "order_role", None)
+                parent_ib_order_id = getattr(fill, "parent_ib_order_id", None) or fill.ib_order_id
+                
+                if role in ("SL", "TP"):
+                    trade = self._lookup_trade(fill.request_id, parent_ib_order_id)
+                    if trade:
+                        entry_price = trade.get("entry_price")
+                        quantity = trade.get("quantity") or 0.0
+                        side = trade.get("side", "BUY")
+                        symbol = trade.get("symbol", "")
+                        close_reason = "SL_HIT" if role == "SL" else "TP_HIT"
+                        
+                        pnl = None
+                        pnl_pips = None
+                        if entry_price is not None and quantity:
+                            if side == "BUY":
+                                pnl = (fill.price - entry_price) * quantity
+                            else:
+                                pnl = (entry_price - fill.price) * quantity
+                            pip_value = self._get_pip_value(symbol)
+                            pnl_pips = (fill.price - entry_price) / pip_value
+                            if side == "SELL":
+                                pnl_pips = -pnl_pips
+                        
+                        self.trades_history_repo.close_trade(
+                            trade_id=trade["id"],
+                            exit_price=fill.price,
+                            close_reason=close_reason,
+                            pnl=pnl,
+                            pnl_pips=pnl_pips,
+                        )
+                        self._request_trade_map.pop(str(fill.request_id), None)
+                        
+                        if self._on_trade_closed:
+                            trade_update = dict(trade)
+                            trade_update.update(
+                                exit_price=fill.price,
+                                close_reason=close_reason,
+                                pnl=pnl,
+                                pnl_pips=pnl_pips,
+                            )
+                            self._on_trade_closed(trade_update)
+                    return
+                
+                trade = self._lookup_trade(fill.request_id, fill.ib_order_id)
                 if trade:
                     self.trades_history_repo.update_status(
                         trade_id=trade["id"],
@@ -1153,6 +1238,8 @@ class ExecutionService:
             signal_preview_id=decision.signal_preview_id,
             decision_id=decision.id,
         )
+        if trade_id and self._callback:
+            self._callback.register_request_trade(request.id, trade_id)
         
         # Phase 7: Store agent data for performance tracking
         if trade_id and agent_votes:
@@ -1291,8 +1378,8 @@ class ExecutionService:
             return None
         
         # Determine initial status based on mode
-        # dry_run trades go straight to OPEN (no broker callback)
-        initial_status = "OPEN" if mode == "dry_run" else "PENDING"
+        # dry_run trades should not appear as OPEN (no broker order id)
+        initial_status = "DRY_RUN" if mode == "dry_run" else "PENDING"
         
         try:
             trade_id = self.trades_history_repo.create_trade(

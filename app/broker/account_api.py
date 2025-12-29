@@ -186,10 +186,13 @@ class BrokerAccountAPI:
                 status = getattr(trade.orderStatus, "status", "Unknown")
             result.append({
                 "orderId": getattr(order, "orderId", 0),
+                "parentId": getattr(order, "parentId", None),
                 "symbol": getattr(contract, "symbol", "") if contract else "",
                 "action": getattr(order, "action", ""),
                 "quantity": float(getattr(order, "totalQuantity", 0) or 0),
                 "orderType": getattr(order, "orderType", ""),
+                "auxPrice": getattr(order, "auxPrice", None),
+                "lmtPrice": getattr(order, "lmtPrice", None),
                 "status": status,
             })
         return result

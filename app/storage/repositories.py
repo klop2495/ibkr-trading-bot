@@ -453,6 +453,8 @@ class TradesHistoryRepo(BaseRepo):
         - CANCELLED: Order cancelled before fill
         - REJECTED: Order rejected by broker
         """
+        if status == "OPEN" and ib_order_id is None:
+            status = "PENDING"
         trade_id = str(uuid4())
         payload = {
             "id": trade_id,
