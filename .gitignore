@@ -252,3 +252,7 @@ deploy/ib-gateway/.env
 
 # Deploy scripts with credentials
 scripts/deploy-*.sh
+
+# SSH keys - never commit
+*.pub
+iqx93HXHbRFa*
