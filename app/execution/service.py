@@ -962,21 +962,8 @@ class ExecutionService:
                     reason=f"max_positions_reached:{current_open}/{max_positions}",
                 )
             
-            # 2. Check if already have position in this symbol
-            symbol_positions = self._get_open_trades_for_symbol(decision.symbol)
-            if symbol_positions > 0:
-                self._log_event(
-                    "EXECUTION_BLOCKED",
-                    "info",
-                    f"Already have active position in {decision.symbol}",
-                    {"decision_id": str(decision.id), "symbol": decision.symbol, "existing_positions": symbol_positions},
-                )
-                return ExecutionResult(
-                    executed=False,
-                    mode=self._mode,
-                    symbol=decision.symbol,
-                    reason=f"active_trade_exists:{decision.symbol}",
-                )
+            # NOTE: Symbol-level position check is now handled atomically below
+            # via try_acquire_symbol_lock to prevent race conditions (AI_RULES 2.5)
         except Exception as exc:
             self._log_event(
                 "EXECUTION_BLOCKED",
@@ -1230,18 +1217,50 @@ class ExecutionService:
             },
         )
         
-        # P0-B: Create trade record FIRST with PENDING status
-        trade_id = self._record_trade_pending(
-            symbol=decision.symbol,
-            side=side,
-            quantity=size_result.units,
-            entry_price=current_price,
-            stop_loss=sl_price,
-            take_profit=tp_price,
-            mode=self._mode.value,
-            signal_preview_id=decision.signal_preview_id,
-            decision_id=decision.id,
-        )
+        # P0-B: Atomic symbol lock - prevents race condition (AI_RULES 2.5)
+        # This replaces separate check + insert with atomic try_acquire_symbol_lock
+        trade_id = None
+        lock_error = None
+        if self.trades_history_repo and hasattr(self.trades_history_repo, 'try_acquire_symbol_lock'):
+            trade_id, lock_error = self.trades_history_repo.try_acquire_symbol_lock(
+                symbol=decision.symbol,
+                side=side.value,
+                quantity=size_result.units,
+                entry_price=current_price,
+                stop_loss=sl_price,
+                take_profit=tp_price,
+                mode=self._mode.value,
+                signal_preview_id=str(decision.signal_preview_id) if decision.signal_preview_id else None,
+                decision_id=str(decision.id) if decision.id else None,
+            )
+            if lock_error:
+                self._log_event(
+                    "EXECUTION_BLOCKED",
+                    "info",
+                    f"Symbol lock failed for {decision.symbol}: {lock_error}",
+                    {"decision_id": str(decision.id), "symbol": decision.symbol, "lock_error": lock_error},
+                )
+                return ExecutionResult(
+                    executed=False,
+                    mode=self._mode,
+                    symbol=decision.symbol,
+                    reason=f"symbol_locked:{lock_error}",
+                )
+            logger.info(f"Symbol lock acquired for {decision.symbol}: trade_id={trade_id}")
+        else:
+            # Fallback to legacy method (without atomic lock)
+            trade_id = self._record_trade_pending(
+                symbol=decision.symbol,
+                side=side,
+                quantity=size_result.units,
+                entry_price=current_price,
+                stop_loss=sl_price,
+                take_profit=tp_price,
+                mode=self._mode.value,
+                signal_preview_id=decision.signal_preview_id,
+                decision_id=decision.id,
+            )
+        
         if trade_id and self._callback:
             self._callback.register_request_trade(request.id, trade_id)
         
@@ -1265,14 +1284,18 @@ class ExecutionService:
             # Check if order was rejected due to insufficient funds
             if state.status == OrderStatus.REJECTED:
                 logger.warning(f"Order rejected: {state.error_message}")
-                # Update trade status to REJECTED
+                # Release symbol lock - trade failed, allow future trades on this symbol
                 if trade_id and self.trades_history_repo:
                     try:
-                        self.trades_history_repo.update_status(
-                            trade_id=trade_id,
-                            status="REJECTED",
-                            error_message=state.error_message,
-                        )
+                        if hasattr(self.trades_history_repo, 'release_symbol_lock'):
+                            self.trades_history_repo.release_symbol_lock(trade_id, f"rejected:{state.error_message}")
+                            logger.info(f"Symbol lock released for {decision.symbol} (rejected)")
+                        else:
+                            self.trades_history_repo.update_status(
+                                trade_id=trade_id,
+                                status="REJECTED",
+                                error_message=state.error_message,
+                            )
                         logger.info(f"Trade {trade_id} marked as REJECTED")
                     except Exception as e:
                         logger.error(f"Failed to update trade status to REJECTED: {e}")
@@ -1333,6 +1356,14 @@ class ExecutionService:
                 f"Order placement failed: {e}",
                 {"request_id": str(request.id), "error": str(e)},
             )
+            # Release symbol lock on exception - allow future trades on this symbol
+            if trade_id and self.trades_history_repo:
+                try:
+                    if hasattr(self.trades_history_repo, 'release_symbol_lock'):
+                        self.trades_history_repo.release_symbol_lock(trade_id, f"exception:{e}")
+                        logger.info(f"Symbol lock released for {decision.symbol} (exception)")
+                except Exception as unlock_err:
+                    logger.error(f"Failed to release symbol lock: {unlock_err}")
             return ExecutionResult(
                 executed=False,
                 mode=self._mode,

@@ -492,7 +492,7 @@ class TradesHistoryRepo(BaseRepo):
         """Get active trades (PENDING/SUBMITTED/OPEN), optionally filtered by symbol."""
         query = (
             self.db.client.table(self.table)
-            .select("id, symbol, status, decision_id, ib_order_id")
+            .select("id, symbol, status, decision_id, ib_order_id, opened_at")
             .in_("status", ["PENDING", "SUBMITTED", "OPEN"])
         )
         if symbol:
@@ -649,6 +649,103 @@ class TradesHistoryRepo(BaseRepo):
             .execute()
         )
         return res.data or []
+
+    def try_acquire_symbol_lock(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        entry_price: Optional[float],
+        stop_loss: Optional[float],
+        take_profit: Optional[float],
+        mode: str = "paper",
+        signal_preview_id: Optional[str] = None,
+        decision_id: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """
+        Atomically try to acquire a "lock" on a symbol by creating a PENDING trade.
+        
+        This prevents race conditions where two execution ticks try to open
+        positions on the same symbol simultaneously (violates AI_RULES 2.5).
+        
+        Algorithm:
+        1. Check if symbol already has active trade (PENDING/SUBMITTED/OPEN)
+        2. If yes -> return (None, "symbol_locked")
+        3. If no -> insert new trade with PENDING status
+        4. Double-check: query active trades for symbol again
+        5. If more than 1 active trade -> we lost the race, cancel our trade
+        6. If only our trade -> success, return trade_id
+        
+        Returns:
+            Tuple of (trade_id, error_reason)
+            - (trade_id, None) on success
+            - (None, error_reason) on failure
+        """
+        # Step 1: Pre-check for existing active trades
+        existing = self.get_active_trades(symbol=symbol)
+        if existing:
+            return (None, f"symbol_already_active:{len(existing)}")
+        
+        # Step 2: Insert new trade with PENDING status
+        trade_id = str(uuid4())
+        payload = {
+            "id": trade_id,
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "mode": mode,
+            "status": "PENDING",
+            "opened_at": datetime.utcnow().isoformat(),
+            "signal_preview_id": signal_preview_id,
+            "decision_id": decision_id,
+        }
+        
+        try:
+            self.db.client.table(self.table).insert(payload).execute()
+        except Exception as e:
+            return (None, f"insert_failed:{e}")
+        
+        # Step 3: Double-check - did another trade sneak in?
+        all_active = self.get_active_trades(symbol=symbol)
+        
+        if len(all_active) > 1:
+            # Race condition detected! Multiple trades for same symbol.
+            # Sort by opened_at to find the winner (earliest wins).
+            sorted_trades = sorted(
+                all_active,
+                key=lambda t: (t.get("opened_at", ""), t.get("id", "")),
+            )
+            
+            # If our trade is not the first one, we lost the race
+            winner_id = sorted_trades[0].get("id")
+            if winner_id != trade_id:
+                # We lost - cancel our trade
+                self.update_status(trade_id, "CANCELLED", error_message="race_condition_lost")
+                return (None, f"race_lost_to:{winner_id}")
+            
+            # We won - cancel the other trades (they lost the race)
+            for trade in sorted_trades[1:]:
+                loser_id = trade.get("id")
+                if loser_id and loser_id != trade_id:
+                    try:
+                        self.update_status(loser_id, "CANCELLED", error_message="race_condition_lost")
+                    except Exception:
+                        pass  # Best effort cleanup
+        
+        # Success - we have the lock
+        return (trade_id, None)
+
+    def release_symbol_lock(self, trade_id: str, reason: str = "lock_released") -> None:
+        """
+        Release a symbol lock by marking the trade as CANCELLED.
+        
+        Call this when order placement fails before reaching broker,
+        to allow future trades on the same symbol.
+        """
+        self.update_status(trade_id, "CANCELLED", error_message=reason)
 
 
 def make_repos(db: SupabaseDB) -> dict[str, Any]:
