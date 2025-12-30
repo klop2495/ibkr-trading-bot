@@ -4,9 +4,9 @@ Dashboard API for LLM Agents Monitoring.
 Phase 5: Real-time monitoring of parallel decisions and LLM agents.
 """
 
-import asyncio
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -365,8 +365,13 @@ def _close_trade_sync(trade: dict) -> dict:
             pass
 
 
+# Thread pool for blocking IB operations
+_executor = ThreadPoolExecutor(max_workers=2)
+
+
 @app.post("/api/broker/close", response_model=CloseTradeResponse)
-async def close_trade(req: CloseTradeRequest):
+def close_trade(req: CloseTradeRequest):
+    """Close an open trade position via IB Gateway."""
     db = get_db()
     trade_res = (
         db.client.table("trades_history")
@@ -382,7 +387,14 @@ async def close_trade(req: CloseTradeRequest):
     if trade.get("status") != "OPEN":
         raise HTTPException(status_code=400, detail="trade_not_open")
 
-    result = await asyncio.to_thread(_close_trade_sync, trade)
+    # Run blocking IB operation in thread pool
+    future = _executor.submit(_close_trade_sync, trade)
+    try:
+        result = future.result(timeout=30)  # 30 second timeout
+    except Exception as e:
+        logger.error(f"[ClosePosition] Thread execution error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
     if not result.get("ok"):
         raise HTTPException(status_code=500, detail=result.get("error") or "close_failed")
 
