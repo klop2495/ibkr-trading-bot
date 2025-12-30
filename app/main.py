@@ -40,6 +40,9 @@ from app.signals.engine_v1 import SignalEngineV1
 from app.storage.repositories import SnapshotsRepo
 from app.models.bot_settings import DEFAULT_SYMBOLS
 
+# Phase 7: Position sync - broker is source of truth
+from app.broker.position_sync import PositionSyncService
+
 
 DEFAULT_BACKFILL_BATCH = 25
 DEFAULT_BACKFILL_MAX_PER_TICK = 400
@@ -49,6 +52,7 @@ DEFAULT_BACKFILL_EMA_ALPHA = 0.2
 DEFAULT_IDLE_BACKOFF_BASE = 2.0
 DEFAULT_IDLE_BACKOFF_MAX = 60.0
 DEFAULT_EQUITY = 10000.0  # Default equity for dry-run mode
+DEFAULT_POSITION_SYNC_INTERVAL = 300  # Sync positions every 5 minutes
 
 
 def _safe_uuid(value: Any) -> Optional[UUID]:
@@ -1744,6 +1748,34 @@ def main():
     _audit_equity = os.getenv("IB_CLIENT_ID_EQUITY", "154")
     print(f"ibkr_client_ids main={_audit_main} marketdata={_audit_marketdata} execution={_audit_execution} equity={_audit_equity}")
 
+    # Phase 7: Position sync - broker is source of truth
+    position_sync_enabled = os.getenv("POSITION_SYNC_ENABLED", "1") != "0"
+    position_sync_interval = int(os.getenv("POSITION_SYNC_INTERVAL", str(DEFAULT_POSITION_SYNC_INTERVAL)))
+    last_position_sync_tick = 0.0
+    last_position_sync_log: Optional[str] = None
+    position_sync_service: Optional[PositionSyncService] = None
+    
+    if position_sync_enabled:
+        # Initialize PositionSyncService with DB
+        position_sync_service = PositionSyncService(
+            db=db,
+            ib=ib_conn if not signal_gen_mock and 'ib_conn' in dir() else None,
+            auto_close_phantoms=True,
+        )
+        print(f"Phase 7: Position sync ENABLED interval={position_sync_interval}s")
+        
+        # Run initial sync on startup
+        try:
+            startup_report = position_sync_service.sync()
+            print(f"position_sync_startup {startup_report.summary}")
+            if startup_report.errors:
+                for err in startup_report.errors:
+                    print(f"position_sync_startup_error: {err}")
+        except Exception as exc:
+            print(f"Warning: Initial position sync failed: {exc}")
+    else:
+        print("Phase 7: Position sync DISABLED")
+
     batch_size = int(os.getenv("CONTROL_PLANE_BACKFILL_BATCH_SIZE", str(DEFAULT_BACKFILL_BATCH)))
     backfill_max_per_tick = int(os.getenv("CONTROL_PLANE_BACKFILL_MAX_PER_TICK", str(DEFAULT_BACKFILL_MAX_PER_TICK)))
     backfill_max_seconds = float(os.getenv("CONTROL_PLANE_BACKFILL_MAX_SECONDS", str(DEFAULT_BACKFILL_MAX_SECONDS)))
@@ -1924,6 +1956,30 @@ def main():
                             message=f"Data sources fetch failed: {exc}",
                             data={"error": str(exc)},
                         )
+
+        # Phase 7: Periodic position sync
+        if position_sync_enabled and position_sync_service is not None:
+            now_ts = time.time()
+            if now_ts - last_position_sync_tick >= position_sync_interval:
+                try:
+                    sync_report = position_sync_service.sync()
+                    sync_log = f"position_sync {sync_report.summary}"
+                    if sync_log != last_position_sync_log or sync_report.actions_taken:
+                        print(sync_log)
+                        last_position_sync_log = sync_log
+                    if sync_report.errors:
+                        for err in sync_report.errors:
+                            print(f"position_sync_error: {err}")
+                except Exception as exc:
+                    print(f"position_sync_tick_error: {exc}")
+                    if risk_events_repo:
+                        risk_events_repo.insert(
+                            event_type="POSITION_SYNC_ERROR",
+                            severity="error",
+                            message=f"Position sync failed: {exc}",
+                            data={"error": str(exc)},
+                        )
+                last_position_sync_tick = now_ts
 
         # Periodic stats logging
         if tick_count % stats_log_interval == 0 and llm_enabled:
