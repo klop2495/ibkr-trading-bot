@@ -184,7 +184,11 @@ class ParallelDecisionRunner:
         Score calculation:
         - direction: LONG -> +1, SHORT -> -1, FLAT -> 0
         - confidence multiplier: HIGH -> 0.9, NORMAL -> 0.6, LOW -> 0.3
-        - trade_allowed=False -> score = 0
+        - setup_present=False -> score = 0 (no setup, no signal)
+        
+        Note: We use setup_present instead of entry_triggered to allow
+        signals when setup is ready but entry hasn't triggered yet.
+        The hybrid threshold (0.7) provides the safety gate.
         """
         direction = getattr(preview, "direction", Direction.FLAT)
         if isinstance(direction, Direction):
@@ -219,9 +223,11 @@ class ParallelDecisionRunner:
         # Calculate rules_score
         rules_score = base_score * confidence_multiplier
 
-        # If rules are HOLD or blocked, they contribute 0 to hybrid score
-        trade_allowed = getattr(decision, "trade_allowed", False)
-        if signal == "HOLD" or not trade_allowed:
+        # Check setup_present instead of trade_allowed
+        # This allows signals when setup is ready but entry hasn't triggered
+        setup_present = getattr(preview, "setup_present", False)
+        
+        if signal == "HOLD" or not setup_present:
             rules_score = 0.0
             signal = "HOLD"
 
