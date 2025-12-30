@@ -33,9 +33,10 @@ class PositionSizerConfig(BaseModel):
     """Configuration for position sizer."""
     model_config = ConfigDict(extra="forbid")
     
-    # Risk limits
-    max_risk_per_trade_pct: float = Field(default=1.0, ge=0.1, le=5.0)
-    min_risk_per_trade_pct: float = Field(default=0.1, ge=0.01, le=1.0)
+    # Risk limits (in percent, e.g. 0.5 means 0.5%, 1.0 means 1%)
+    # Allow from 0.001% to 10% for flexibility
+    max_risk_per_trade_pct: float = Field(default=1.0, ge=0.001, le=10.0)
+    min_risk_per_trade_pct: float = Field(default=0.1, ge=0.001, le=5.0)
     
     # Position limits
     max_position_size: float = Field(default=100000.0)  # Max units per trade
