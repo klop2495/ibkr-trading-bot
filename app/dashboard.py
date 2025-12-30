@@ -206,8 +206,18 @@ def _close_trade_sync(trade: dict) -> dict:
     We try multiple methods to find the position:
     1. First check ib.positions() (works for some account types)
     2. Fallback to using trade quantity directly from our DB record
+    
+    IMPORTANT: ib_insync requires its own event loop, so we create one in this thread.
     """
+    import asyncio
     from ib_insync import IB, Forex, MarketOrder
+    
+    # Create a new event loop for this thread (ib_insync requirement)
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    except Exception as e:
+        logger.warning(f"[ClosePosition] Could not set event loop: {e}")
 
     host = os.getenv("IB_GATEWAY_HOST") or os.getenv("IBKR_HOST", "127.0.0.1")
     port = int(os.getenv("IB_GATEWAY_PORT") or os.getenv("IBKR_PORT", "4004"))
@@ -361,6 +371,13 @@ def _close_trade_sync(trade: dict) -> dict:
             if ib.isConnected():
                 ib.disconnect()
                 logger.info("[ClosePosition] Disconnected from IB Gateway")
+        except Exception:
+            pass
+        # Clean up event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop and not loop.is_closed():
+                loop.close()
         except Exception:
             pass
 
