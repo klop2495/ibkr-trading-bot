@@ -499,11 +499,15 @@ class ExecutionService:
                 self._log_event("EXECUTION_INIT_FAILED", "error", "Failed to connect to IBKR")
                 return False
             
-            # OMS
+            # OMS - check if funds guard should be enabled
+            enable_funds_guard = os.getenv("FX_FUNDS_GUARD_ENABLED", "1") == "1"
             self._oms = IBKROMS(
                 ib=self._connection_manager.ib,
                 callback=self._callback,
+                enable_funds_guard=enable_funds_guard,
             )
+            if not enable_funds_guard:
+                logger.info("FX Funds Guard DISABLED via FX_FUNDS_GUARD_ENABLED=0")
             
             self._initialized = True
             self._log_event("EXECUTION_INITIALIZED", "info", f"Execution service initialized in {self._mode.value} mode")
