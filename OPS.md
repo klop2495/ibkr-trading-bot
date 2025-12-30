@@ -64,7 +64,7 @@ else:
 ### Env Variables
 
 - `EXECUTION_STRATEGY`: `rules` | `hybrid` | `llm` (default: uses `ACTIVE_STRATEGY` or `rules`)
-- `HYBRID_THRESHOLD`: float (default `0.35`) — порог для `hybrid_score`
+- `HYBRID_THRESHOLD`: float (default `0.7`) — порог для `hybrid_score`
 - `HYBRID_REQUIRE_ENTRY_TRIGGERED`: `0|1` (default `0`) — требовать ли `entry_triggered`
 - `HYBRID_EXECUTION_THRESHOLD`: optional override for execution threshold
 
@@ -72,7 +72,7 @@ else:
 
 ```bash
 EXECUTION_STRATEGY=hybrid
-HYBRID_THRESHOLD=0.35
+HYBRID_THRESHOLD=0.7
 HYBRID_REQUIRE_ENTRY_TRIGGERED=0
 ```
 

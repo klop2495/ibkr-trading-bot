@@ -718,7 +718,7 @@ def _run_execution_tick_hybrid(
     if isinstance(trading_enabled, property) or not trading_enabled:
         return {"executed": 0, "skipped": 0, "errors": 0}
 
-    hybrid_threshold = float(os.getenv("HYBRID_EXECUTION_THRESHOLD", os.getenv("HYBRID_THRESHOLD", "0.35")))
+    hybrid_threshold = float(os.getenv("HYBRID_EXECUTION_THRESHOLD", os.getenv("HYBRID_THRESHOLD", "0.7")))
     require_entry_triggered = os.getenv("HYBRID_REQUIRE_ENTRY_TRIGGERED", "0") != "0"
     params = getattr(settings, "signals_params", None)
     gates = getattr(params, "gates", None)
