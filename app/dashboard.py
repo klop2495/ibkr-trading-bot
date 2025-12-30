@@ -202,6 +202,9 @@ def _close_trade_sync(trade: dict) -> dict:
     Close a forex position via IB Gateway.
     
     Uses separate thread with its own event loop (same pattern as BrokerAccountAPI).
+    
+    IMPORTANT: First checks if position exists at broker. If not, returns
+    success with no_position flag so DB can be updated without opening new position.
     """
     from queue import Queue
     from threading import Thread
@@ -252,6 +255,39 @@ def _close_trade_sync(trade: dict) -> dict:
                 if trade_qty <= 0:
                     result_queue.put({"ok": False, "error": "invalid_quantity"})
                     return
+                
+                # ============ CHECK IF POSITION EXISTS AT BROKER ============
+                # For FX, check cash balances
+                position_exists = False
+                broker_qty = 0.0
+                
+                # Extract base currency from symbol (e.g., USDCHF -> USD)
+                base_ccy = normalized[:3] if len(normalized) >= 6 else normalized
+                
+                for v in ib.accountSummary():
+                    if v.tag == "CashBalance" and v.currency == base_ccy:
+                        try:
+                            broker_qty = abs(float(v.value))
+                            if broker_qty > 100:  # Significant position
+                                position_exists = True
+                                logger.info(f"[ClosePosition] Found {base_ccy} balance: {v.value}")
+                        except:
+                            pass
+                        break
+                
+                if not position_exists:
+                    logger.warning(f"[ClosePosition] No position found at broker for {symbol}. "
+                                  f"Position was likely closed by SL/TP.")
+                    # Return success with flag - position already closed
+                    result_queue.put({
+                        "ok": True, 
+                        "exit_price": None, 
+                        "closed_qty": 0,
+                        "no_position": True,
+                        "message": "Position already closed at broker (SL/TP)"
+                    })
+                    return
+                # ============ END POSITION CHECK ============
                 
                 # Determine close direction
                 if trade_side in ("BUY", "LONG"):
@@ -369,6 +405,27 @@ def close_trade(req: CloseTradeRequest):
     if not result.get("ok"):
         raise HTTPException(status_code=500, detail=result.get("error") or "close_failed")
 
+    # Handle case where position was already closed at broker (SL/TP hit)
+    if result.get("no_position"):
+        logger.info(f"Trade {req.trade_id} position not found at broker - marking as closed")
+        try:
+            db.client.table("trades_history").update({
+                "status": "CLOSED",
+                "close_reason": "RECONCILED_PHANTOM",
+                "closed_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", req.trade_id).execute()
+        except Exception as exc:
+            logger.error(f"Failed to update phantom trade: {exc}")
+        
+        return CloseTradeResponse(
+            status="closed",
+            trade_id=req.trade_id,
+            symbol=trade.get("symbol") or "",
+            closed_quantity=0,
+            exit_price=None,
+            message="Position was already closed at broker (SL/TP)",
+        )
+
     exit_price = result.get("exit_price")
     qty = float(result.get("closed_qty") or trade.get("quantity") or 0)
     entry = trade.get("entry_price")
@@ -406,6 +463,125 @@ def close_trade(req: CloseTradeRequest):
         exit_price=exit_price,
         message="ok",
     )
+
+
+# ============== Reconciliation API ==============
+
+class ReconciliationResponse(BaseModel):
+    """Response from reconciliation endpoint."""
+    timestamp: str
+    broker_connected: bool
+    db_open_trades: int
+    broker_positions: int
+    phantom_trades: List[Dict[str, Any]]
+    orphan_positions: List[Dict[str, Any]]
+    quantity_mismatches: List[Dict[str, Any]]
+    matched: List[str]
+    errors: List[str]
+    summary: str
+    has_issues: bool
+
+
+@app.post("/api/broker/reconcile")
+def run_reconciliation(auto_close: bool = True):
+    """
+    Run position reconciliation between broker and database.
+    
+    Compares positions at IB Gateway with OPEN trades in trades_history.
+    
+    Detects:
+    - Phantom trades: OPEN in DB but no position at broker (SL/TP triggered)
+    - Orphan positions: Position at broker but no record in DB
+    - Quantity mismatches: Position size differs
+    
+    Args:
+        auto_close: If True, automatically mark phantom trades as CLOSED
+    
+    Returns:
+        ReconciliationReport with findings and actions taken.
+    """
+    try:
+        from app.reconciliation.position_reconciler import PositionReconciler
+        
+        db = get_db()
+        reconciler = PositionReconciler(
+            db=db,
+            auto_close_phantoms=auto_close,
+            auto_create_orphans=False,
+        )
+        
+        report = reconciler.run()
+        
+        return {
+            "timestamp": report.timestamp.isoformat(),
+            "broker_connected": report.broker_connected,
+            "db_open_trades": report.db_open_trades,
+            "broker_positions": report.broker_positions,
+            "phantom_trades": [
+                {
+                    "symbol": r.symbol,
+                    "action": r.action.value,
+                    "db_trade_id": r.db_trade_id,
+                    "db_quantity": r.db_quantity,
+                    "db_side": r.db_side,
+                    "message": r.message,
+                }
+                for r in report.phantom_trades
+            ],
+            "orphan_positions": [
+                {
+                    "symbol": r.symbol,
+                    "action": r.action.value,
+                    "broker_quantity": r.broker_quantity,
+                    "message": r.message,
+                }
+                for r in report.orphan_positions
+            ],
+            "quantity_mismatches": [
+                {
+                    "symbol": r.symbol,
+                    "db_trade_id": r.db_trade_id,
+                    "db_quantity": r.db_quantity,
+                    "broker_quantity": r.broker_quantity,
+                    "message": r.message,
+                }
+                for r in report.quantity_mismatches
+            ],
+            "matched": report.matched,
+            "errors": report.errors,
+            "summary": report.summary,
+            "has_issues": report.has_issues,
+        }
+    except Exception as e:
+        logger.error(f"Reconciliation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/broker/reconcile/status")
+def get_reconciliation_status():
+    """
+    Quick check for position mismatches without running full reconciliation.
+    
+    Returns count of OPEN trades in DB for comparison.
+    """
+    db = get_db()
+    try:
+        result = db.client.table("trades_history").select("id, symbol, side, quantity").eq("status", "OPEN").execute()
+        trades = result.data or []
+        return {
+            "db_open_trades": len(trades),
+            "trades": [
+                {
+                    "id": t.get("id"),
+                    "symbol": t.get("symbol"),
+                    "side": t.get("side"),
+                    "quantity": t.get("quantity"),
+                }
+                for t in trades
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/parallel-decisions", response_model=List[ParallelDecisionSummary])
