@@ -202,184 +202,144 @@ def _close_trade_sync(trade: dict) -> dict:
     """
     Close a forex position via IB Gateway.
     
-    Note: Forex positions in IB appear as CashBalance entries, not as regular positions.
-    We try multiple methods to find the position:
-    1. First check ib.positions() (works for some account types)
-    2. Fallback to using trade quantity directly from our DB record
-    
-    IMPORTANT: ib_insync requires its own event loop, so we create one in this thread.
+    Uses subprocess to run IB operations in a completely separate process
+    to avoid event loop conflicts with FastAPI/uvicorn.
     """
-    import asyncio
+    import subprocess
+    import json
+    
+    trade_json = json.dumps(trade)
+    
+    # Python script to run in subprocess
+    script = f'''
+import asyncio
+import json
+import os
+import sys
+
+def main():
     from ib_insync import IB, Forex, MarketOrder
     
-    # Create a new event loop for this thread (ib_insync requirement)
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    except Exception as e:
-        logger.warning(f"[ClosePosition] Could not set event loop: {e}")
-
+    trade = json.loads(""" {trade_json} """)
+    
     host = os.getenv("IB_GATEWAY_HOST") or os.getenv("IBKR_HOST", "127.0.0.1")
     port = int(os.getenv("IB_GATEWAY_PORT") or os.getenv("IBKR_PORT", "4004"))
     
-    # Docker container needs to use service name, not localhost
     if host in ("127.0.0.1", "localhost"):
         alt_host = os.getenv("IBKR_HOST")
         if alt_host and alt_host not in ("127.0.0.1", "localhost"):
             host = alt_host
     
-    # Use unique client ID to avoid conflicts with main bot
     client_id = int(os.getenv("IB_CLIENT_ID_MANUAL_CLOSE", "161"))
-
-    logger.info(f"[ClosePosition] Attempting to close trade {trade.get('id')} "
-                f"symbol={trade.get('symbol')} side={trade.get('side')} qty={trade.get('quantity')} "
-                f"host={host}:{port} client_id={client_id}")
-
+    
     ib = IB()
     try:
         ib.connect(host, port, clientId=client_id, timeout=15, readonly=False)
         if not ib.isConnected():
-            logger.error("[ClosePosition] Failed to connect to IB Gateway")
-            return {"ok": False, "error": "ib_not_connected"}
+            print(json.dumps({{"ok": False, "error": "ib_not_connected"}}))
+            return
         
-        logger.info("[ClosePosition] Connected to IB Gateway")
-
         symbol = trade.get("symbol") or ""
-        normalized_symbol = _normalize_symbol(symbol)
+        normalized = symbol.replace(".", "").replace("/", "").replace(" ", "").upper()
         trade_side = (trade.get("side") or "BUY").upper()
         trade_qty = float(trade.get("quantity") or 0)
         
         if trade_qty <= 0:
-            logger.error(f"[ClosePosition] Invalid trade quantity: {trade_qty}")
-            return {"ok": False, "error": "invalid_quantity"}
-
-        # Try to find position in ib.positions()
-        position = 0.0
-        contract = None
+            print(json.dumps({{"ok": False, "error": "invalid_quantity"}}))
+            return
         
-        positions_list = ib.positions()
-        logger.info(f"[ClosePosition] Found {len(positions_list)} positions in IB")
+        # Determine close direction
+        if trade_side in ("BUY", "LONG"):
+            position = trade_qty
+        else:
+            position = -trade_qty
         
-        for p in positions_list:
-            c = getattr(p, "contract", None)
-            if c and _match_position_symbol(c, symbol):
-                position = float(getattr(p, "position", 0) or 0)
-                contract = c
-                logger.info(f"[ClosePosition] Matched position: {symbol} qty={position}")
-                break
-
-        # For forex, positions may not appear in ib.positions() - they appear as CashBalance
-        # In this case, use the trade quantity from our DB and create the contract
-        if position == 0:
-            logger.warning(f"[ClosePosition] Position not found in ib.positions() for {symbol}, "
-                          f"using DB quantity: {trade_qty}")
-            # Determine close direction based on trade side
-            # If original trade was BUY (LONG), we need to SELL to close
-            # If original trade was SELL (SHORT), we need to BUY to close
-            if trade_side in ("BUY", "LONG"):
-                position = trade_qty  # Positive position, will SELL
-            else:
-                position = -trade_qty  # Negative position, will BUY
-        
-        # Cancel SL/TP bracket orders first
+        # Cancel bracket orders first
         parent_id = trade.get("ib_order_id")
         if parent_id:
-            logger.info(f"[ClosePosition] Cancelling bracket orders for parent_id={parent_id}")
-            cancelled_count = 0
             for open_trade in ib.openTrades():
                 order = getattr(open_trade, "order", None)
-                if not order:
-                    continue
-                order_parent_id = getattr(order, "parentId", None)
-                if order_parent_id == parent_id:
+                if order and getattr(order, "parentId", None) == parent_id:
                     try:
                         ib.cancelOrder(order)
-                        cancelled_count += 1
-                        logger.info(f"[ClosePosition] Cancelled order {getattr(order, 'orderId', '?')}")
-                    except Exception as e:
-                        logger.warning(f"[ClosePosition] Failed to cancel order: {e}")
-            logger.info(f"[ClosePosition] Cancelled {cancelled_count} bracket orders")
-            # Give IB time to process cancellations
+                    except:
+                        pass
             ib.sleep(0.5)
-
-        # Determine close action
+        
         action = "SELL" if position > 0 else "BUY"
         qty = abs(position)
         
-        # Create forex contract
-        # Symbol should be like "EURUSD" -> base="EUR", currency="USD"
-        base = normalized_symbol[:3] if len(normalized_symbol) >= 6 else normalized_symbol
-        quote = normalized_symbol[3:6] if len(normalized_symbol) >= 6 else "USD"
-        
-        if contract is None:
-            contract = Forex(pair=normalized_symbol)
-            # Qualify the contract to get full details
-            try:
-                ib.qualifyContracts(contract)
-                logger.info(f"[ClosePosition] Qualified contract: {contract}")
-            except Exception as e:
-                logger.warning(f"[ClosePosition] Failed to qualify contract: {e}")
-        
-        logger.info(f"[ClosePosition] Placing {action} order for {qty} {normalized_symbol}")
+        contract = Forex(pair=normalized)
+        try:
+            ib.qualifyContracts(contract)
+        except:
+            pass
         
         order = MarketOrder(action, qty)
-        order.tif = "GTC"  # Good till cancelled
+        order.tif = "GTC"
         
         ib_trade = ib.placeOrder(contract, order)
         
-        # Wait for fill with timeout
         timeout_s = 15
         waited = 0.0
         while not ib_trade.isDone() and waited < timeout_s:
             ib.sleep(0.5)
             waited += 0.5
-            if waited % 3 == 0:
-                logger.info(f"[ClosePosition] Waiting for fill... {waited}s")
-
-        # Get exit price
+        
         exit_price = None
-        order_status = getattr(ib_trade, "orderStatus", None)
-        if order_status:
-            exit_price = getattr(order_status, "avgFillPrice", None)
-            status_str = getattr(order_status, "status", "?")
-            logger.info(f"[ClosePosition] Order status: {status_str} avgFillPrice={exit_price}")
+        status = getattr(ib_trade, "orderStatus", None)
+        if status:
+            exit_price = getattr(status, "avgFillPrice", None)
         
         if exit_price in (None, 0):
             fills = getattr(ib_trade, "fills", []) or []
             if fills:
-                last_fill = fills[-1]
-                execution = getattr(last_fill, "execution", None)
+                execution = getattr(fills[-1], "execution", None)
                 if execution:
                     exit_price = getattr(execution, "price", None)
-                    logger.info(f"[ClosePosition] Got exit price from fill: {exit_price}")
-
-        if ib_trade.isDone():
-            logger.info(f"[ClosePosition] Order completed. exit_price={exit_price} qty={qty}")
-            return {"ok": True, "exit_price": exit_price, "closed_qty": qty}
-        else:
-            logger.warning(f"[ClosePosition] Order not completed within timeout. "
-                          f"status={order_status}")
-            # Still return ok=True if order was placed, it may fill later
-            return {"ok": True, "exit_price": exit_price, "closed_qty": qty, 
-                    "warning": "order_pending"}
-
-    except Exception as exc:
-        logger.error(f"[ClosePosition] Exception: {exc}", exc_info=True)
-        return {"ok": False, "error": str(exc)}
+        
+        print(json.dumps({{"ok": True, "exit_price": exit_price, "closed_qty": qty}}))
+        
+    except Exception as e:
+        print(json.dumps({{"ok": False, "error": str(e)}}))
     finally:
         try:
             if ib.isConnected():
                 ib.disconnect()
-                logger.info("[ClosePosition] Disconnected from IB Gateway")
-        except Exception:
+        except:
             pass
-        # Clean up event loop
-        try:
-            loop = asyncio.get_event_loop()
-            if loop and not loop.is_closed():
-                loop.close()
-        except Exception:
-            pass
+
+if __name__ == "__main__":
+    main()
+'''
+    
+    try:
+        logger.info(f"[ClosePosition] Running subprocess for trade {trade.get('id')}")
+        
+        result = subprocess.run(
+            ["python", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            env=os.environ.copy()
+        )
+        
+        logger.info(f"[ClosePosition] Subprocess stdout: {result.stdout}")
+        if result.stderr:
+            logger.warning(f"[ClosePosition] Subprocess stderr: {result.stderr}")
+        
+        if result.returncode != 0:
+            return {"ok": False, "error": f"subprocess_error: {result.stderr}"}
+        
+        import json
+        return json.loads(result.stdout.strip())
+        
+    except subprocess.TimeoutExpired:
+        logger.error("[ClosePosition] Subprocess timeout")
+        return {"ok": False, "error": "timeout"}
+    except Exception as e:
+        logger.error(f"[ClosePosition] Subprocess exception: {e}")
+        return {"ok": False, "error": str(e)}
 
 
 # Thread pool for blocking IB operations
