@@ -697,6 +697,45 @@ class ExecutionService:
             logger.error(f"Failed to calculate exposure: {e}")
             return 0.0
     
+    def _get_broker_position_for_symbol(self, symbol: str) -> Optional[float]:
+        """
+        Check if broker has an open position for symbol.
+        
+        This is the source of truth - prevents opening duplicate positions
+        even if DB is out of sync (AI_RULES 2.5).
+        
+        Returns:
+            Position quantity if exists (positive=long, negative=short), None if no position.
+        """
+        if not self._connection_manager or not self._connection_manager.ib:
+            logger.warning("Cannot check broker positions: no IB connection")
+            return None
+        
+        try:
+            ib = self._connection_manager.ib
+            if not ib.isConnected():
+                logger.warning("Cannot check broker positions: IB not connected")
+                return None
+            
+            # Normalize symbol for comparison (EURUSD -> EUR, USD)
+            symbol_upper = symbol.upper().replace(".", "").replace("/", "")
+            
+            # Check ib.positions() for FX positions
+            for pos in ib.positions():
+                contract = pos.contract
+                if contract.secType == "CASH":
+                    # FX position: symbol=EUR, currency=USD -> EURUSD
+                    pos_symbol = f"{contract.symbol}{contract.currency}".upper()
+                    if pos_symbol == symbol_upper and pos.position != 0:
+                        logger.info(f"Broker has position for {symbol}: {pos.position}")
+                        return float(pos.position)
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to check broker position for {symbol}: {e}")
+            return None
+    
     # ========== Phase 7: Performance Tracking ==========
     
     def record_agent_data_for_trade(
@@ -964,6 +1003,28 @@ class ExecutionService:
             
             # NOTE: Symbol-level position check is now handled atomically below
             # via try_acquire_symbol_lock to prevent race conditions (AI_RULES 2.5)
+            
+            # P0-C: Check broker positions FIRST - this is source of truth
+            # Prevents opening duplicate positions even if DB is out of sync
+            if self._mode in (ExecutionMode.PAPER, ExecutionMode.LIVE):
+                broker_position = self._get_broker_position_for_symbol(decision.symbol)
+                if broker_position is not None and broker_position != 0:
+                    self._log_event(
+                        "EXECUTION_BLOCKED",
+                        "warn",
+                        f"Broker already has position in {decision.symbol}: {broker_position}",
+                        {
+                            "decision_id": str(decision.id),
+                            "symbol": decision.symbol,
+                            "broker_position": broker_position,
+                        },
+                    )
+                    return ExecutionResult(
+                        executed=False,
+                        mode=self._mode,
+                        symbol=decision.symbol,
+                        reason=f"broker_has_position:{broker_position}",
+                    )
         except Exception as exc:
             self._log_event(
                 "EXECUTION_BLOCKED",

@@ -319,10 +319,44 @@ class PositionReconciler:
         broker_symbols = set(self._normalize_symbol(s) for s in broker_positions.keys())
         db_symbols = set(db_by_symbol.keys())
         
+        # SAFETY CHECK: If DB has trades but broker shows 0 positions, something is wrong
+        # Don't do phantom cleanup in this case - likely a connection issue
+        if len(db_trades) > 0 and len(broker_positions) == 0:
+            logger.warning(
+                f"[Reconciler] SAFETY: DB has {len(db_trades)} open trades but broker shows 0 positions. "
+                "Skipping phantom cleanup to avoid false positives."
+            )
+            report.errors.append(
+                f"Safety skip: DB has {len(db_trades)} trades but broker has 0 - possible connection issue"
+            )
+            # Still report matched symbols (empty in this case)
+            return
+        
         # Find phantom trades (in DB but not at broker)
         phantom_symbols = db_symbols - broker_symbols
         for symbol in phantom_symbols:
             trade = db_by_symbol[symbol]
+            
+            # GRACE PERIOD: Don't mark as phantom if trade is less than 5 minutes old
+            # This prevents race conditions during order execution
+            opened_at = trade.get("opened_at") or trade.get("created_at")
+            if opened_at:
+                try:
+                    if isinstance(opened_at, str):
+                        from dateutil import parser
+                        opened_time = parser.parse(opened_at)
+                    else:
+                        opened_time = opened_at
+                    
+                    age_seconds = (datetime.now(timezone.utc) - opened_time.replace(tzinfo=timezone.utc)).total_seconds()
+                    if age_seconds < 300:  # 5 minutes grace period
+                        logger.info(
+                            f"[Reconciler] Skipping {symbol} phantom check - trade is only {age_seconds:.0f}s old"
+                        )
+                        continue
+                except Exception as e:
+                    logger.warning(f"[Reconciler] Could not parse opened_at for {symbol}: {e}")
+            
             result = ReconciliationResult(
                 symbol=symbol,
                 action=ReconciliationAction.CLOSED_PHANTOM if self.auto_close_phantoms else ReconciliationAction.NONE,
