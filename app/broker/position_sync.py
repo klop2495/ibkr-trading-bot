@@ -62,6 +62,14 @@ class SyncReport:
         )
 
 
+# Standard FX pairs we trade - only these should be considered for sync
+TRADABLE_FX_PAIRS = {
+    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
+    "EURGBP", "EURJPY", "GBPJPY", "AUDJPY", "CADJPY", "CHFJPY", "NZDJPY",
+    "EURAUD", "GBPAUD",
+}
+
+
 class PositionSyncService:
     """
     Synchronizes positions between broker and database.
@@ -84,6 +92,7 @@ class PositionSyncService:
         ib=None,  # ib_insync IB instance (optional, can be set later)
         auto_close_phantoms: bool = True,
         log_callback: Optional[callable] = None,
+        tradable_pairs: Optional[Set[str]] = None,
     ):
         """
         Initialize sync service.
@@ -93,11 +102,13 @@ class PositionSyncService:
             ib: ib_insync IB instance (can be None, set via set_ib())
             auto_close_phantoms: Automatically close phantom trades in DB
             log_callback: Optional callback for logging events
+            tradable_pairs: Set of FX pairs to sync (default: TRADABLE_FX_PAIRS)
         """
         self.db = db
         self.ib = ib
         self.auto_close_phantoms = auto_close_phantoms
         self.log_callback = log_callback
+        self.tradable_pairs = tradable_pairs or TRADABLE_FX_PAIRS
         self._last_sync: Optional[datetime] = None
     
     def set_ib(self, ib) -> None:
@@ -175,6 +186,7 @@ class PositionSyncService:
         Get current FX positions from broker.
         
         For FX, positions appear as CashBalance in accountSummary.
+        Only returns positions for tradable FX pairs.
         
         Returns:
             Dict mapping normalized symbol to position info.
@@ -182,53 +194,23 @@ class PositionSyncService:
         positions = {}
         
         try:
-            # Get account summary
-            summary = self.ib.accountSummary()
-            
-            # Find base currency
-            base_currency = "EUR"
-            for item in summary:
-                if item.tag == "Currency":
-                    base_currency = item.value
-                    break
-            
-            # Get cash balances (FX positions)
-            for item in summary:
-                if item.tag == "CashBalance" and item.currency not in ("BASE", base_currency):
-                    try:
-                        balance = float(item.value)
-                        # Significant position threshold
-                        if abs(balance) > 100:
-                            currency = item.currency
-                            # Build symbol (e.g., USD balance -> USDEUR or EURUSD)
-                            symbol = f"{currency}{base_currency}"
-                            normalized = self._normalize_symbol(symbol)
-                            
-                            positions[normalized] = {
-                                "quantity": balance,
-                                "currency": currency,
-                                "base": base_currency,
-                                "side": "BUY" if balance > 0 else "SELL",
-                                "raw_symbol": symbol,
-                            }
-                            logger.debug(f"[PositionSync] Found position: {normalized} qty={balance}")
-                    except (ValueError, TypeError):
-                        pass
-            
-            # Also check ib.positions() for any non-FX or explicit positions
+            # Also check ib.positions() for explicit FX positions
+            # This is more reliable than CashBalance for actual traded positions
             for pos in self.ib.positions():
                 contract = pos.contract
                 if hasattr(contract, 'symbol') and hasattr(contract, 'currency'):
                     symbol = f"{contract.symbol}{contract.currency}"
                     normalized = self._normalize_symbol(symbol)
                     
-                    if normalized not in positions and abs(pos.position) > 0:
+                    # Only include tradable pairs
+                    if normalized in self.tradable_pairs and abs(pos.position) > 0:
                         positions[normalized] = {
                             "quantity": float(pos.position),
                             "avg_cost": float(pos.avgCost) if pos.avgCost else None,
                             "side": "BUY" if pos.position > 0 else "SELL",
                             "raw_symbol": symbol,
                         }
+                        logger.debug(f"[PositionSync] Found position: {normalized} qty={pos.position}")
                         
         except Exception as e:
             logger.error(f"[PositionSync] Error getting broker positions: {e}")
@@ -239,7 +221,7 @@ class PositionSyncService:
         """Get all OPEN trades from database."""
         try:
             result = self.db.client.table("trades_history").select(
-                "id, symbol, side, quantity, entry_price, status, ib_order_id, created_at, stop_loss_price, take_profit_price"
+                "id, symbol, side, quantity, entry_price, status, ib_order_id, created_at"
             ).in_("status", ["OPEN", "SUBMITTED", "PENDING"]).execute()
             return result.data or []
         except Exception as e:
