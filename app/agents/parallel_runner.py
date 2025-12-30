@@ -392,9 +392,9 @@ class ParallelDecisionRunner:
         # Determine signal
         if risk_veto:
             hybrid_signal = "HOLD"
-        elif hybrid_score > HYBRID_THRESHOLD:
+        elif hybrid_score >= HYBRID_THRESHOLD:
             hybrid_signal = "LONG"
-        elif hybrid_score < -HYBRID_THRESHOLD:
+        elif hybrid_score <= -HYBRID_THRESHOLD:
             hybrid_signal = "SHORT"
         else:
             hybrid_signal = "HOLD"
