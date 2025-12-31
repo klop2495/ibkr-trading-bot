@@ -93,6 +93,7 @@ def test_sync_creates_orphan_position_record():
     ib._positions = [position]
     trades_repo = MagicMock()
     trades_repo.get_active_trades_full.return_value = []
+    trades_repo.get_latest_orphan.return_value = None
     trades_repo.create_trade.return_value = "trade1"
     service = BrokerStateService(ib=ib, trades_history_repo=trades_repo)
     result = service.sync_with_db()
@@ -112,6 +113,7 @@ def test_sync_closes_trade_with_sl_hit():
     }
     trades_repo = MagicMock()
     trades_repo.get_active_trades_full.return_value = [trade]
+    trades_repo.get_latest_orphan.return_value = None
     trades_repo.close_trade.return_value = None
     exec_obj = SimpleNamespace(
         time=datetime.now(timezone.utc),
@@ -148,6 +150,7 @@ def test_orphan_orders_logged_without_cancel():
     ib._open_trades = [trade]
     trades_repo = MagicMock()
     trades_repo.get_active_trades_full.return_value = []
+    trades_repo.get_latest_orphan.return_value = None
     risk_events_repo = MagicMock()
     service = BrokerStateService(
         ib=ib,
@@ -218,3 +221,24 @@ def test_oms_fill_after_restart_uses_db_fallback():
     oms._on_exec_details(trade, fill)
     assert len(callback.fill_events) == 1
     assert callback.fill_events[0].ib_order_id == 77
+
+
+def test_orphan_dedup_skips_recent_orphan():
+    ib = MockIB()
+    position = SimpleNamespace(
+        contract=_fx_contract("EUR", "USD"),
+        position=10000,
+        avgCost=1.05,
+        unrealizedPNL=0.0,
+    )
+    ib._positions = [position]
+    trades_repo = MagicMock()
+    trades_repo.get_active_trades_full.return_value = []
+    trades_repo.get_latest_orphan.return_value = {
+        "id": "orphan1",
+        "opened_at": datetime.now(timezone.utc).isoformat(),
+    }
+    service = BrokerStateService(ib=ib, trades_history_repo=trades_repo)
+    result = service.sync_with_db()
+    assert "orphan_recent_exists:EURUSD" in result.mismatches
+    trades_repo.create_trade.assert_not_called()

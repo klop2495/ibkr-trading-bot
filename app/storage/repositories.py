@@ -518,6 +518,19 @@ class TradesHistoryRepo(BaseRepo):
         rows = self.get_active_trades_full()
         return [row for row in rows if row.get("ib_order_id") is not None]
 
+    def get_latest_orphan(self, symbol: str) -> Optional[dict]:
+        """Get most recent ORPHAN_POSITION trade for a symbol."""
+        res = (
+            self.db.client.table(self.table)
+            .select("id, symbol, status, opened_at, created_at")
+            .eq("symbol", symbol)
+            .eq("status", "ORPHAN_POSITION")
+            .order("opened_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+
     def count_active_trades(self, symbol: Optional[str] = None) -> int:
         """Count active trades (PENDING/SUBMITTED/OPEN), optionally by symbol."""
         active = self.get_active_trades(symbol=symbol)

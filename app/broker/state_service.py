@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.models.broker_state import (
@@ -17,6 +17,7 @@ from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
 
 logger = logging.getLogger(__name__)
 
+ORPHAN_DEDUP_WINDOW = timedelta(minutes=10)
 
 class BrokerConnectionError(RuntimeError):
     """Raised when broker state is requested without an active connection."""
@@ -249,6 +250,21 @@ class BrokerStateService:
                 return None
         return None
 
+    def _get_recent_orphan(self, symbol: str) -> Optional[dict]:
+        if not self._trades_history_repo:
+            return None
+        try:
+            return self._trades_history_repo.get_latest_orphan(symbol)
+        except Exception:
+            return None
+
+    def _is_recent_orphan(self, orphan: dict, now: datetime) -> bool:
+        opened_at = orphan.get("opened_at") or orphan.get("created_at")
+        ts = self._parse_ib_time(opened_at) if opened_at else None
+        if not ts:
+            return False
+        return (now - ts) <= ORPHAN_DEDUP_WINDOW
+
     def _close_reason_from_price(
         self,
         symbol: str,
@@ -361,7 +377,12 @@ class BrokerStateService:
                     if len(db_list) > 1:
                         result.mismatches.append(f"multiple_db_trades:{symbol}:{len(db_list)}")
                     db_trade = db_list[0]
-                    db_qty = float(db_trade.get("quantity") or 0.0)
+                    raw_qty = float(db_trade.get("quantity") or 0.0)
+                    side = str(db_trade.get("side") or "").upper()
+                    if side.startswith("S"):
+                        db_qty = -abs(raw_qty)
+                    else:
+                        db_qty = abs(raw_qty)
                     if abs(db_qty - position.quantity) > 1e-6:
                         result.mismatches.append(
                             f"quantity_mismatch:{symbol}:db={db_qty}:broker={position.quantity}"
@@ -369,6 +390,11 @@ class BrokerStateService:
                     continue
 
                 # CASE B: broker has position, DB missing -> create orphan record
+                now_ts = self._now()
+                orphan = self._get_recent_orphan(symbol)
+                if orphan and self._is_recent_orphan(orphan, now_ts):
+                    result.mismatches.append(f"orphan_recent_exists:{symbol}")
+                    continue
                 side = "BUY" if position.quantity > 0 else "SELL"
                 try:
                     self._trades_history_repo.create_trade(
