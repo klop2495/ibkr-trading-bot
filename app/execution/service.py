@@ -23,6 +23,7 @@ from app.broker.connection_manager import (
     ConnectionState,
     IBKRConnectionManager,
 )
+from app.broker.state_service import BrokerConnectionError, BrokerStateService
 from app.broker.oms import (
     IBKROMS,
     IBKROrderCallback,
@@ -38,6 +39,7 @@ from app.models.bot_settings import BotSettings
 from app.models.decision import DecisionV1
 from app.models.risk_verdict import RiskVerdictV1
 from app.pm.position_sizer import PositionSizer, PositionSizerConfig, PositionSizeResult
+from app.storage.bot_settings_repo import BotSettingsRepo
 from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
 
 # Phase 7: Import performance tracker
@@ -366,11 +368,17 @@ class ExecutionService:
         risk_events_repo: Optional[RiskEventsRepo] = None,
         trades_history_repo: Optional[TradesHistoryRepo] = None,
         connection_config: Optional[ConnectionConfig] = None,
+        broker_state_service: Optional[BrokerStateService] = None,
+        bot_settings_repo: Optional[BotSettingsRepo] = None,
+        owner_user_id: Optional[str] = None,
         performance_tracker: Optional['AgentPerformanceTracker'] = None,  # Phase 7
     ):
         self.risk_events_repo = risk_events_repo
         self.trades_history_repo = trades_history_repo
         self.connection_config = connection_config
+        self._broker_state_service = broker_state_service
+        self._bot_settings_repo = bot_settings_repo
+        self._owner_user_id = owner_user_id
         
         # Components (lazy init)
         self._connection_manager: Optional[IBKRConnectionManager] = None
@@ -498,6 +506,13 @@ class ExecutionService:
                 logger.error("Failed to connect to IBKR")
                 self._log_event("EXECUTION_INIT_FAILED", "error", "Failed to connect to IBKR")
                 return False
+
+            if self._broker_state_service is None:
+                self._broker_state_service = BrokerStateService(
+                    ib=self._connection_manager.ib,
+                    trades_history_repo=self.trades_history_repo,
+                    risk_events_repo=self.risk_events_repo,
+                )
             
             # OMS - check if funds guard should be enabled
             enable_funds_guard = os.getenv("FX_FUNDS_GUARD_ENABLED", "1") == "1"
@@ -505,6 +520,10 @@ class ExecutionService:
                 ib=self._connection_manager.ib,
                 callback=self._callback,
                 enable_funds_guard=enable_funds_guard,
+                trades_history_repo=self.trades_history_repo,
+                risk_events_repo=self.risk_events_repo,
+                disable_trading_callback=self._disable_trading,
+                sync_lock=self._broker_state_service.sync_lock if self._broker_state_service else None,
             )
             if not enable_funds_guard:
                 logger.info("FX Funds Guard DISABLED via FX_FUNDS_GUARD_ENABLED=0")
@@ -707,6 +726,13 @@ class ExecutionService:
         Returns:
             Position quantity if exists (positive=long, negative=short), None if no position.
         """
+        if self._broker_state_service:
+            try:
+                position = self._broker_state_service.get_position(symbol)
+                return position.quantity if position else None
+            except BrokerConnectionError:
+                return None
+
         if not self._connection_manager or not self._connection_manager.ib:
             logger.warning("Cannot check broker positions: no IB connection")
             return None
@@ -1007,24 +1033,64 @@ class ExecutionService:
             # P0-C: Check broker positions FIRST - this is source of truth
             # Prevents opening duplicate positions even if DB is out of sync
             if self._mode in (ExecutionMode.PAPER, ExecutionMode.LIVE):
-                broker_position = self._get_broker_position_for_symbol(decision.symbol)
-                if broker_position is not None and broker_position != 0:
+                if self._broker_state_service and not self._broker_state_service.is_healthy():
                     self._log_event(
                         "EXECUTION_BLOCKED",
                         "warn",
-                        f"Broker already has position in {decision.symbol}: {broker_position}",
-                        {
-                            "decision_id": str(decision.id),
-                            "symbol": decision.symbol,
-                            "broker_position": broker_position,
-                        },
+                        f"Broker not connected for {decision.symbol}",
+                        {"decision_id": str(decision.id), "symbol": decision.symbol},
                     )
                     return ExecutionResult(
                         executed=False,
                         mode=self._mode,
                         symbol=decision.symbol,
-                        reason=f"broker_has_position:{broker_position}",
+                        reason="broker_disconnected",
                     )
+                if self._broker_state_service and self._broker_state_service.has_position(decision.symbol):
+                    self._log_event(
+                        "EXECUTION_BLOCKED",
+                        "warn",
+                        f"Broker already has position in {decision.symbol}",
+                        {"decision_id": str(decision.id), "symbol": decision.symbol},
+                    )
+                    return ExecutionResult(
+                        executed=False,
+                        mode=self._mode,
+                        symbol=decision.symbol,
+                        reason="broker_has_position",
+                    )
+                if self._broker_state_service and self._broker_state_service.has_pending_orders(decision.symbol):
+                    self._log_event(
+                        "EXECUTION_BLOCKED",
+                        "warn",
+                        f"Broker has pending orders for {decision.symbol}",
+                        {"decision_id": str(decision.id), "symbol": decision.symbol},
+                    )
+                    return ExecutionResult(
+                        executed=False,
+                        mode=self._mode,
+                        symbol=decision.symbol,
+                        reason="broker_has_open_orders",
+                    )
+                if not self._broker_state_service:
+                    broker_position = self._get_broker_position_for_symbol(decision.symbol)
+                    if broker_position is not None and broker_position != 0:
+                        self._log_event(
+                            "EXECUTION_BLOCKED",
+                            "warn",
+                            f"Broker already has position in {decision.symbol}: {broker_position}",
+                            {
+                                "decision_id": str(decision.id),
+                                "symbol": decision.symbol,
+                                "broker_position": broker_position,
+                            },
+                        )
+                        return ExecutionResult(
+                            executed=False,
+                            mode=self._mode,
+                            symbol=decision.symbol,
+                            reason=f"broker_has_position:{broker_position}",
+                        )
         except Exception as exc:
             self._log_event(
                 "EXECUTION_BLOCKED",
@@ -1156,6 +1222,29 @@ class ExecutionService:
                 quantity=size_result.units,
                 reason=f"leverage_exceeded:{new_total_exposure:.0f}/{max_exposure:.0f}",
             )
+
+        # Broker state final gate before placing orders
+        if self._mode in (ExecutionMode.PAPER, ExecutionMode.LIVE) and self._broker_state_service:
+            can_open, reason = self._broker_state_service.can_open_position(
+                decision.symbol,
+                side.value,
+                size_result.units,
+            )
+            if not can_open:
+                self._log_event(
+                    "EXECUTION_BLOCKED",
+                    "warn",
+                    f"Broker state blocked open for {decision.symbol}: {reason}",
+                    {"decision_id": str(decision.id), "symbol": decision.symbol, "reason": reason},
+                )
+                return ExecutionResult(
+                    executed=False,
+                    mode=self._mode,
+                    symbol=decision.symbol,
+                    side=side,
+                    quantity=size_result.units,
+                    reason=f"broker_blocked:{reason}",
+                )
         
         # Calculate SL/TP prices if we have distances and a price
         sl_price = None
@@ -1450,6 +1539,20 @@ class ExecutionService:
                 message=message,
                 data=data or {},
             )
+
+    def _disable_trading(self, reason: str) -> None:
+        if not self._bot_settings_repo or not self._owner_user_id:
+            return
+        try:
+            self._bot_settings_repo.update(self._owner_user_id, {"trading_enabled": False})
+        except Exception:
+            pass
+        self._log_event(
+            event_type="EXECUTION_DISABLED",
+            severity="CRITICAL",
+            message=f"Trading disabled: {reason}",
+            data={"reason": reason},
+        )
     
     def _record_trade_pending(
         self,

@@ -500,6 +500,24 @@ class TradesHistoryRepo(BaseRepo):
         res = query.execute()
         return getattr(res, "data", None) or []
 
+    def get_active_trades_full(self) -> list[dict]:
+        """Get active trades with full details needed for broker sync."""
+        res = (
+            self.db.client.table(self.table)
+            .select(
+                "id, symbol, status, side, quantity, entry_price, stop_loss, "
+                "take_profit, opened_at, created_at, ib_order_id, mode"
+            )
+            .in_("status", ["PENDING", "SUBMITTED", "OPEN"])
+            .execute()
+        )
+        return getattr(res, "data", None) or []
+
+    def get_active_trades_with_ib_order_id(self) -> list[dict]:
+        """Get active trades that have an ib_order_id for OMS restore."""
+        rows = self.get_active_trades_full()
+        return [row for row in rows if row.get("ib_order_id") is not None]
+
     def count_active_trades(self, symbol: Optional[str] = None) -> int:
         """Count active trades (PENDING/SUBMITTED/OPEN), optionally by symbol."""
         active = self.get_active_trades(symbol=symbol)

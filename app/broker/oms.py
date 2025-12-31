@@ -9,14 +9,18 @@ Handles order lifecycle:
 - Cancel/modify orders
 """
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
+import threading
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.order_intent import OrderIntentV1
+from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
 
 # FX Funds Guard for pre-checking available currency
 try:
@@ -202,10 +206,18 @@ class IBKROMS:
         callback: Optional[IBKROrderCallback] = None,
         default_account: Optional[str] = None,
         enable_funds_guard: bool = True,
+        trades_history_repo: Optional[TradesHistoryRepo] = None,
+        risk_events_repo: Optional[RiskEventsRepo] = None,
+        disable_trading_callback: Optional[Callable[[str], None]] = None,
+        sync_lock: Optional[threading.RLock] = None,
     ) -> None:
         self.ib = ib
         self.callback = callback or IBKROrderCallback()
         self.default_account = default_account
+        self._trades_history_repo = trades_history_repo
+        self._risk_events_repo = risk_events_repo
+        self._disable_trading_callback = disable_trading_callback
+        self._sync_lock = sync_lock
         
         # Track active orders
         self._orders: Dict[UUID, IBKROrderState] = {}
@@ -225,6 +237,9 @@ class IBKROMS:
         
         # Register event handlers
         self._register_handlers()
+
+        # Restore order mappings from DB on startup
+        self.restore_order_mapping_from_db()
     
     def _register_handlers(self) -> None:
         """Register ib_insync event handlers."""
@@ -243,6 +258,111 @@ class IBKROMS:
             self.ib.execDetailsEvent -= self._on_exec_details
         if hasattr(self.ib, "errorEvent"):
             self.ib.errorEvent -= self._on_error
+
+    def set_sync_lock(self, sync_lock: Optional[threading.RLock]) -> None:
+        """Attach a sync lock to block event processing during broker sync."""
+        self._sync_lock = sync_lock
+
+    @contextmanager
+    def _sync_guard(self):
+        if self._sync_lock:
+            self._sync_lock.acquire()
+            try:
+                yield
+            finally:
+                self._sync_lock.release()
+        else:
+            yield
+
+    def _log_critical(self, message: str, data: Optional[dict] = None) -> None:
+        if not self._risk_events_repo:
+            return
+        try:
+            self._risk_events_repo.insert(
+                event_type="BROKER_OMS_CRITICAL",
+                severity="CRITICAL",
+                message=message,
+                data=data or {},
+            )
+        except Exception:
+            pass
+
+    def _disable_trading(self, reason: str) -> None:
+        if not self._disable_trading_callback:
+            return
+        try:
+            self._disable_trading_callback(reason)
+        except Exception:
+            pass
+
+    def restore_order_mapping_from_db(self) -> None:
+        """Restore ib_order_id -> request_id mapping from trades_history."""
+        if not self._trades_history_repo:
+            return
+
+        trades = []
+        try:
+            trades = self._trades_history_repo.get_active_trades_with_ib_order_id()
+        except Exception:
+            return
+
+        seen: Dict[int, dict] = {}
+        duplicates: Dict[int, List[str]] = {}
+        for trade in trades:
+            ib_order_id = trade.get("ib_order_id")
+            if ib_order_id is None:
+                continue
+            if ib_order_id in seen:
+                duplicates.setdefault(int(ib_order_id), []).append(str(trade.get("id")))
+                continue
+            seen[int(ib_order_id)] = trade
+
+        if duplicates:
+            self._log_critical(
+                "Duplicate ib_order_id detected in trades_history",
+                {"duplicates": duplicates},
+            )
+            self._disable_trading("duplicate_ib_order_id")
+            return
+
+        for ib_order_id, trade in seen.items():
+            if ib_order_id in self._ib_to_request:
+                continue
+            request_id = uuid4()
+            self._ib_to_request[int(ib_order_id)] = request_id
+            state = IBKROrderState(request_id=request_id, ib_order_id=int(ib_order_id))
+            trade_status = str(trade.get("status") or "").upper()
+            if trade_status in ("OPEN",):
+                state.status = OrderStatus.FILLED
+            elif trade_status in ("SUBMITTED",):
+                state.status = OrderStatus.SUBMITTED
+            elif trade_status in ("PENDING",):
+                state.status = OrderStatus.PENDING
+            else:
+                state.status = OrderStatus.PENDING
+            self._orders[request_id] = state
+
+    def _resolve_request_id(self, ib_order_id: int, trade: Optional[Any] = None) -> Optional[UUID]:
+        request_id = self._ib_to_request.get(ib_order_id)
+        if request_id:
+            return request_id
+        if ib_order_id in self._bracket_children:
+            return self._bracket_children.get(ib_order_id)
+        if trade:
+            parent_id = getattr(getattr(trade, "order", None), "parentId", None)
+            if parent_id and parent_id in self._ib_to_request:
+                return self._ib_to_request.get(parent_id)
+        if self._trades_history_repo:
+            try:
+                trade_row = self._trades_history_repo.get_trade_by_ib_order_id(ib_order_id)
+            except Exception:
+                trade_row = None
+            if trade_row:
+                request_id = uuid4()
+                self._ib_to_request[ib_order_id] = request_id
+                self._orders[request_id] = IBKROrderState(request_id=request_id, ib_order_id=ib_order_id)
+                return request_id
+        return None
     
     def _map_status(self, ib_status: str) -> OrderStatus:
         """Map IBKR status string to OrderStatus enum."""
@@ -261,108 +381,112 @@ class IBKROMS:
     
     def _on_order_status(self, trade: Any) -> None:
         """Handle order status event from ib_insync."""
-        ib_order_id = getattr(trade.order, "orderId", None)
-        if ib_order_id is None:
-            return
-        
-        # Check if this is a main order or bracket child
-        request_id = self._ib_to_request.get(ib_order_id)
-        if request_id is None:
-            # Check if it's a bracket child order
-            request_id = self._bracket_children.get(ib_order_id)
-        if request_id is None:
-            return
-            
-        state = self._orders.get(request_id)
-        if state is None:
-            return
-        
-        role = None
-        if ib_order_id == state.ib_order_id:
-            role = "PARENT"
-        elif ib_order_id in self._bracket_children:
-            role = self._bracket_child_types.get(ib_order_id, "CHILD")
-        
-        order_status = getattr(trade, "orderStatus", None)
-        if order_status:
-            mapped_status = self._map_status(order_status.status)
-            state.last_update_order_id = ib_order_id
-            state.last_update_order_role = role
-            state.last_update_order_status = mapped_status
-            state.updated_at = datetime.now(timezone.utc)
-            
-            if role == "PARENT" or role is None:
-                state.status = mapped_status
-                state.filled_quantity = getattr(order_status, "filled", 0.0)
-                state.avg_fill_price = getattr(order_status, "avgFillPrice", None)
-            
-            self.callback.on_order_status(state)
+        with self._sync_guard():
+            ib_order_id = getattr(trade.order, "orderId", None)
+            if ib_order_id is None:
+                return
+
+            request_id = self._resolve_request_id(int(ib_order_id), trade=trade)
+            if request_id is None:
+                return
+
+            state = self._orders.get(request_id)
+            if state is None:
+                state = IBKROrderState(request_id=request_id, ib_order_id=int(ib_order_id))
+                self._orders[request_id] = state
+
+            role = None
+            if ib_order_id == state.ib_order_id:
+                role = "PARENT"
+            elif ib_order_id in self._bracket_children:
+                role = self._bracket_child_types.get(ib_order_id, "CHILD")
+            elif getattr(trade.order, "parentId", None):
+                role = "CHILD"
+
+            order_status = getattr(trade, "orderStatus", None)
+            if order_status:
+                mapped_status = self._map_status(order_status.status)
+                state.last_update_order_id = ib_order_id
+                state.last_update_order_role = role
+                state.last_update_order_status = mapped_status
+                state.updated_at = datetime.now(timezone.utc)
+
+                if role == "PARENT" or role is None:
+                    state.status = mapped_status
+                    state.filled_quantity = getattr(order_status, "filled", 0.0)
+                    state.avg_fill_price = getattr(order_status, "avgFillPrice", None)
+
+                self.callback.on_order_status(state)
     
     def _on_exec_details(self, trade: Any, fill: Any) -> None:
         """Handle execution/fill event."""
-        ib_order_id = getattr(trade.order, "orderId", None)
-        if ib_order_id is None:
-            return
-        
-        role = None
-        parent_ib_order_id = None
-        
-        request_id = self._ib_to_request.get(ib_order_id)
-        if request_id is None:
-            request_id = self._bracket_children.get(ib_order_id)
-            if request_id is not None:
+        with self._sync_guard():
+            ib_order_id = getattr(trade.order, "orderId", None)
+            if ib_order_id is None:
+                return
+
+            role = None
+            parent_ib_order_id = None
+
+            request_id = self._resolve_request_id(int(ib_order_id), trade=trade)
+            if request_id is None:
+                return
+
+            if ib_order_id in self._bracket_children:
                 role = self._bracket_child_types.get(ib_order_id, "CHILD")
-        else:
-            role = "PARENT"
-        
-        if request_id is None:
-            return
-        
-        exec_id = getattr(fill.execution, "execId", "")
-        fill_time = getattr(fill.execution, "time", datetime.now(timezone.utc))
-        quantity = getattr(fill.execution, "shares", 0.0)
-        price = getattr(fill.execution, "price", 0.0)
-        commission = getattr(fill.commissionReport, "commission", 0.0) if fill.commissionReport else 0.0
-        
-        # Map child fill to parent order id (used for trade close)
-        state = self._orders.get(request_id)
-        if state and state.ib_order_id:
-            parent_ib_order_id = state.ib_order_id
-        
-        ibkr_fill = IBKRFill(
-            request_id=request_id,
-            ib_order_id=ib_order_id,
-            ib_exec_id=exec_id,
-            fill_time=fill_time,
-            quantity=quantity,
-            price=price,
-            commission=commission,
-            order_role=role,
-            parent_ib_order_id=parent_ib_order_id,
-        )
-        
-        # Update state
-        state = self._orders.get(request_id)
-        if state:
-            state.commission += commission
-            state.last_fill_time = fill_time
-            state.updated_at = datetime.now(timezone.utc)
-        
-        self.callback.on_fill(ibkr_fill)
+            elif getattr(trade.order, "parentId", None):
+                role = "CHILD"
+            else:
+                role = "PARENT"
+
+            exec_id = getattr(fill.execution, "execId", "")
+            fill_time = getattr(fill.execution, "time", datetime.now(timezone.utc))
+            quantity = getattr(fill.execution, "shares", 0.0)
+            price = getattr(fill.execution, "price", 0.0)
+            commission = getattr(fill.commissionReport, "commission", 0.0) if fill.commissionReport else 0.0
+
+            # Map child fill to parent order id (used for trade close)
+            state = self._orders.get(request_id)
+            if state and state.ib_order_id:
+                parent_ib_order_id = state.ib_order_id
+
+            ibkr_fill = IBKRFill(
+                request_id=request_id,
+                ib_order_id=int(ib_order_id),
+                ib_exec_id=exec_id,
+                fill_time=fill_time,
+                quantity=quantity,
+                price=price,
+                commission=commission,
+                order_role=role,
+                parent_ib_order_id=parent_ib_order_id,
+            )
+
+            # Update state
+            state = self._orders.get(request_id)
+            if state:
+                state.commission += commission
+                state.last_fill_time = fill_time
+                state.updated_at = datetime.now(timezone.utc)
+
+            self.callback.on_fill(ibkr_fill)
     
     def _on_error(self, reqId: int, errorCode: int, errorString: str, contract: Any) -> None:
         """Handle error event."""
-        # Map reqId to request_id if possible
-        request_id = self._ib_to_request.get(reqId)
-        if request_id is None:
-            request_id = self._bracket_children.get(reqId)
-        if request_id and request_id in self._orders:
-            state = self._orders[request_id]
-            state.status = OrderStatus.ERROR
-            state.error_message = f"{errorCode}: {errorString}"
-            state.updated_at = datetime.now(timezone.utc)
-            
-            self.callback.on_error(request_id, state.error_message)
+        with self._sync_guard():
+            # Map reqId to request_id if possible
+            request_id = self._ib_to_request.get(reqId)
+            if request_id is None:
+                request_id = self._bracket_children.get(reqId)
+            if request_id is None:
+                request_id = self._resolve_request_id(reqId)
+            if request_id and request_id in self._orders:
+                state = self._orders[request_id]
+                state.status = OrderStatus.ERROR
+                state.error_message = f"{errorCode}: {errorString}"
+                state.updated_at = datetime.now(timezone.utc)
+
+                self.callback.on_error(request_id, state.error_message)
     
     def create_forex_contract(self, symbol: str) -> Any:
         """Create a Forex contract for the given symbol pair."""

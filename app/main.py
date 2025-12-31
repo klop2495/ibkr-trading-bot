@@ -39,9 +39,7 @@ from app.market_data.seed_fetcher import SeedFetcher
 from app.signals.engine_v1 import SignalEngineV1
 from app.storage.repositories import SnapshotsRepo
 from app.models.bot_settings import DEFAULT_SYMBOLS
-
-# Phase 7: Position sync - broker is source of truth
-from app.broker.position_sync import PositionSyncService
+from app.broker.state_service import BrokerStateService
 
 
 DEFAULT_BACKFILL_BATCH = 25
@@ -1682,12 +1680,29 @@ def main():
     else:
         print("Phase 6: Signal generation DISABLED")
 
-    # Initialize ExecutionService
+    # Initialize ExecutionService + BrokerStateService
     owner_uuid_str = str(owner_uuid)
     trades_history_repo = TradesHistoryRepo(db)
+    broker_ib = None
+    if not signal_gen_mock and 'ib_conn' in dir() and ib_conn is not None:
+        broker_ib = ib_conn
+    else:
+        ib_host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
+        ib_port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
+        ib_client_id = int(os.getenv("IB_CLIENT_ID_MAIN", os.getenv("IB_CLIENT_ID", "151")))
+        broker_ib = _create_ib_connection(ib_host, ib_port, ib_client_id, retries=1)
+
+    broker_state_service = BrokerStateService(
+        ib=broker_ib,
+        trades_history_repo=trades_history_repo,
+        risk_events_repo=risk_events_repo,
+    )
     execution_service = ExecutionService(
         risk_events_repo=risk_events_repo,
         trades_history_repo=trades_history_repo,
+        broker_state_service=broker_state_service,
+        bot_settings_repo=bot_settings_repo,
+        owner_user_id=owner_uuid_str,
     )
     
     # P0-D: Get equity from IB Gateway if connected, else fallback to env
@@ -1748,33 +1763,47 @@ def main():
     _audit_equity = os.getenv("IB_CLIENT_ID_EQUITY", "154")
     print(f"ibkr_client_ids main={_audit_main} marketdata={_audit_marketdata} execution={_audit_execution} equity={_audit_equity}")
 
-    # Phase 7: Position sync - broker is source of truth
-    position_sync_enabled = os.getenv("POSITION_SYNC_ENABLED", "1") != "0"
-    position_sync_interval = int(os.getenv("POSITION_SYNC_INTERVAL", str(DEFAULT_POSITION_SYNC_INTERVAL)))
-    last_position_sync_tick = 0.0
-    last_position_sync_log: Optional[str] = None
-    position_sync_service: Optional[PositionSyncService] = None
-    
-    if position_sync_enabled:
-        # Initialize PositionSyncService with DB
-        position_sync_service = PositionSyncService(
-            db=db,
-            ib=ib_conn if not signal_gen_mock and 'ib_conn' in dir() else None,
-            auto_close_phantoms=True,
-        )
-        print(f"Phase 7: Position sync ENABLED interval={position_sync_interval}s")
-        
-        # Run initial sync on startup
-        try:
-            startup_report = position_sync_service.sync()
-            print(f"position_sync_startup {startup_report.summary}")
-            if startup_report.errors:
-                for err in startup_report.errors:
-                    print(f"position_sync_startup_error: {err}")
-        except Exception as exc:
-            print(f"Warning: Initial position sync failed: {exc}")
-    else:
-        print("Phase 7: Position sync DISABLED")
+    # Broker state sync - broker is source of truth
+    broker_sync_interval = int(os.getenv("BROKER_SYNC_INTERVAL", str(DEFAULT_POSITION_SYNC_INTERVAL)))
+    if broker_sync_interval < DEFAULT_POSITION_SYNC_INTERVAL:
+        broker_sync_interval = DEFAULT_POSITION_SYNC_INTERVAL
+    last_broker_sync_tick = 0.0
+    last_broker_sync_log: Optional[str] = None
+
+    print(f"BrokerStateService sync interval={broker_sync_interval}s")
+    try:
+        if broker_state_service.wait_for_connection(timeout=30):
+            startup_sync = broker_state_service.sync_with_db()
+            startup_log = (
+                f"broker_sync_startup opened={len(startup_sync.positions_opened)} "
+                f"closed={len(startup_sync.positions_closed)} mismatches={len(startup_sync.mismatches)}"
+            )
+            print(startup_log)
+            last_broker_sync_log = startup_log
+            if startup_sync.errors and risk_events_repo:
+                for err in startup_sync.errors:
+                    risk_events_repo.insert(
+                        event_type="BROKER_SYNC_ERROR",
+                        severity="error",
+                        message=f"Startup broker sync failed: {err}",
+                        data={"error": err},
+                    )
+        else:
+            if risk_events_repo:
+                risk_events_repo.insert(
+                    event_type="BROKER_SYNC_ERROR",
+                    severity="error",
+                    message="Broker connection timeout during startup sync",
+                    data={},
+                )
+    except Exception as exc:
+        if risk_events_repo:
+            risk_events_repo.insert(
+                event_type="BROKER_SYNC_ERROR",
+                severity="error",
+                message=f"Startup broker sync failed: {exc}",
+                data={"error": str(exc)},
+            )
 
     batch_size = int(os.getenv("CONTROL_PLANE_BACKFILL_BATCH_SIZE", str(DEFAULT_BACKFILL_BATCH)))
     backfill_max_per_tick = int(os.getenv("CONTROL_PLANE_BACKFILL_MAX_PER_TICK", str(DEFAULT_BACKFILL_MAX_PER_TICK)))
@@ -1957,29 +1986,36 @@ def main():
                             data={"error": str(exc)},
                         )
 
-        # Phase 7: Periodic position sync
-        if position_sync_enabled and position_sync_service is not None:
-            now_ts = time.time()
-            if now_ts - last_position_sync_tick >= position_sync_interval:
-                try:
-                    sync_report = position_sync_service.sync()
-                    sync_log = f"position_sync {sync_report.summary}"
-                    if sync_log != last_position_sync_log or sync_report.actions_taken:
-                        print(sync_log)
-                        last_position_sync_log = sync_log
-                    if sync_report.errors:
-                        for err in sync_report.errors:
-                            print(f"position_sync_error: {err}")
-                except Exception as exc:
-                    print(f"position_sync_tick_error: {exc}")
-                    if risk_events_repo:
+        # Broker state periodic sync
+        now_ts = time.time()
+        if now_ts - last_broker_sync_tick >= broker_sync_interval:
+            try:
+                sync_result = broker_state_service.sync_with_db()
+                sync_log = (
+                    f"broker_sync opened={len(sync_result.positions_opened)} "
+                    f"closed={len(sync_result.positions_closed)} mismatches={len(sync_result.mismatches)}"
+                )
+                if sync_log != last_broker_sync_log:
+                    print(sync_log)
+                    last_broker_sync_log = sync_log
+                if sync_result.errors and risk_events_repo:
+                    for err in sync_result.errors:
                         risk_events_repo.insert(
-                            event_type="POSITION_SYNC_ERROR",
+                            event_type="BROKER_SYNC_ERROR",
                             severity="error",
-                            message=f"Position sync failed: {exc}",
-                            data={"error": str(exc)},
+                            message=f"Broker sync failed: {err}",
+                            data={"error": err},
                         )
-                last_position_sync_tick = now_ts
+            except Exception as exc:
+                print(f"broker_sync_tick_error: {exc}")
+                if risk_events_repo:
+                    risk_events_repo.insert(
+                        event_type="BROKER_SYNC_ERROR",
+                        severity="error",
+                        message=f"Broker sync failed: {exc}",
+                        data={"error": str(exc)},
+                    )
+            last_broker_sync_tick = now_ts
 
         # Periodic stats logging
         if tick_count % stats_log_interval == 0 and llm_enabled:
