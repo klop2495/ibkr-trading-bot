@@ -210,6 +210,7 @@ class IBKROMS:
         risk_events_repo: Optional[RiskEventsRepo] = None,
         disable_trading_callback: Optional[Callable[[str], None]] = None,
         sync_lock: Optional[threading.RLock] = None,
+        broker_state_service: Optional[Any] = None,
     ) -> None:
         self.ib = ib
         self.callback = callback or IBKROrderCallback()
@@ -218,6 +219,7 @@ class IBKROMS:
         self._risk_events_repo = risk_events_repo
         self._disable_trading_callback = disable_trading_callback
         self._sync_lock = sync_lock
+        self._broker_state_service = broker_state_service
         
         # Track active orders
         self._orders: Dict[UUID, IBKROrderState] = {}
@@ -273,6 +275,14 @@ class IBKROMS:
                 self._sync_lock.release()
         else:
             yield
+
+    def _invalidate_broker_cache(self) -> None:
+        if not self._broker_state_service:
+            return
+        try:
+            self._broker_state_service.invalidate_cache()
+        except Exception:
+            pass
 
     def _log_critical(self, message: str, data: Optional[dict] = None) -> None:
         if not self._risk_events_repo:
@@ -382,6 +392,7 @@ class IBKROMS:
     def _on_order_status(self, trade: Any) -> None:
         """Handle order status event from ib_insync."""
         with self._sync_guard():
+            self._invalidate_broker_cache()
             ib_order_id = getattr(trade.order, "orderId", None)
             if ib_order_id is None:
                 return
@@ -421,6 +432,7 @@ class IBKROMS:
     def _on_exec_details(self, trade: Any, fill: Any) -> None:
         """Handle execution/fill event."""
         with self._sync_guard():
+            self._invalidate_broker_cache()
             ib_order_id = getattr(trade.order, "orderId", None)
             if ib_order_id is None:
                 return
@@ -474,6 +486,7 @@ class IBKROMS:
     def _on_error(self, reqId: int, errorCode: int, errorString: str, contract: Any) -> None:
         """Handle error event."""
         with self._sync_guard():
+            self._invalidate_broker_cache()
             # Map reqId to request_id if possible
             request_id = self._ib_to_request.get(reqId)
             if request_id is None:

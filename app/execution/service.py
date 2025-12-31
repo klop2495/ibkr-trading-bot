@@ -524,6 +524,7 @@ class ExecutionService:
                 risk_events_repo=self.risk_events_repo,
                 disable_trading_callback=self._disable_trading,
                 sync_lock=self._broker_state_service.sync_lock if self._broker_state_service else None,
+                broker_state_service=self._broker_state_service,
             )
             if not enable_funds_guard:
                 logger.info("FX Funds Guard DISABLED via FX_FUNDS_GUARD_ENABLED=0")

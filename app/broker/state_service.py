@@ -196,6 +196,11 @@ class BrokerStateService:
     def is_healthy(self) -> bool:
         return self._is_connected()
 
+    def invalidate_cache(self) -> None:
+        with self._sync_lock:
+            self._cache_state = None
+            self._cache_ts = 0.0
+
     def wait_for_connection(self, timeout: int = 30) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
