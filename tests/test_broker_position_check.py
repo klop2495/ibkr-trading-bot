@@ -4,15 +4,12 @@ Tests for broker position check functionality (AI_RULES 2.5).
 Verifies that:
 1. ExecutionService checks broker positions before opening new trades
 2. Duplicate positions on same symbol are blocked
-3. PositionReconciler has safety checks for phantom cleanup
 """
 
 import pytest
 from unittest.mock import MagicMock, patch
-from datetime import datetime, timezone, timedelta
 
 from app.execution.service import ExecutionService, ExecutionMode, ExecutionResult
-from app.reconciliation.position_reconciler import PositionReconciler, ReconciliationReport
 
 
 class TestBrokerPositionCheck:
@@ -106,96 +103,6 @@ class TestBrokerPositionCheck:
         assert result is None
 
 
-class TestPositionReconcilerSafety:
-    """Tests for PositionReconciler safety checks."""
-    
-    def test_skips_phantom_cleanup_when_broker_has_zero_positions(self):
-        """Should skip phantom cleanup if broker shows 0 positions but DB has trades."""
-        mock_db = MagicMock()
-        reconciler = PositionReconciler(db=mock_db, auto_close_phantoms=True)
-        
-        report = ReconciliationReport(
-            timestamp=datetime.now(timezone.utc),
-            broker_connected=True,
-            db_open_trades=2,
-            broker_positions=0,
-        )
-        
-        db_trades = [
-            {"id": "trade1", "symbol": "EURUSD", "status": "OPEN", "quantity": 25000},
-            {"id": "trade2", "symbol": "GBPUSD", "status": "OPEN", "quantity": 20000},
-        ]
-        broker_positions = {}  # Empty - 0 positions
-        
-        reconciler._compare_positions(db_trades, broker_positions, report)
-        
-        # Should NOT have phantom trades because of safety check
-        assert len(report.phantom_trades) == 0
-        # Should have error message about safety skip
-        assert any("Safety skip" in err for err in report.errors)
-    
-    def test_grace_period_for_new_trades(self):
-        """Should not mark fresh trades as phantom (< 5 min old)."""
-        mock_db = MagicMock()
-        reconciler = PositionReconciler(db=mock_db, auto_close_phantoms=True)
-        
-        report = ReconciliationReport(
-            timestamp=datetime.now(timezone.utc),
-            broker_connected=True,
-            db_open_trades=1,
-            broker_positions=1,
-        )
-        
-        # Trade opened 2 minutes ago
-        fresh_time = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
-        
-        db_trades = [
-            {"id": "trade1", "symbol": "EURUSD", "status": "OPEN", "quantity": 25000, "opened_at": fresh_time},
-        ]
-        
-        # Broker has different position (GBPUSD) - EURUSD would be phantom
-        broker_positions = {
-            "GBPUSD": {"quantity": 20000, "side": "BUY"},
-        }
-        
-        reconciler._compare_positions(db_trades, broker_positions, report)
-        
-        # Should NOT be marked as phantom due to grace period
-        assert len(report.phantom_trades) == 0
-    
-    def test_old_trades_can_be_phantom(self):
-        """Should mark old trades as phantom if not at broker."""
-        mock_db = MagicMock()
-        
-        # Mock the close_phantom_trade method
-        mock_db.client.table.return_value.update.return_value.eq.return_value.execute.return_value = None
-        
-        reconciler = PositionReconciler(db=mock_db, auto_close_phantoms=True)
-        
-        report = ReconciliationReport(
-            timestamp=datetime.now(timezone.utc),
-            broker_connected=True,
-            db_open_trades=1,
-            broker_positions=1,
-        )
-        
-        # Trade opened 10 minutes ago (past grace period)
-        old_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
-        
-        db_trades = [
-            {"id": "trade1", "symbol": "EURUSD", "status": "OPEN", "quantity": 25000, "opened_at": old_time},
-        ]
-        
-        # Broker has different position
-        broker_positions = {
-            "GBPUSD": {"quantity": 20000, "side": "BUY"},
-        }
-        
-        reconciler._compare_positions(db_trades, broker_positions, report)
-        
-        # Should be marked as phantom (trade is old enough)
-        assert len(report.phantom_trades) == 1
-        assert report.phantom_trades[0].symbol == "EURUSD"
 
 
 class TestExecuteBlocksOnBrokerPosition:

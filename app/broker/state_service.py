@@ -6,12 +6,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.models.broker_state import (
-    BrokerOrder,
-    BrokerPosition,
-    BrokerState,
-    SyncResult,
-)
+from app.broker.keys import fx_contract_snapshot, fx_display_symbol, instrument_key
+from app.models.broker_state import BrokerOrder, BrokerPosition, BrokerState, SyncResult
 from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
 
 
@@ -57,15 +53,7 @@ class BrokerStateService:
             return False
 
     def _normalize_symbol(self, contract: Any) -> str:
-        if not contract:
-            return "UNKNOWN"
-        sec_type = getattr(contract, "secType", None)
-        if sec_type == "CASH":
-            base = getattr(contract, "symbol", "") or ""
-            quote = getattr(contract, "currency", "") or ""
-            return f"{base}{quote}".upper()
-        symbol = getattr(contract, "symbol", None)
-        return (symbol or "UNKNOWN").upper()
+        return fx_display_symbol(contract)
 
     def _parse_float(self, value: Any) -> float:
         try:
@@ -78,10 +66,12 @@ class BrokerStateService:
         for pos in self._ib.positions():
             contract = getattr(pos, "contract", None)
             symbol = self._normalize_symbol(contract)
+            key = instrument_key(contract)
             quantity = float(getattr(pos, "position", 0.0) or 0.0)
             if abs(quantity) <= 0.0:
                 continue
-            positions[symbol] = BrokerPosition(
+            logger.info("fx_position", extra=fx_contract_snapshot(contract, quantity))
+            positions[key] = BrokerPosition(
                 symbol=symbol,
                 quantity=quantity,
                 avg_cost=self._parse_float(getattr(pos, "avgCost", 0.0)),
@@ -176,12 +166,18 @@ class BrokerStateService:
 
     def get_position(self, symbol: str) -> Optional[BrokerPosition]:
         state = self.get_state()
-        return state.positions.get(symbol.upper())
+        symbol_upper = symbol.upper()
+        if symbol_upper.startswith("CASH:") or ":" in symbol_upper:
+            return state.positions.get(symbol_upper)
+        for position in state.positions.values():
+            if position.symbol.upper() == symbol_upper:
+                return position
+        return None
 
     def get_open_orders_for_symbol(self, symbol: str) -> List[BrokerOrder]:
         symbol_upper = symbol.upper()
         state = self.get_state()
-        return [o for o in state.open_orders if o.symbol == symbol_upper]
+        return [o for o in state.open_orders if o.symbol.upper() == symbol_upper]
 
     def get_cash_balance(self, currency: str) -> float:
         state = self.get_state()
@@ -347,8 +343,25 @@ class BrokerStateService:
         with self._sync_lock:
             try:
                 state = self.get_state(force_refresh=True)
+                open_trades = list(self._ib.openTrades())
             except Exception as exc:
                 result.errors.append(str(exc))
+                self._log_event(
+                    "BROKER_SYNC_UNTRUSTED",
+                    "warn",
+                    f"Broker snapshot unavailable: {exc}",
+                    {"error": str(exc)},
+                )
+                return result
+
+            if not state.connected:
+                result.errors.append("broker_disconnected")
+                self._log_event(
+                    "BROKER_SYNC_UNTRUSTED",
+                    "warn",
+                    "Broker not connected during sync",
+                    {},
+                )
                 return result
 
             if not self._trades_history_repo:
@@ -361,21 +374,55 @@ class BrokerStateService:
                 result.errors.append(f"db_fetch_failed:{exc}")
                 return result
 
-            trades_by_symbol: Dict[str, List[dict]] = {}
+            broker_flat = (
+                len(state.positions) == 0
+                and len(state.open_orders) == 0
+                and len(open_trades) == 0
+            )
+
+            if broker_flat:
+                for trade in db_trades:
+                    symbol = str(trade.get("symbol") or "").upper()
+                    try:
+                        self._trades_history_repo.close_trade(
+                            trade_id=str(trade.get("id")),
+                            exit_price=float(trade.get("entry_price") or 0.0),
+                            close_reason="BROKER_FLAT",
+                        )
+                        if symbol:
+                            result.positions_closed.append(symbol)
+                    except Exception as exc:
+                        result.errors.append(f"close_failed:{symbol}:{exc}")
+                return result
+
+            display_to_key: Dict[str, str] = {}
+            for key, position in state.positions.items():
+                display = position.symbol.upper()
+                if display in display_to_key:
+                    result.mismatches.append(f"duplicate_broker_symbol:{display}")
+                    continue
+                display_to_key[display] = key
+
+            trades_by_key: Dict[str, List[dict]] = {}
+            trades_unmapped: Dict[str, List[dict]] = {}
             for trade in db_trades:
                 symbol = str(trade.get("symbol") or "").upper()
                 if not symbol:
                     continue
-                trades_by_symbol.setdefault(symbol, []).append(trade)
+                key = display_to_key.get(symbol)
+                if key:
+                    trades_by_key.setdefault(key, []).append(trade)
+                else:
+                    trades_unmapped.setdefault(symbol, []).append(trade)
 
             positions = state.positions
 
             # CASE A/B: broker positions
-            for symbol, position in positions.items():
-                db_list = trades_by_symbol.get(symbol, [])
+            for key, position in positions.items():
+                db_list = trades_by_key.get(key, [])
                 if db_list:
                     if len(db_list) > 1:
-                        result.mismatches.append(f"multiple_db_trades:{symbol}:{len(db_list)}")
+                        result.mismatches.append(f"multiple_db_trades:{position.symbol}:{len(db_list)}")
                     db_trade = db_list[0]
                     raw_qty = float(db_trade.get("quantity") or 0.0)
                     side = str(db_trade.get("side") or "").upper()
@@ -385,20 +432,20 @@ class BrokerStateService:
                         db_qty = abs(raw_qty)
                     if abs(db_qty - position.quantity) > 1e-6:
                         result.mismatches.append(
-                            f"quantity_mismatch:{symbol}:db={db_qty}:broker={position.quantity}"
+                            f"quantity_mismatch:{position.symbol}:db={db_qty}:broker={position.quantity}"
                         )
                     continue
 
                 # CASE B: broker has position, DB missing -> create orphan record
                 now_ts = self._now()
-                orphan = self._get_recent_orphan(symbol)
+                orphan = self._get_recent_orphan(position.symbol)
                 if orphan and self._is_recent_orphan(orphan, now_ts):
-                    result.mismatches.append(f"orphan_recent_exists:{symbol}")
+                    result.mismatches.append(f"orphan_recent_exists:{position.symbol}")
                     continue
                 side = "BUY" if position.quantity > 0 else "SELL"
                 try:
                     self._trades_history_repo.create_trade(
-                        symbol=symbol,
+                        symbol=position.symbol,
                         side=side,
                         quantity=abs(position.quantity),
                         entry_price=position.avg_cost,
@@ -408,15 +455,15 @@ class BrokerStateService:
                         ib_order_id=None,
                         status="ORPHAN_POSITION",
                     )
-                    result.positions_opened.append(symbol)
+                    result.positions_opened.append(position.symbol)
                     self._log_event(
                         "BROKER_ORPHAN_POSITION",
                         "warn",
-                        f"Broker position without DB record: {symbol}",
-                        {"symbol": symbol, "quantity": position.quantity},
+                        f"Broker position without DB record: {position.symbol}",
+                        {"symbol": position.symbol, "quantity": position.quantity, "broker_key": key},
                     )
                 except Exception as exc:
-                    result.errors.append(f"orphan_create_failed:{symbol}:{exc}")
+                    result.errors.append(f"orphan_create_failed:{position.symbol}:{exc}")
 
             # CASE C: DB has trade, broker has no position
             executions: List[Any] = []
@@ -425,8 +472,9 @@ class BrokerStateService:
             except Exception:
                 executions = []
 
-            for symbol, trades in trades_by_symbol.items():
-                if symbol in positions:
+            for symbol, trades in trades_unmapped.items():
+                if any(order.symbol.upper() == symbol for order in state.open_orders):
+                    result.mismatches.append(f"open_order_without_position:{symbol}")
                     continue
                 for trade in trades:
                     reason, exit_price = self._determine_close_reason(trade, executions)
@@ -443,9 +491,9 @@ class BrokerStateService:
                         result.errors.append(f"close_failed:{symbol}:{exc}")
 
             # Orphan SL/TP orders (log only)
-            broker_symbols = set(positions.keys())
+            broker_symbols = {pos.symbol.upper() for pos in positions.values()}
             for order in state.open_orders:
-                if order.parent_id and order.symbol not in broker_symbols:
+                if order.parent_id and order.symbol.upper() not in broker_symbols:
                     result.mismatches.append(f"orphan_order:{order.order_id}:{order.symbol}")
                     self._log_event(
                         "BROKER_ORPHAN_ORDER",

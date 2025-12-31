@@ -485,76 +485,12 @@ class ReconciliationResponse(BaseModel):
 @app.post("/api/broker/reconcile")
 def run_reconciliation(auto_close: bool = True):
     """
-    Run position reconciliation between broker and database.
-    
-    Compares positions at IB Gateway with OPEN trades in trades_history.
-    
-    Detects:
-    - Phantom trades: OPEN in DB but no position at broker (SL/TP triggered)
-    - Orphan positions: Position at broker but no record in DB
-    - Quantity mismatches: Position size differs
-    
-    Args:
-        auto_close: If True, automatically mark phantom trades as CLOSED
-    
-    Returns:
-        ReconciliationReport with findings and actions taken.
+    Legacy reconciliation endpoint (deprecated).
     """
-    try:
-        from app.reconciliation.position_reconciler import PositionReconciler
-        
-        db = get_db()
-        reconciler = PositionReconciler(
-            db=db,
-            auto_close_phantoms=auto_close,
-            auto_create_orphans=False,
-        )
-        
-        report = reconciler.run()
-        
-        return {
-            "timestamp": report.timestamp.isoformat(),
-            "broker_connected": report.broker_connected,
-            "db_open_trades": report.db_open_trades,
-            "broker_positions": report.broker_positions,
-            "phantom_trades": [
-                {
-                    "symbol": r.symbol,
-                    "action": r.action.value,
-                    "db_trade_id": r.db_trade_id,
-                    "db_quantity": r.db_quantity,
-                    "db_side": r.db_side,
-                    "message": r.message,
-                }
-                for r in report.phantom_trades
-            ],
-            "orphan_positions": [
-                {
-                    "symbol": r.symbol,
-                    "action": r.action.value,
-                    "broker_quantity": r.broker_quantity,
-                    "message": r.message,
-                }
-                for r in report.orphan_positions
-            ],
-            "quantity_mismatches": [
-                {
-                    "symbol": r.symbol,
-                    "db_trade_id": r.db_trade_id,
-                    "db_quantity": r.db_quantity,
-                    "broker_quantity": r.broker_quantity,
-                    "message": r.message,
-                }
-                for r in report.quantity_mismatches
-            ],
-            "matched": report.matched,
-            "errors": report.errors,
-            "summary": report.summary,
-            "has_issues": report.has_issues,
-        }
-    except Exception as e:
-        logger.error(f"Reconciliation error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(
+        status_code=410,
+        detail="PositionReconciler is deprecated. Use BrokerStateService sync.",
+    )
 
 
 @app.get("/api/broker/reconcile/status")

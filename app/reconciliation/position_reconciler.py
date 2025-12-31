@@ -95,6 +95,7 @@ class PositionReconciler:
         port: Optional[int] = None,
         client_id: Optional[int] = None,
     ):
+        raise RuntimeError("PositionReconciler is deprecated. Use BrokerStateService.")
         """
         Initialize reconciler.
         
