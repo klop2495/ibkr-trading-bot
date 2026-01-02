@@ -71,6 +71,8 @@ class IBKRFetcher:
         self._probe_timeout_s = float(os.getenv("IBKR_PROBE_TIMEOUT_S", "5"))
         self._historical_timeout_s = float(os.getenv("IBKR_HISTORICAL_TIMEOUT_S", "30"))
         self._history_contract_mode = os.getenv("IBKR_HISTORY_CONTRACT_MODE", "cash").lower()
+        self._bars_cache: dict[tuple[str, str], list[Any]] = {}
+        self._last_bar_ts: dict[tuple[str, str], datetime] = {}
 
     def _safe_disconnect(self) -> None:
         if not self._ib:
@@ -184,10 +186,24 @@ class IBKRFetcher:
         minutes_per_bar = TIMEFRAME_MINUTES.get(timeframe, 15)
         total_minutes = bars_needed * minutes_per_bar
         days = (total_minutes // 1440) + 2  # Add buffer for weekends/gaps
-        days = min(days, 30)  # Cap at 30 days
+        max_days = int(os.getenv("IBKR_HISTORY_MAX_DAYS", "60"))
+        days = min(days, max_days)
         return f"{days} D"
 
     def fetch_historical_bars(self, symbol: str, timeframe: str, end_dt_utc: datetime, warmup_bars_min: int) -> List[Any]:
+        key = (symbol, timeframe)
+        interval_minutes = TIMEFRAME_MINUTES.get(timeframe, 15)
+        interval_seconds = interval_minutes * 60
+        if key in self._bars_cache and key in self._last_bar_ts:
+            last_ts = self._last_bar_ts[key]
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=end_dt_utc.tzinfo or None)
+            epoch = int(end_dt_utc.timestamp())
+            current_bar_epoch = epoch - (epoch % interval_seconds)
+            current_bar_ts = datetime.fromtimestamp(current_bar_epoch, tz=end_dt_utc.tzinfo)
+            if last_ts >= current_bar_ts:
+                return self._bars_cache[key]
+
         try:
             ib = self._ensure_connected()
             contract = ib_request_with_timeout(
@@ -214,7 +230,13 @@ class IBKRFetcher:
             )
             if os.getenv("CONTROL_PLANE_LOG_LEVEL", "INFO").upper() == "DEBUG":
                 print(f"ibkr_fetch symbol={symbol} tf={timeframe} duration={duration} bars={len(bars or [])}")
-            return bars or []
+            bars = bars or []
+            if bars:
+                last_bar_ts = getattr(bars[-1], "date", None) or getattr(bars[-1], "time", None)
+                if last_bar_ts is not None:
+                    self._bars_cache[key] = bars
+                    self._last_bar_ts[key] = last_bar_ts
+            return bars
         except IBTimeoutError:
             if self._owns_connection:
                 self._safe_disconnect()
