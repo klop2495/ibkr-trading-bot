@@ -103,9 +103,14 @@ class IBKRFetcher:
         # Case 2: We own the connection - create if needed
         if self._ib is None:
             self._ib = IB()
-        
+
         if self._ib.isConnected():
             return self._ib
+
+        if self._owns_connection and self._ib and not self._ib.isConnected():
+            # Fresh IB instance to avoid stale event loop after disconnects.
+            self._safe_disconnect()
+            self._ib = IB()
         
         # Need to connect - try with retry on Error 326
         host = os.getenv("IB_GATEWAY_HOST", self._host)
