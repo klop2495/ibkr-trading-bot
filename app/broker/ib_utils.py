@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from dataclasses import dataclass
@@ -35,11 +36,20 @@ def ib_call_with_timeout(
     done = threading.Event()
 
     def _run() -> None:
+        loop = None
         try:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
             result["value"] = fn()
         except Exception as exc:  # pragma: no cover - pass-through
             error["exc"] = exc
         finally:
+            if loop:
+                loop.close()
+                asyncio.set_event_loop(None)
             done.set()
 
     thread = threading.Thread(target=_run, daemon=True)
