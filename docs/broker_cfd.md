@@ -22,6 +22,9 @@
 - включается safe-mode (`trading_enabled=false`),
 - синхронизация с БД **не выполняется**.
 
+Critical guard проверяет только `positions` и `openTrades`, потому что `openOrders` в ib_insync
+может не содержать `contract` и не подходит для жёсткой валидации.
+
 ## Recon правила
 
 - BrokerStateService сопоставляет позиции/ордера/трейды только по `instrument_key`.

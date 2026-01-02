@@ -292,7 +292,6 @@ class BrokerStateService:
     def _validate_cfd_snapshot(
         self,
         positions: List[Any],
-        open_orders: List[Any],
         open_trades: List[Any],
     ) -> Tuple[List[dict], List[dict]]:
         unexpected: List[dict] = []
@@ -333,23 +332,9 @@ class BrokerStateService:
             contract = getattr(pos, "contract", None)
             check_contract(contract, "position", fx_contract_snapshot(contract, getattr(pos, "position", 0.0)))
 
-        trade_by_order_id: Dict[int, Any] = {}
         for trade in open_trades:
-            order = getattr(trade, "order", None)
-            order_id = getattr(order, "orderId", None)
-            if order_id is not None:
-                trade_by_order_id[int(order_id)] = trade
             contract = getattr(trade, "contract", None)
             check_contract(contract, "trade")
-
-        for order in open_orders:
-            order_id = getattr(order, "orderId", None)
-            trade = trade_by_order_id.get(int(order_id)) if order_id is not None else None
-            contract = getattr(trade, "contract", None) if trade else None
-            if contract:
-                check_contract(contract, "order", {"order_id": order_id})
-            else:
-                missing.append({"context": "order_missing_contract", "order_id": order_id})
 
         return unexpected, missing
 
@@ -477,7 +462,6 @@ class BrokerStateService:
 
             unexpected, missing = self._validate_cfd_snapshot(
                 raw_positions,
-                raw_open_orders,
                 open_trades,
             )
             if unexpected:

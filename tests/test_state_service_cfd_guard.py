@@ -109,3 +109,26 @@ def test_sync_blocks_on_missing_trade_instrument_key():
     assert "missing_instrument_key" in result.errors
     assert bot_settings_repo.update.called
     assert any(call.kwargs.get("event_type") == "MISSING_INSTRUMENT_KEY" for call in risk_repo.insert.call_args_list)
+
+
+def test_open_orders_without_trades_do_not_trigger_safe_mode():
+    ib = MockIB()
+    ib._open_orders = [
+        SimpleNamespace(orderId=101, action="BUY", totalQuantity=1, orderType="MKT", parentId=None)
+    ]
+    trades_repo = MagicMock()
+    trades_repo.get_active_trades_full.return_value = []
+    risk_repo = MagicMock()
+    bot_settings_repo = MagicMock()
+    service = BrokerStateService(
+        ib=ib,
+        trades_history_repo=trades_repo,
+        risk_events_repo=risk_repo,
+        bot_settings_repo=bot_settings_repo,
+        owner_user_id="owner",
+    )
+    result = service.sync_with_db()
+    assert "missing_conId" not in result.errors
+    assert "unexpected_sectype" not in result.errors
+    bot_settings_repo.update.assert_not_called()
+    risk_repo.insert.assert_not_called()
