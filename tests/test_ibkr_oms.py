@@ -35,6 +35,8 @@ class MockIB:
         return self.connected
     
     def qualifyContracts(self, contract):
+        contract.conId = getattr(contract, "conId", None) or 999
+        contract.secType = "CFD"
         return [contract]
     
     def forex(self, pair):
@@ -72,9 +74,10 @@ class MockEvent:
 class MockContract:
     def __init__(self, symbol):
         self.symbol = symbol
-        self.secType = "CASH"
+        self.secType = "CFD"
         self.currency = "USD"
-        self.exchange = "IDEALPRO"
+        self.exchange = "SMART"
+        self.conId = 999
 
 
 class MockOrder:
@@ -228,14 +231,12 @@ class TestIBKROMS:
         active = oms.get_active_orders()
         assert len(active) == 3
     
-    def test_create_forex_contract_6_char(self):
-        """Test creating forex contract from 6-char symbol."""
+    def test_create_forex_contract_forbidden(self):
+        """CFD-only: forex contract creation should fail."""
         mock_ib = MockIB()
         oms = IBKROMS(ib=mock_ib)
-        
-        contract = oms.create_forex_contract("EURUSD")
-        # Should not raise and return a contract
-        assert contract is not None
+        with pytest.raises(RuntimeError, match="cfd_only_forex_contract_forbidden"):
+            oms.create_forex_contract("EURUSD")
     
     def test_order_with_control_plane_ids(self):
         """Test order with control plane linking."""

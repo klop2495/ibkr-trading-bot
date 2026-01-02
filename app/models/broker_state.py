@@ -18,6 +18,7 @@ class BrokerPosition:
 class BrokerOrder:
     order_id: int
     symbol: str
+    instrument_key: Optional[str]
     action: str
     quantity: float
     order_type: str

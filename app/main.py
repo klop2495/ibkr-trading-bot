@@ -1696,6 +1696,8 @@ def main():
         ib=broker_ib,
         trades_history_repo=trades_history_repo,
         risk_events_repo=risk_events_repo,
+        bot_settings_repo=bot_settings_repo,
+        owner_user_id=owner_uuid_str,
     )
     execution_service = ExecutionService(
         risk_events_repo=risk_events_repo,

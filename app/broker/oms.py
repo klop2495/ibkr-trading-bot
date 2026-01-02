@@ -20,6 +20,8 @@ import threading
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.order_intent import OrderIntentV1
+from app.broker.contracts import create_cfd_fx_contract
+from app.broker.keys import instrument_key
 from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
 
 # FX Funds Guard for pre-checking available currency
@@ -140,6 +142,7 @@ class IBKROrderState(BaseModel):
     last_fill_time: Optional[datetime] = None
     commission: float = 0.0
     error_message: Optional[str] = None
+    instrument_key: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
@@ -502,23 +505,17 @@ class IBKROMS:
                 self.callback.on_error(request_id, state.error_message)
     
     def create_forex_contract(self, symbol: str) -> Any:
-        """Create a Forex contract for the given symbol pair."""
-        # Symbol format: EURUSD -> EUR.USD
-        if len(symbol) == 6:
-            base = symbol[:3]
-            quote = symbol[3:]
-        else:
-            base = symbol
-            quote = "USD"
-        
-        from ib_insync import Forex
-        contract = Forex(pair=f"{base}{quote}")
-        
-        # Qualify the contract
-        qualified = self.ib.qualifyContracts(contract)
-        if qualified:
-            return qualified[0]
-        return contract
+        """CFD-only mode: CASH Forex contracts are запрещены."""
+        self._log_critical(
+            "CASH forex contract requested in CFD-only mode",
+            {"symbol": symbol},
+        )
+        self._disable_trading("cfd_only_forex_contract_requested")
+        raise RuntimeError("cfd_only_forex_contract_forbidden")
+
+    def create_cfd_fx_contract(self, symbol: str) -> Any:
+        """Create a CFD FX contract for the given symbol pair."""
+        return create_cfd_fx_contract(self.ib, symbol)
     
     def place_order(self, request: IBKROrderRequest) -> IBKROrderState:
         """
@@ -532,7 +529,8 @@ class IBKROMS:
         
         try:
             # Create contract
-            contract = self.create_forex_contract(request.symbol)
+            contract = self.create_cfd_fx_contract(request.symbol)
+            state.instrument_key = instrument_key(contract)
             
             # Create order
             from ib_insync import Order
@@ -586,7 +584,8 @@ class IBKROMS:
             from ib_insync import Order
             
             # Create contract
-            contract = self.create_forex_contract(request.symbol)
+            contract = self.create_cfd_fx_contract(request.symbol)
+            state.instrument_key = instrument_key(contract)
             
             # Determine opposite action for SL/TP orders
             opposite_action = "SELL" if request.side == OrderSide.BUY else "BUY"
@@ -692,7 +691,8 @@ class IBKROMS:
             from ib_insync import Order
             
             # Create contract
-            contract = self.create_forex_contract(request.symbol)
+            contract = self.create_cfd_fx_contract(request.symbol)
+            state.instrument_key = instrument_key(contract)
             
             # Calculate trailing distance in price units
             trailing_distance = request.trailing_stop_distance

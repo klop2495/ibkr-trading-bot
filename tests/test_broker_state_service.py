@@ -69,8 +69,14 @@ class RecordingCallback(IBKROrderCallback):
         self.fill_events.append(fill)
 
 
-def _fx_contract(base: str, quote: str):
-    return SimpleNamespace(secType="CASH", symbol=base, currency=quote)
+def _fx_contract(base: str, quote: str, con_id: int = 1):
+    return SimpleNamespace(
+        secType="CFD",
+        symbol=base,
+        currency=quote,
+        localSymbol=f"{base}.{quote}",
+        conId=con_id,
+    )
 
 
 def test_can_open_position_blocks_when_disconnected():
@@ -85,7 +91,7 @@ def test_can_open_position_blocks_when_disconnected():
 def test_sync_creates_orphan_position_record():
     ib = MockIB()
     position = SimpleNamespace(
-        contract=_fx_contract("EUR", "USD"),
+        contract=_fx_contract("EUR", "USD", con_id=101),
         position=25000,
         avgCost=1.1,
         unrealizedPNL=12.5,
@@ -93,7 +99,7 @@ def test_sync_creates_orphan_position_record():
     ib._positions = [position]
     trades_repo = MagicMock()
     trades_repo.get_active_trades_full.return_value = []
-    trades_repo.get_latest_orphan.return_value = None
+    trades_repo.get_latest_orphan_by_instrument_key.return_value = None
     trades_repo.create_trade.return_value = "trade1"
     service = BrokerStateService(ib=ib, trades_history_repo=trades_repo)
     result = service.sync_with_db()
@@ -110,18 +116,25 @@ def test_sync_closes_trade_with_sl_hit():
         "stop_loss": 1.0950,
         "take_profit": 1.1100,
         "opened_at": (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),
+        "meta": {"instrument_key": "CFD:101"},
     }
     trades_repo = MagicMock()
     trades_repo.get_active_trades_full.return_value = [trade]
-    trades_repo.get_latest_orphan.return_value = None
+    trades_repo.get_latest_orphan_by_instrument_key.return_value = None
     trades_repo.close_trade.return_value = None
+    ib._open_trades = [
+        SimpleNamespace(
+            contract=_fx_contract("EUR", "USD", con_id=101),
+            order=SimpleNamespace(orderId=1),
+        )
+    ]
     exec_obj = SimpleNamespace(
         time=datetime.now(timezone.utc),
         side="SELL",
         price=1.0950,
         orderId=999,
     )
-    fill = SimpleNamespace(contract=_fx_contract("EUR", "USD"), execution=exec_obj)
+    fill = SimpleNamespace(contract=_fx_contract("EUR", "USD", con_id=101), execution=exec_obj)
     ib._executions = [fill]
     service = BrokerStateService(ib=ib, trades_history_repo=trades_repo)
     result = service.sync_with_db()
@@ -144,13 +157,13 @@ def test_orphan_orders_logged_without_cancel():
     ib._open_orders = [order]
     trade = SimpleNamespace(
         order=order,
-        contract=_fx_contract("EUR", "USD"),
+        contract=_fx_contract("EUR", "USD", con_id=101),
         orderStatus=SimpleNamespace(status="Submitted"),
     )
     ib._open_trades = [trade]
     trades_repo = MagicMock()
     trades_repo.get_active_trades_full.return_value = []
-    trades_repo.get_latest_orphan.return_value = None
+    trades_repo.get_latest_orphan_by_instrument_key.return_value = None
     risk_events_repo = MagicMock()
     service = BrokerStateService(
         ib=ib,
@@ -213,7 +226,7 @@ def test_oms_fill_after_restart_uses_db_fallback():
     )
 
     order = SimpleNamespace(orderId=77, parentId=None)
-    contract = _fx_contract("EUR", "USD")
+    contract = _fx_contract("EUR", "USD", con_id=101)
     execution = SimpleNamespace(execId="x1", time=datetime.now(timezone.utc), shares=1000, price=1.1, orderId=77)
     fill = SimpleNamespace(execution=execution, commissionReport=None)
     trade = SimpleNamespace(order=order, contract=contract)
@@ -226,7 +239,7 @@ def test_oms_fill_after_restart_uses_db_fallback():
 def test_orphan_dedup_skips_recent_orphan():
     ib = MockIB()
     position = SimpleNamespace(
-        contract=_fx_contract("EUR", "USD"),
+        contract=_fx_contract("EUR", "USD", con_id=101),
         position=10000,
         avgCost=1.05,
         unrealizedPNL=0.0,
@@ -234,11 +247,11 @@ def test_orphan_dedup_skips_recent_orphan():
     ib._positions = [position]
     trades_repo = MagicMock()
     trades_repo.get_active_trades_full.return_value = []
-    trades_repo.get_latest_orphan.return_value = {
+    trades_repo.get_latest_orphan_by_instrument_key.return_value = {
         "id": "orphan1",
         "opened_at": datetime.now(timezone.utc).isoformat(),
     }
     service = BrokerStateService(ib=ib, trades_history_repo=trades_repo)
     result = service.sync_with_db()
-    assert "orphan_recent_exists:EURUSD" in result.mismatches
+    assert "orphan_recent_exists:CFD:101" in result.mismatches
     trades_repo.create_trade.assert_not_called()

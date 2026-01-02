@@ -34,17 +34,21 @@ def main() -> int:
         except Exception:
             pass
 
-    print("BROKER POSITIONS (FX CASH):")
-    broker_symbols: List[str] = []
+    print("BROKER POSITIONS (CFD):")
+    broker_keys: List[str] = []
     for pos in positions:
         contract = getattr(pos, "contract", None)
-        if getattr(contract, "secType", None) != "CASH":
-            continue
+        if getattr(contract, "secType", None) != "CFD":
+            print(f"UNEXPECTED_SECTYPE: {getattr(contract, 'secType', None)}")
+            return 3
         qty = float(getattr(pos, "position", 0.0) or 0.0)
         snapshot = fx_contract_snapshot(contract, qty)
         key = instrument_key(contract)
+        if not key:
+            print("MISSING_CONID in broker snapshot")
+            return 3
         display = fx_display_symbol(contract)
-        broker_symbols.append(display)
+        broker_keys.append(key)
         print(
             f"{display} key={key} qty={qty} "
             f"secType={snapshot.get('secType')} conId={snapshot.get('conId')} "
@@ -66,14 +70,25 @@ def main() -> int:
         print(f"BROKER_UNTRUSTED: db_fetch_failed {exc}")
         return 3
 
-    db_symbols = [str(t.get("symbol") or "").upper() for t in active_trades if t.get("symbol")]
+    db_keys = []
+    missing_keys = []
+    for trade in active_trades:
+        meta = trade.get("meta") or {}
+        key = meta.get("instrument_key")
+        if not key:
+            missing_keys.append(str(trade.get("id")))
+            continue
+        db_keys.append(key)
     active_count = len(active_trades)
     nonzero_count = len([t for t in active_trades if (t.get("quantity") or 0) != 0])
 
     print(f"DB active trades={active_count} nonzero_qty={nonzero_count}")
+    if missing_keys:
+        print(f"MISSING_INSTRUMENT_KEY trades={missing_keys}")
+        return 2
 
-    broker_set = {s.upper() for s in broker_symbols}
-    db_set = {s.upper() for s in db_symbols}
+    broker_set = {s.upper() for s in broker_keys}
+    db_set = {s.upper() for s in db_keys}
 
     if broker_set != db_set:
         missing_in_broker = sorted(db_set - broker_set)

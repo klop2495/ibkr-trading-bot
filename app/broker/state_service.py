@@ -9,11 +9,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.broker.keys import fx_contract_snapshot, fx_display_symbol, instrument_key
 from app.models.broker_state import BrokerOrder, BrokerPosition, BrokerState, SyncResult
 from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
+from app.storage.bot_settings_repo import BotSettingsRepo
 
 
 logger = logging.getLogger(__name__)
 
 ORPHAN_DEDUP_WINDOW = timedelta(minutes=10)
+
 
 class BrokerConnectionError(RuntimeError):
     """Raised when broker state is requested without an active connection."""
@@ -30,10 +32,14 @@ class BrokerStateService:
         ib: Any,
         trades_history_repo: Optional[TradesHistoryRepo] = None,
         risk_events_repo: Optional[RiskEventsRepo] = None,
+        bot_settings_repo: Optional[BotSettingsRepo] = None,
+        owner_user_id: Optional[str] = None,
     ) -> None:
         self._ib = ib
         self._trades_history_repo = trades_history_repo
         self._risk_events_repo = risk_events_repo
+        self._bot_settings_repo = bot_settings_repo
+        self._owner_user_id = owner_user_id
         self._cache_ttl_seconds = 5.0
         self._cache_ts = 0.0
         self._cache_state: Optional[BrokerState] = None
@@ -70,6 +76,12 @@ class BrokerStateService:
             quantity = float(getattr(pos, "position", 0.0) or 0.0)
             if abs(quantity) <= 0.0:
                 continue
+            if not key:
+                logger.warning(
+                    "position missing instrument key",
+                    extra=fx_contract_snapshot(contract, quantity),
+                )
+                continue
             logger.info("fx_position", extra=fx_contract_snapshot(contract, quantity))
             positions[key] = BrokerPosition(
                 symbol=symbol,
@@ -101,10 +113,12 @@ class BrokerStateService:
             status = "OPEN"
             if trade and getattr(trade, "orderStatus", None):
                 status = getattr(trade.orderStatus, "status", status)
+            key = instrument_key(contract) if contract else None
             orders.append(
                 BrokerOrder(
                     order_id=int(order_id),
                     symbol=self._normalize_symbol(contract),
+                    instrument_key=key,
                     action=str(getattr(order, "action", "") or ""),
                     quantity=self._parse_float(getattr(order, "totalQuantity", 0.0)),
                     order_type=str(getattr(order, "orderType", "") or ""),
@@ -177,6 +191,8 @@ class BrokerStateService:
     def get_open_orders_for_symbol(self, symbol: str) -> List[BrokerOrder]:
         symbol_upper = symbol.upper()
         state = self.get_state()
+        if ":" in symbol_upper:
+            return [o for o in state.open_orders if (o.instrument_key or "").upper() == symbol_upper]
         return [o for o in state.open_orders if o.symbol.upper() == symbol_upper]
 
     def get_cash_balance(self, currency: str) -> float:
@@ -213,10 +229,17 @@ class BrokerStateService:
             return False, "broker_disconnected"
         if not state.connected:
             return False, "broker_disconnected"
-        if state.positions.get(symbol.upper()):
-            return False, "broker_has_position"
-        if any(order.symbol == symbol.upper() for order in state.open_orders):
-            return False, "broker_has_open_orders"
+        symbol_upper = symbol.upper()
+        if ":" in symbol_upper:
+            if state.positions.get(symbol_upper):
+                return False, "broker_has_position"
+            if any((order.instrument_key or "").upper() == symbol_upper for order in state.open_orders):
+                return False, "broker_has_open_orders"
+        else:
+            if any(pos.symbol.upper() == symbol_upper for pos in state.positions.values()):
+                return False, "broker_has_position"
+            if any(order.symbol.upper() == symbol_upper for order in state.open_orders):
+                return False, "broker_has_open_orders"
         if quantity <= 0:
             return False, "invalid_quantity"
         if side.upper() not in ("BUY", "SELL"):
@@ -230,8 +253,13 @@ class BrokerStateService:
             return False, "broker_disconnected"
         if not state.connected:
             return False, "broker_disconnected"
-        if symbol.upper() not in state.positions:
-            return False, "broker_no_position"
+        symbol_upper = symbol.upper()
+        if ":" in symbol_upper:
+            if symbol_upper not in state.positions:
+                return False, "broker_no_position"
+        else:
+            if not any(pos.symbol.upper() == symbol_upper for pos in state.positions.values()):
+                return False, "broker_no_position"
         return True, "ok"
 
     def _parse_ib_time(self, value: Any) -> Optional[datetime]:
@@ -246,11 +274,11 @@ class BrokerStateService:
                 return None
         return None
 
-    def _get_recent_orphan(self, symbol: str) -> Optional[dict]:
+    def _get_recent_orphan(self, instrument_key_value: str) -> Optional[dict]:
         if not self._trades_history_repo:
             return None
         try:
-            return self._trades_history_repo.get_latest_orphan(symbol)
+            return self._trades_history_repo.get_latest_orphan_by_instrument_key(instrument_key_value)
         except Exception:
             return None
 
@@ -260,6 +288,70 @@ class BrokerStateService:
         if not ts:
             return False
         return (now - ts) <= ORPHAN_DEDUP_WINDOW
+
+    def _validate_cfd_snapshot(
+        self,
+        positions: List[Any],
+        open_orders: List[Any],
+        open_trades: List[Any],
+    ) -> Tuple[List[dict], List[dict]]:
+        unexpected: List[dict] = []
+        missing: List[dict] = []
+
+        def check_contract(contract: Any, context: str, extra: Optional[dict] = None) -> None:
+            if not contract:
+                missing.append({"context": context, **(extra or {})})
+                return
+            sec_type = getattr(contract, "secType", None)
+            con_id = getattr(contract, "conId", None)
+            if sec_type != "CFD":
+                unexpected.append(
+                    {
+                        "context": context,
+                        "secType": sec_type,
+                        "conId": con_id,
+                        "localSymbol": getattr(contract, "localSymbol", None),
+                        "symbol": getattr(contract, "symbol", None),
+                        "currency": getattr(contract, "currency", None),
+                        **(extra or {}),
+                    }
+                )
+            if not con_id or int(con_id) <= 0:
+                missing.append(
+                    {
+                        "context": context,
+                        "secType": sec_type,
+                        "conId": con_id,
+                        "localSymbol": getattr(contract, "localSymbol", None),
+                        "symbol": getattr(contract, "symbol", None),
+                        "currency": getattr(contract, "currency", None),
+                        **(extra or {}),
+                    }
+                )
+
+        for pos in positions:
+            contract = getattr(pos, "contract", None)
+            check_contract(contract, "position", fx_contract_snapshot(contract, getattr(pos, "position", 0.0)))
+
+        trade_by_order_id: Dict[int, Any] = {}
+        for trade in open_trades:
+            order = getattr(trade, "order", None)
+            order_id = getattr(order, "orderId", None)
+            if order_id is not None:
+                trade_by_order_id[int(order_id)] = trade
+            contract = getattr(trade, "contract", None)
+            check_contract(contract, "trade")
+
+        for order in open_orders:
+            order_id = getattr(order, "orderId", None)
+            trade = trade_by_order_id.get(int(order_id)) if order_id is not None else None
+            contract = getattr(trade, "contract", None) if trade else None
+            if contract:
+                check_contract(contract, "order", {"order_id": order_id})
+            else:
+                missing.append({"context": "order_missing_contract", "order_id": order_id})
+
+        return unexpected, missing
 
     def _close_reason_from_price(
         self,
@@ -284,6 +376,10 @@ class BrokerStateService:
         symbol = str(trade.get("symbol") or "").upper()
         if not symbol:
             return "UNKNOWN", None
+        trade_meta = trade.get("meta") or {}
+        trade_key = trade_meta.get("instrument_key")
+        if not trade_key:
+            return "UNKNOWN", None
 
         trade_side = str(trade.get("side") or "").upper()
         opened_at = trade.get("opened_at") or trade.get("created_at")
@@ -296,8 +392,8 @@ class BrokerStateService:
         for fill in executions:
             contract = getattr(fill, "contract", None)
             exec_obj = getattr(fill, "execution", None) or fill
-            exec_symbol = self._normalize_symbol(contract)
-            if exec_symbol != symbol:
+            exec_key = instrument_key(contract) if contract else None
+            if exec_key != trade_key:
                 continue
             exec_time = self._parse_ib_time(getattr(exec_obj, "time", None))
             if opened_ts and exec_time and exec_time < opened_ts:
@@ -338,11 +434,26 @@ class BrokerStateService:
         except Exception:
             pass
 
+    def _enter_safe_mode(self, reason: str, data: Optional[dict] = None) -> None:
+        if self._bot_settings_repo and self._owner_user_id:
+            try:
+                self._bot_settings_repo.update(self._owner_user_id, {"trading_enabled": False})
+            except Exception:
+                pass
+        self._log_event(
+            event_type="BROKER_SAFE_MODE",
+            severity="CRITICAL",
+            message=f"Trading disabled: {reason}",
+            data=data or {"reason": reason},
+        )
+
     def sync_with_db(self) -> SyncResult:
         result = SyncResult(timestamp=self._now())
         with self._sync_lock:
             try:
                 state = self.get_state(force_refresh=True)
+                raw_positions = list(self._ib.positions())
+                raw_open_orders = list(self._ib.openOrders())
                 open_trades = list(self._ib.openTrades())
             except Exception as exc:
                 result.errors.append(str(exc))
@@ -364,6 +475,32 @@ class BrokerStateService:
                 )
                 return result
 
+            unexpected, missing = self._validate_cfd_snapshot(
+                raw_positions,
+                raw_open_orders,
+                open_trades,
+            )
+            if unexpected:
+                result.errors.append("unexpected_sectype")
+                self._log_event(
+                    "UNEXPECTED_SECTYPE",
+                    "CRITICAL",
+                    "Unexpected secType detected in broker snapshot",
+                    {"samples": unexpected[:10]},
+                )
+                self._enter_safe_mode("unexpected_sectype", {"samples": unexpected[:10]})
+                return result
+            if missing:
+                result.errors.append("missing_conId")
+                self._log_event(
+                    "MISSING_CONID",
+                    "CRITICAL",
+                    "Missing conId detected in broker snapshot",
+                    {"samples": missing[:10]},
+                )
+                self._enter_safe_mode("missing_conid", {"samples": missing[:10]})
+                return result
+
             if not self._trades_history_repo:
                 result.errors.append("trades_history_repo_missing")
                 return result
@@ -373,6 +510,32 @@ class BrokerStateService:
             except Exception as exc:
                 result.errors.append(f"db_fetch_failed:{exc}")
                 return result
+
+            trades_by_key: Dict[str, List[dict]] = {}
+            for trade in db_trades:
+                meta = trade.get("meta") or {}
+                trade_key = meta.get("instrument_key")
+                if not trade_key:
+                    result.errors.append("missing_instrument_key")
+                    self._log_event(
+                        "MISSING_INSTRUMENT_KEY",
+                        "CRITICAL",
+                        "Active trade missing instrument_key",
+                        {"trade_id": trade.get("id"), "symbol": trade.get("symbol")},
+                    )
+                    self._enter_safe_mode("missing_instrument_key", {"trade_id": trade.get("id")})
+                    return result
+                if not trade_key.startswith("CFD:"):
+                    result.errors.append("unexpected_trade_key")
+                    self._log_event(
+                        "UNEXPECTED_SECTYPE",
+                        "CRITICAL",
+                        "Trade instrument_key is not CFD",
+                        {"trade_id": trade.get("id"), "instrument_key": trade_key},
+                    )
+                    self._enter_safe_mode("unexpected_trade_key", {"trade_id": trade.get("id")})
+                    return result
+                trades_by_key.setdefault(trade_key, []).append(trade)
 
             broker_flat = (
                 len(state.positions) == 0
@@ -395,27 +558,9 @@ class BrokerStateService:
                         result.errors.append(f"close_failed:{symbol}:{exc}")
                 return result
 
-            display_to_key: Dict[str, str] = {}
-            for key, position in state.positions.items():
-                display = position.symbol.upper()
-                if display in display_to_key:
-                    result.mismatches.append(f"duplicate_broker_symbol:{display}")
-                    continue
-                display_to_key[display] = key
-
-            trades_by_key: Dict[str, List[dict]] = {}
-            trades_unmapped: Dict[str, List[dict]] = {}
-            for trade in db_trades:
-                symbol = str(trade.get("symbol") or "").upper()
-                if not symbol:
-                    continue
-                key = display_to_key.get(symbol)
-                if key:
-                    trades_by_key.setdefault(key, []).append(trade)
-                else:
-                    trades_unmapped.setdefault(symbol, []).append(trade)
-
             positions = state.positions
+            broker_position_keys = set(positions.keys())
+            broker_order_keys = {o.instrument_key for o in state.open_orders if o.instrument_key}
 
             # CASE A/B: broker positions
             for key, position in positions.items():
@@ -438,9 +583,9 @@ class BrokerStateService:
 
                 # CASE B: broker has position, DB missing -> create orphan record
                 now_ts = self._now()
-                orphan = self._get_recent_orphan(position.symbol)
+                orphan = self._get_recent_orphan(key)
                 if orphan and self._is_recent_orphan(orphan, now_ts):
-                    result.mismatches.append(f"orphan_recent_exists:{position.symbol}")
+                    result.mismatches.append(f"orphan_recent_exists:{key}")
                     continue
                 side = "BUY" if position.quantity > 0 else "SELL"
                 try:
@@ -454,6 +599,7 @@ class BrokerStateService:
                         mode="paper",
                         ib_order_id=None,
                         status="ORPHAN_POSITION",
+                        meta={"instrument_key": key},
                     )
                     result.positions_opened.append(position.symbol)
                     self._log_event(
@@ -472,29 +618,32 @@ class BrokerStateService:
             except Exception:
                 executions = []
 
-            for symbol, trades in trades_unmapped.items():
-                if any(order.symbol.upper() == symbol for order in state.open_orders):
-                    result.mismatches.append(f"open_order_without_position:{symbol}")
+            for trade_key, trades in trades_by_key.items():
+                if trade_key in broker_position_keys:
+                    continue
+                if trade_key in broker_order_keys:
+                    result.mismatches.append(f"open_order_without_position:{trade_key}")
                     continue
                 for trade in trades:
                     reason, exit_price = self._determine_close_reason(trade, executions)
                     if exit_price is None:
                         exit_price = float(trade.get("entry_price") or 0.0)
+                    symbol = str(trade.get("symbol") or "").upper()
                     try:
                         self._trades_history_repo.close_trade(
                             trade_id=str(trade.get("id")),
                             exit_price=float(exit_price),
                             close_reason=reason,
                         )
-                        result.positions_closed.append(symbol)
+                        if symbol:
+                            result.positions_closed.append(symbol)
                     except Exception as exc:
                         result.errors.append(f"close_failed:{symbol}:{exc}")
 
             # Orphan SL/TP orders (log only)
-            broker_symbols = {pos.symbol.upper() for pos in positions.values()}
             for order in state.open_orders:
-                if order.parent_id and order.symbol.upper() not in broker_symbols:
-                    result.mismatches.append(f"orphan_order:{order.order_id}:{order.symbol}")
+                if order.parent_id and order.instrument_key and order.instrument_key not in broker_position_keys:
+                    result.mismatches.append(f"orphan_order:{order.order_id}:{order.instrument_key}")
                     self._log_event(
                         "BROKER_ORPHAN_ORDER",
                         "warn",
@@ -502,6 +651,7 @@ class BrokerStateService:
                         {
                             "order_id": order.order_id,
                             "symbol": order.symbol,
+                            "instrument_key": order.instrument_key,
                             "parent_id": order.parent_id,
                         },
                     )

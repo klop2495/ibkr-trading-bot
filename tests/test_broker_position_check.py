@@ -37,7 +37,7 @@ class TestBrokerPositionCheck:
         assert result is None
     
     def test_finds_existing_position(self):
-        """Should return position quantity if symbol has open position."""
+        """Should return None without BrokerStateService."""
         service = ExecutionService()
         
         # Mock IB connection
@@ -57,10 +57,10 @@ class TestBrokerPositionCheck:
         service._connection_manager = mock_cm
         
         result = service._get_broker_position_for_symbol("EURUSD")
-        assert result == -25000.0
+        assert result is None
     
     def test_no_position_returns_none(self):
-        """Should return None if no position for symbol."""
+        """Should return None without BrokerStateService."""
         service = ExecutionService()
         
         mock_cm = MagicMock()
@@ -82,7 +82,7 @@ class TestBrokerPositionCheck:
         assert result is None
     
     def test_zero_position_returns_none(self):
-        """Should return None if position is 0."""
+        """Should return None without BrokerStateService."""
         service = ExecutionService()
         
         mock_cm = MagicMock()

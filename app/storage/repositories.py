@@ -441,6 +441,7 @@ class TradesHistoryRepo(BaseRepo):
         decision_id: Optional[str] = None,
         ib_order_id: Optional[int] = None,
         status: str = "PENDING",
+        meta: Optional[dict] = None,
     ) -> str:
         """
         Create a new trade record with initial status.
@@ -471,6 +472,8 @@ class TradesHistoryRepo(BaseRepo):
             "decision_id": decision_id,
             "ib_order_id": ib_order_id,
         }
+        if meta is not None:
+            payload["meta"] = meta
         self.db.client.table(self.table).insert(payload).execute()
         return trade_id
 
@@ -506,7 +509,7 @@ class TradesHistoryRepo(BaseRepo):
             self.db.client.table(self.table)
             .select(
                 "id, symbol, status, side, quantity, entry_price, stop_loss, "
-                "take_profit, opened_at, created_at, ib_order_id, mode"
+                "take_profit, opened_at, created_at, ib_order_id, mode, meta"
             )
             .in_("status", ["PENDING", "SUBMITTED", "OPEN"])
             .execute()
@@ -525,6 +528,19 @@ class TradesHistoryRepo(BaseRepo):
             .select("id, symbol, status, opened_at, created_at")
             .eq("symbol", symbol)
             .eq("status", "ORPHAN_POSITION")
+            .order("opened_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+
+    def get_latest_orphan_by_instrument_key(self, instrument_key: str) -> Optional[dict]:
+        """Get most recent ORPHAN_POSITION trade for an instrument key."""
+        res = (
+            self.db.client.table(self.table)
+            .select("id, symbol, status, opened_at, created_at, meta")
+            .eq("status", "ORPHAN_POSITION")
+            .contains("meta", {"instrument_key": instrument_key})
             .order("opened_at", desc=True)
             .limit(1)
             .execute()
@@ -570,6 +586,7 @@ class TradesHistoryRepo(BaseRepo):
         ib_order_id: Optional[int] = None,
         error_message: Optional[str] = None,
         quantity: Optional[float] = None,
+        meta: Optional[dict] = None,
     ) -> None:
         """
         Update trade status.
@@ -594,7 +611,19 @@ class TradesHistoryRepo(BaseRepo):
             payload["error_message"] = error_message
         if quantity is not None:
             payload["quantity"] = quantity
+        if meta is not None:
+            payload["meta"] = meta
         
+        self.db.client.table(self.table).update(payload).eq("id", trade_id).execute()
+
+    def update_meta(self, trade_id: str, meta: dict) -> None:
+        """Update trade metadata."""
+        if not meta:
+            return
+        payload = {
+            "meta": meta,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
         self.db.client.table(self.table).update(payload).eq("id", trade_id).execute()
 
     def get_trade_by_ib_order_id(self, ib_order_id: int) -> Optional[dict]:

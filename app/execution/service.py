@@ -152,6 +152,19 @@ class ExecutionServiceCallback(IBKROrderCallback):
         if "JPY" in (symbol or "").upper():
             return PIP_VALUES["JPY"]
         return PIP_VALUES["DEFAULT"]
+
+    def _ensure_trade_instrument_key(self, trade: Optional[dict], instrument_key: Optional[str]) -> None:
+        if not trade or not instrument_key or not self.trades_history_repo:
+            return
+        meta = trade.get("meta") or {}
+        if meta.get("instrument_key") == instrument_key:
+            return
+        try:
+            updated = dict(meta)
+            updated["instrument_key"] = instrument_key
+            self.trades_history_repo.update_meta(trade_id=str(trade.get("id")), meta=updated)
+        except Exception:
+            pass
     
     def on_order_status(self, state: IBKROrderState) -> None:
         """Handle order status change - update trades_history accordingly."""
@@ -192,6 +205,7 @@ class ExecutionServiceCallback(IBKROrderCallback):
             try:
                 trade = self._lookup_trade(state.request_id, state.ib_order_id)
                 if trade:
+                    self._ensure_trade_instrument_key(trade, getattr(state, "instrument_key", None))
                     trade_id = trade.get("id")
                     if state.ib_order_id and not trade.get("ib_order_id"):
                         self.trades_history_repo.update_status(
@@ -512,6 +526,8 @@ class ExecutionService:
                     ib=self._connection_manager.ib,
                     trades_history_repo=self.trades_history_repo,
                     risk_events_repo=self.risk_events_repo,
+                    bot_settings_repo=self._bot_settings_repo,
+                    owner_user_id=self._owner_user_id,
                 )
             
             # OMS - check if funds guard should be enabled
@@ -738,30 +754,8 @@ class ExecutionService:
             logger.warning("Cannot check broker positions: no IB connection")
             return None
         
-        try:
-            ib = self._connection_manager.ib
-            if not ib.isConnected():
-                logger.warning("Cannot check broker positions: IB not connected")
-                return None
-            
-            # Normalize symbol for comparison (EURUSD -> EUR, USD)
-            symbol_upper = symbol.upper().replace(".", "").replace("/", "")
-            
-            # Check ib.positions() for FX positions
-            for pos in ib.positions():
-                contract = pos.contract
-                if contract.secType == "CASH":
-                    # FX position: symbol=EUR, currency=USD -> EURUSD
-                    pos_symbol = f"{contract.symbol}{contract.currency}".upper()
-                    if pos_symbol == symbol_upper and pos.position != 0:
-                        logger.info(f"Broker has position for {symbol}: {pos.position}")
-                        return float(pos.position)
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Failed to check broker position for {symbol}: {e}")
-            return None
+        logger.warning("Cannot check broker positions without BrokerStateService")
+        return None
     
     # ========== Phase 7: Performance Tracking ==========
     
