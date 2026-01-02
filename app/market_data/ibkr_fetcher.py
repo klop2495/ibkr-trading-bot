@@ -96,7 +96,6 @@ class IBKRFetcher:
         
         # Case 1: Injected IB instance - don't own connection
         if not self._owns_connection and self._ib is not None and self._ib.isConnected():
-            ib_probe_ready(self._ib, timeout_s=self._probe_timeout_s)
             return self._ib
         
         # Case 2: We own the connection - create if needed
@@ -104,11 +103,7 @@ class IBKRFetcher:
             self._ib = IB()
         
         if self._ib.isConnected():
-            try:
-                ib_probe_ready(self._ib, timeout_s=self._probe_timeout_s)
-                return self._ib
-            except IBGatewayNotReady:
-                self._safe_disconnect()
+            return self._ib
         
         # Need to connect - try with retry on Error 326
         host = os.getenv("IB_GATEWAY_HOST", self._host)
