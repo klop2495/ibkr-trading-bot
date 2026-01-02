@@ -10,6 +10,7 @@ Handles:
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -199,17 +200,44 @@ class IBKRConnectionManager:
         """Perform actual connection."""
         ib = self._ensure_ib()
         self._ensure_event_loop()
-        
+
         with self._lock:
             self.stats.state = ConnectionState.CONNECTING
-        
-        ib.connect(
-            host=self.config.host,
-            port=self.config.port,
-            clientId=self.config.client_id,
-            readonly=self.config.readonly,
-            timeout=self.config.connection_timeout_seconds,
+
+        base_client_id = self.config.client_id
+        max_client_id_retries = int(
+            os.getenv("IBKR_CLIENT_ID_RETRIES", "5")
         )
+        last_error: Optional[Exception] = None
+        for offset in range(max_client_id_retries):
+            client_id = base_client_id + offset
+            try:
+                ib.connect(
+                    host=self.config.host,
+                    port=self.config.port,
+                    clientId=client_id,
+                    readonly=self.config.readonly,
+                    timeout=self.config.connection_timeout_seconds,
+                )
+                self.config.client_id = client_id
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                if not self._is_client_id_collision(exc):
+                    raise
+                try:
+                    ib.disconnect()
+                except Exception:
+                    pass
+                logger.warning(
+                    "ibkr_clientid_collision client_id=%s attempt=%s/%s",
+                    client_id,
+                    offset + 1,
+                    max_client_id_retries,
+                )
+        if last_error:
+            raise last_error
         try:
             ib_probe_ready(ib, timeout_s=self.config.connection_timeout_seconds)
         except IBGatewayNotReady as exc:
@@ -235,6 +263,11 @@ class IBKRConnectionManager:
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+
+    @staticmethod
+    def _is_client_id_collision(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "326" in msg or "client id" in msg or "already in use" in msg
     
     def connect(self) -> bool:
         """
