@@ -66,9 +66,28 @@ def ib_call_with_timeout(
     return result.get("value")
 
 
+def ib_request_with_timeout(
+    ib: Any,
+    fn: Callable[[], Any],
+    timeout_s: float,
+    *,
+    description: str = "ib_request",
+) -> Any:
+    previous_timeout = getattr(ib, "RequestTimeout", None)
+    try:
+        ib.RequestTimeout = max(previous_timeout or 0, timeout_s)
+        return fn()
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        raise IBTimeoutError(f"{description} timed out after {timeout_s}s") from exc
+    finally:
+        if previous_timeout is not None:
+            ib.RequestTimeout = previous_timeout
+
+
 def ib_probe_ready(ib: Any, timeout_s: float = 5.0) -> None:
     try:
-        ib_call_with_timeout(
+        ib_request_with_timeout(
+            ib,
             lambda: ib.reqCurrentTime(),
             timeout_s,
             description="ib_probe_current_time",

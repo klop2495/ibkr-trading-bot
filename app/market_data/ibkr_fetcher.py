@@ -9,8 +9,8 @@ from app.broker.ib_utils import (
     IBGatewayNotReady,
     IBTimeoutError,
     connect_with_backoff,
-    ib_call_with_timeout,
     ib_probe_ready,
+    ib_request_with_timeout,
 )
 
 # Mapping from our timeframe format to IB Gateway format
@@ -188,15 +188,16 @@ class IBKRFetcher:
     def fetch_historical_bars(self, symbol: str, timeframe: str, end_dt_utc: datetime, warmup_bars_min: int) -> List[Any]:
         try:
             ib = self._ensure_connected()
-            contract = ib_call_with_timeout(
+            contract = ib_request_with_timeout(
+                ib,
                 lambda: self._make_cfd_contract(ib, symbol),
                 self._historical_timeout_s,
                 description="ibkr_qualify_contract",
-                on_timeout=self._safe_disconnect,
             )
             ib_timeframe = self._convert_timeframe(timeframe)
             duration = self._calc_duration(timeframe, warmup_bars_min)
-            bars = ib_call_with_timeout(
+            bars = ib_request_with_timeout(
+                ib,
                 lambda: ib.reqHistoricalData(
                     contract=contract,
                     endDateTime="",
@@ -208,12 +209,13 @@ class IBKRFetcher:
                 ),
                 self._historical_timeout_s,
                 description="ibkr_reqHistoricalData",
-                on_timeout=self._safe_disconnect,
             )
             if os.getenv("CONTROL_PLANE_LOG_LEVEL", "INFO").upper() == "DEBUG":
                 print(f"ibkr_fetch symbol={symbol} tf={timeframe} duration={duration} bars={len(bars or [])}")
             return bars or []
         except IBTimeoutError:
+            if self._owns_connection:
+                self._safe_disconnect()
             raise
         except IBGatewayNotReady:
             raise

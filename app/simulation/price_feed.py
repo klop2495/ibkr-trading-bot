@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from app.simulation.models import SimEventType
 from app.broker.contracts import create_cfd_fx_contract
-from app.broker.ib_utils import ib_call_with_timeout
+from app.broker.ib_utils import ib_request_with_timeout
 
 
 @dataclass
@@ -162,7 +162,8 @@ class PriceFeed:
                 return None
             
             # Request last 1-minute bar
-            bars = ib_call_with_timeout(
+            bars = ib_request_with_timeout(
+                self.ib,
                 lambda: self.ib.reqHistoricalData(
                     contract,
                     endDateTime="",
