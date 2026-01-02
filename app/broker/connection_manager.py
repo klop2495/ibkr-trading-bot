@@ -8,6 +8,7 @@ Handles:
 - Multiple client IDs (for paper/live separation)
 """
 
+import asyncio
 import logging
 import threading
 import time
@@ -152,6 +153,7 @@ class IBKRConnectionManager:
     
     def _reconnect_loop(self) -> None:
         """Reconnection loop with exponential backoff."""
+        self._ensure_event_loop()
         delay = self.config.reconnect_delay_seconds
         
         for attempt in range(1, self.config.max_reconnect_attempts + 1):
@@ -196,6 +198,7 @@ class IBKRConnectionManager:
     def _do_connect(self) -> None:
         """Perform actual connection."""
         ib = self._ensure_ib()
+        self._ensure_event_loop()
         
         with self._lock:
             self.stats.state = ConnectionState.CONNECTING
@@ -219,6 +222,19 @@ class IBKRConnectionManager:
         
         logger.info(f"Connected to IBKR at {self.config.host}:{self.config.port}")
         self.callback.on_connected()
+
+    def _ensure_event_loop(self) -> None:
+        try:
+            asyncio.get_running_loop()
+            return
+        except RuntimeError:
+            pass
+        try:
+            asyncio.get_event_loop()
+            return
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
     
     def connect(self) -> bool:
         """
