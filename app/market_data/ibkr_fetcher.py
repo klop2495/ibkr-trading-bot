@@ -3,7 +3,7 @@ import time
 from datetime import datetime
 from typing import Any, List, Optional
 
-from app.broker.contracts import create_cfd_fx_contract
+from app.broker.contracts import create_cash_fx_contract, create_cfd_fx_contract
 from app.broker.ib_utils import (
     IBConnectionError,
     IBGatewayNotReady,
@@ -70,6 +70,7 @@ class IBKRFetcher:
         self._connect_attempts = int(os.getenv("IBKR_RECONNECT_ATTEMPTS", "5"))
         self._probe_timeout_s = float(os.getenv("IBKR_PROBE_TIMEOUT_S", "5"))
         self._historical_timeout_s = float(os.getenv("IBKR_HISTORICAL_TIMEOUT_S", "30"))
+        self._history_contract_mode = os.getenv("IBKR_HISTORY_CONTRACT_MODE", "cash").lower()
 
     def _safe_disconnect(self) -> None:
         if not self._ib:
@@ -173,6 +174,12 @@ class IBKRFetcher:
         """Create CFD FX contract for the given symbol."""
         return create_cfd_fx_contract(ib, symbol)
 
+    def _make_history_contract(self, ib: Any, symbol: str):
+        """Create contract for historical data (CASH by default)."""
+        if self._history_contract_mode == "cfd":
+            return create_cfd_fx_contract(ib, symbol)
+        return create_cash_fx_contract(ib, symbol)
+
     def _convert_timeframe(self, timeframe: str) -> str:
         """Convert our timeframe format to IB Gateway format."""
         return TIMEFRAME_MAP.get(timeframe, timeframe)
@@ -190,7 +197,7 @@ class IBKRFetcher:
             ib = self._ensure_connected()
             contract = ib_request_with_timeout(
                 ib,
-                lambda: self._make_cfd_contract(ib, symbol),
+                lambda: self._make_history_contract(ib, symbol),
                 self._historical_timeout_s,
                 description="ibkr_qualify_contract",
             )

@@ -30,3 +30,20 @@ def create_cfd_fx_contract(ib: Any, pair: str) -> Any:
         contract = qualified[0]
     ensure_conid(contract)
     return contract
+
+
+def create_cash_fx_contract(ib: Any, pair: str) -> Any:
+    base, quote = _normalize_pair(pair)
+    from ib_insync import Contract
+
+    contract = Contract(
+        secType="CASH",
+        symbol=base,
+        currency=quote,
+        exchange="IDEALPRO",
+    )
+    qualified = ib.qualifyContracts(contract)
+    if qualified:
+        contract = qualified[0]
+    ensure_conid(contract)
+    return contract
