@@ -198,7 +198,15 @@ class MarketDataService:
             if ts is None:
                 continue
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+                try:
+                    from zoneinfo import ZoneInfo
+                    ts = ts.replace(tzinfo=ZoneInfo("America/New_York"))
+                except Exception:
+                    ts = ts.replace(tzinfo=timezone.utc)
+            try:
+                ts = ts.astimezone(timezone.utc)
+            except Exception:
+                pass
             pairs.append((ts, b))
         pairs.sort(key=lambda x: x[0])
         issues: List[str] = []
