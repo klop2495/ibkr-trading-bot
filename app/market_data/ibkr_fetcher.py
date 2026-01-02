@@ -1,7 +1,17 @@
 import os
+import time
 from datetime import datetime
 from typing import Any, List, Optional
 
+from app.broker.contracts import create_cfd_fx_contract
+from app.broker.ib_utils import (
+    IBConnectionError,
+    IBGatewayNotReady,
+    IBTimeoutError,
+    connect_with_backoff,
+    ib_call_with_timeout,
+    ib_probe_ready,
+)
 
 # Mapping from our timeframe format to IB Gateway format
 TIMEFRAME_MAP = {
@@ -57,6 +67,19 @@ class IBKRFetcher:
             "IB_CLIENT_ID_MARKETDATA",
             os.getenv("IB_CLIENT_ID", "11")  # Fallback to 11 (different from main=10)
         ))
+        self._connect_attempts = int(os.getenv("IBKR_RECONNECT_ATTEMPTS", "5"))
+        self._probe_timeout_s = float(os.getenv("IBKR_PROBE_TIMEOUT_S", "5"))
+        self._historical_timeout_s = float(os.getenv("IBKR_HISTORICAL_TIMEOUT_S", "30"))
+
+    def _safe_disconnect(self) -> None:
+        if not self._ib:
+            return
+        try:
+            self._ib.disconnect()
+        except Exception:
+            pass
+        if self._owns_connection:
+            self._ib = None
 
     def _ensure_connected(self):
         """
@@ -71,11 +94,8 @@ class IBKRFetcher:
         from ib_insync import IB
         
         # Case 1: Injected IB instance - don't own connection
-        if not self._owns_connection:
-            if self._ib is None:
-                raise RuntimeError("ibkr_not_connected: no IB instance provided")
-            if not self._ib.isConnected():
-                raise RuntimeError("ibkr_not_connected: injected IB instance is disconnected")
+        if not self._owns_connection and self._ib is not None and self._ib.isConnected():
+            ib_probe_ready(self._ib, timeout_s=self._probe_timeout_s)
             return self._ib
         
         # Case 2: We own the connection - create if needed
@@ -83,7 +103,11 @@ class IBKRFetcher:
             self._ib = IB()
         
         if self._ib.isConnected():
-            return self._ib
+            try:
+                ib_probe_ready(self._ib, timeout_s=self._probe_timeout_s)
+                return self._ib
+            except IBGatewayNotReady:
+                self._safe_disconnect()
         
         # Need to connect - try with retry on Error 326
         host = os.getenv("IB_GATEWAY_HOST", self._host)
@@ -94,40 +118,60 @@ class IBKRFetcher:
         ))
         
         last_error = None
-        for attempt in range(self.MAX_CLIENT_ID_RETRIES):
-            client_id = base_client_id + attempt
+        last_gateway_error = None
+        backoff_schedule = [1.0, 2.0, 5.0, 10.0, 30.0]
+        for attempt in range(self._connect_attempts):
+            client_id = base_client_id
             try:
-                self._ib.RequestTimeout = 60
-                self._ib.connect(
-                    host, 
-                    port, 
-                    clientId=client_id, 
-                    timeout=30
-                )
-                # Success - update instance vars
-                self._client_id = client_id
-                print(f"ibkr_marketdata_connected host={host} port={port} client_id={client_id}")
-                return self._ib
+                # Handle clientId collision by walking forward
+                for cid_offset in range(self.MAX_CLIENT_ID_RETRIES):
+                    client_id = base_client_id + cid_offset
+                    try:
+                        connect_with_backoff(
+                            self._ib,
+                            host=host,
+                            port=port,
+                            client_id=client_id,
+                            timeout_s=30,
+                            max_attempts=1,
+                            backoff_schedule=[0.0],
+                            probe_timeout_s=self._probe_timeout_s,
+                        )
+                        self._client_id = client_id
+                        print(f"ibkr_marketdata_connected host={host} port={port} client_id={client_id}")
+                        return self._ib
+                    except Exception as e:
+                        error_str = str(e).lower()
+                        if "326" in str(e) or "client id" in error_str or "already in use" in error_str:
+                            print(f"ibkr_clientid_collision client_id={client_id} attempt={cid_offset+1}/{self.MAX_CLIENT_ID_RETRIES}")
+                            continue
+                        if isinstance(e, IBGatewayNotReady):
+                            last_gateway_error = e
+                        else:
+                            last_error = e
+                        break
             except Exception as e:
-                last_error = e
-                error_str = str(e).lower()
-                # Check for Error 326 (clientId collision)
-                if "326" in str(e) or "client id" in error_str or "already in use" in error_str:
-                    print(f"ibkr_clientid_collision client_id={client_id} attempt={attempt+1}/{self.MAX_CLIENT_ID_RETRIES}")
-                    continue
-                # Other error - don't retry
-                print(f"ibkr_connection_failed host={host} port={port} client_id={client_id} error={e}")
-                raise RuntimeError(f"ibkr_connection_failed: host={host} port={port} error={e}") from e
+                if isinstance(e, IBGatewayNotReady):
+                    last_gateway_error = e
+                else:
+                    last_error = e
+            delay = backoff_schedule[min(attempt, len(backoff_schedule) - 1)]
+            err = last_gateway_error or last_error
+            print(f"ibkr_connection_failed host={host} port={port} attempt={attempt+1}/{self._connect_attempts} error={err}")
+            if delay > 0:
+                time.sleep(delay)
         
         # All retries exhausted
         print(f"ibkr_connection_failed_all_retries host={host} port={port} base_client_id={base_client_id}")
-        raise RuntimeError(f"ibkr_connection_failed: exhausted {self.MAX_CLIENT_ID_RETRIES} clientId retries") from last_error
+        if last_gateway_error:
+            raise IBGatewayNotReady(str(last_gateway_error)) from last_gateway_error
+        raise IBConnectionError(
+            f"ibkr_connection_failed: exhausted {self._connect_attempts} attempts"
+        ) from last_error
 
-    def _make_forex_contract(self, symbol: str):
-        """Convert symbol like 'EUR/USD' to Forex contract."""
-        from ib_insync import Forex
-        pair = symbol.replace("/", "")
-        return Forex(pair)
+    def _make_cfd_contract(self, ib: Any, symbol: str):
+        """Create CFD FX contract for the given symbol."""
+        return create_cfd_fx_contract(ib, symbol)
 
     def _convert_timeframe(self, timeframe: str) -> str:
         """Convert our timeframe format to IB Gateway format."""
@@ -144,22 +188,37 @@ class IBKRFetcher:
     def fetch_historical_bars(self, symbol: str, timeframe: str, end_dt_utc: datetime, warmup_bars_min: int) -> List[Any]:
         try:
             ib = self._ensure_connected()
-            contract = self._make_forex_contract(symbol)
-            ib.qualifyContracts(contract)
+            contract = ib_call_with_timeout(
+                lambda: self._make_cfd_contract(ib, symbol),
+                self._historical_timeout_s,
+                description="ibkr_qualify_contract",
+                on_timeout=self._safe_disconnect,
+            )
             ib_timeframe = self._convert_timeframe(timeframe)
             duration = self._calc_duration(timeframe, warmup_bars_min)
-            bars = ib.reqHistoricalData(
-                contract=contract,
-                endDateTime='',
-                durationStr=duration,
-                barSizeSetting=ib_timeframe,
-                whatToShow='MIDPOINT',
-                useRTH=False,
-                formatDate=1,
+            bars = ib_call_with_timeout(
+                lambda: ib.reqHistoricalData(
+                    contract=contract,
+                    endDateTime="",
+                    durationStr=duration,
+                    barSizeSetting=ib_timeframe,
+                    whatToShow="MIDPOINT",
+                    useRTH=False,
+                    formatDate=1,
+                ),
+                self._historical_timeout_s,
+                description="ibkr_reqHistoricalData",
+                on_timeout=self._safe_disconnect,
             )
             if os.getenv("CONTROL_PLANE_LOG_LEVEL", "INFO").upper() == "DEBUG":
                 print(f"ibkr_fetch symbol={symbol} tf={timeframe} duration={duration} bars={len(bars or [])}")
             return bars or []
+        except IBTimeoutError:
+            raise
+        except IBGatewayNotReady:
+            raise
+        except IBConnectionError:
+            raise
         except Exception as exc:
             # Log the error with details
             print(f"ibkr_fetch_error symbol={symbol} tf={timeframe} error={exc}")
@@ -175,8 +234,7 @@ class IBKRFetcher:
     def fetch_spread(self, symbol: str) -> float | None:
         try:
             ib = self._ensure_connected()
-            contract = self._make_forex_contract(symbol)
-            ib.qualifyContracts(contract)
+            contract = self._make_cfd_contract(ib, symbol)
             ticker = ib.reqMktData(contract, "", False, False)
             ib.sleep(0.1)
             if ticker and ticker.bid is not None and ticker.ask is not None:

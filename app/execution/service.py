@@ -15,10 +15,11 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from uuid import UUID, uuid4
 
 from app.broker.connection_manager import (
+    ConnectionCallback,
     ConnectionConfig,
     ConnectionState,
     IBKRConnectionManager,
@@ -107,6 +108,30 @@ class TradeCloseInfo:
     agent_confidences: Dict[str, float] = field(default_factory=dict)
     final_signal: str = "HOLD"
     hold_time_minutes: int = 0
+
+
+class ExecutionConnectionCallback(ConnectionCallback):
+    def __init__(
+        self,
+        on_connected: Optional[Callable[[], None]] = None,
+        on_disconnected: Optional[Callable[[Optional[str]], None]] = None,
+        on_error: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        self._on_connected = on_connected
+        self._on_disconnected = on_disconnected
+        self._on_error = on_error
+
+    def on_connected(self) -> None:
+        if self._on_connected:
+            self._on_connected()
+
+    def on_disconnected(self, reason: Optional[str] = None) -> None:
+        if self._on_disconnected:
+            self._on_disconnected(reason)
+
+    def on_error(self, error: str) -> None:
+        if self._on_error:
+            self._on_error(error)
 
 
 class ExecutionServiceCallback(IBKROrderCallback):
@@ -413,6 +438,8 @@ class ExecutionService:
         self._equity: float = self.DEFAULT_EQUITY
         self._mode: ExecutionMode = ExecutionMode.DISABLED
         self._initialized: bool = False
+        self._fail_safe_blocked: bool = False
+        self._fail_safe_reason: Optional[str] = None
         
         # Price cache (for SL/TP calculation)
         self._price_cache: dict[str, float] = {}
@@ -512,11 +539,15 @@ class ExecutionService:
             )
             self._connection_manager = IBKRConnectionManager(
                 config=config,
-                callback=None,  # We handle connection events separately
+                callback=ExecutionConnectionCallback(
+                    on_connected=self._on_ib_connected,
+                    on_disconnected=self._on_ib_disconnected,
+                    on_error=lambda err: logger.warning("IBKR connection error: %s", err),
+                ),
             )
             
             # Try to connect
-            if not self._connection_manager.connect():
+            if not self._connection_manager.ensure_connected():
                 logger.error("Failed to connect to IBKR")
                 self._log_event("EXECUTION_INIT_FAILED", "error", "Failed to connect to IBKR")
                 return False
@@ -968,6 +999,14 @@ class ExecutionService:
         """
         # Determine mode
         self._mode = self._determine_mode(settings)
+
+        if self._fail_safe_blocked:
+            return ExecutionResult(
+                executed=False,
+                mode=self._mode,
+                symbol=decision.symbol,
+                reason="ib_untrusted",
+            )
         
         # Initialize components (position sizer always, IB components when needed)
         if not self._init_components(settings):
@@ -1534,6 +1573,24 @@ class ExecutionService:
                 message=message,
                 data=data or {},
             )
+
+    def set_fail_safe(self, blocked: bool, *, reason: Optional[str] = None) -> None:
+        self._fail_safe_blocked = blocked
+        self._fail_safe_reason = reason
+
+    def is_fail_safe_blocked(self) -> bool:
+        return self._fail_safe_blocked
+
+    def _on_ib_connected(self) -> None:
+        if self._broker_state_service:
+            try:
+                self._broker_state_service.invalidate_cache()
+            except Exception:
+                pass
+
+    def _on_ib_disconnected(self, reason: Optional[str] = None) -> None:
+        if reason:
+            logger.warning("IBKR disconnected: %s", reason)
 
     def _disable_trading(self, reason: str) -> None:
         if not self._bot_settings_repo or not self._owner_user_id:

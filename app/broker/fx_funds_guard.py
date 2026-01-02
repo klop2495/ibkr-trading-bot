@@ -219,10 +219,8 @@ class FXFundsGuard:
             Tuple of (price, source) where source is "ask", "bid", "last", or "midpoint"
         """
         try:
-            from ib_insync import Forex
-            
-            contract = Forex(symbol.replace(".", "").replace("/", ""))
-            self.ib.qualifyContracts(contract)
+            from app.broker.contracts import create_cfd_fx_contract
+            contract = create_cfd_fx_contract(self.ib, symbol)
             
             ticker = self.ib.reqMktData(contract, snapshot=True)
             

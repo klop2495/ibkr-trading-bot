@@ -2,12 +2,15 @@
 PriceFeed - Real-time price data for simulation
 Sources: IBKR bid/ask, IBKR bars, or market_snapshots fallback
 """
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from app.simulation.models import SimEventType
+from app.broker.contracts import create_cfd_fx_contract
+from app.broker.ib_utils import ib_call_with_timeout
 
 
 @dataclass
@@ -54,6 +57,7 @@ class PriceFeed:
         
         # Contracts cache for IBKR
         self._contracts: Dict[str, Any] = {}
+        self._historical_timeout_s = float(os.getenv("IBKR_HISTORICAL_TIMEOUT_S", "30"))
     
     def get_quote(self, symbol: str) -> Optional[PriceQuote]:
         """
@@ -97,14 +101,12 @@ class PriceFeed:
         return result
     
     def _get_contract(self, symbol: str) -> Any:
-        """Get or create IBKR Forex contract"""
+        """Get or create IBKR CFD FX contract."""
+        if self.ib is None or not self.ib.isConnected():
+            return None
         if symbol not in self._contracts:
             try:
-                from ib_insync import Forex
-                # Parse symbol like "EURUSD" -> EUR, USD
-                base = symbol[:3]
-                quote = symbol[3:]
-                self._contracts[symbol] = Forex(base, quote)
+                self._contracts[symbol] = create_cfd_fx_contract(self.ib, symbol)
             except Exception:
                 return None
         return self._contracts[symbol]
@@ -160,14 +162,18 @@ class PriceFeed:
                 return None
             
             # Request last 1-minute bar
-            bars = self.ib.reqHistoricalData(
-                contract,
-                endDateTime='',
-                durationStr='60 S',
-                barSizeSetting='1 min',
-                whatToShow='MIDPOINT',
-                useRTH=False,
-                formatDate=1,
+            bars = ib_call_with_timeout(
+                lambda: self.ib.reqHistoricalData(
+                    contract,
+                    endDateTime="",
+                    durationStr="60 S",
+                    barSizeSetting="1 min",
+                    whatToShow="MIDPOINT",
+                    useRTH=False,
+                    formatDate=1,
+                ),
+                self._historical_timeout_s,
+                description="ibkr_reqHistoricalData_sim",
             )
             
             if not bars:

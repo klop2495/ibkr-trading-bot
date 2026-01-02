@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.broker.ib_utils import IBGatewayNotReady, ib_probe_ready
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +207,10 @@ class IBKRConnectionManager:
             readonly=self.config.readonly,
             timeout=self.config.connection_timeout_seconds,
         )
+        try:
+            ib_probe_ready(ib, timeout_s=self.config.connection_timeout_seconds)
+        except IBGatewayNotReady as exc:
+            raise RuntimeError(f"gateway_not_ready: {exc}") from exc
         
         with self._lock:
             self.stats.state = ConnectionState.CONNECTED
@@ -222,18 +227,59 @@ class IBKRConnectionManager:
         Returns:
             True if connected successfully
         """
-        try:
-            self._do_connect()
+        if self.ensure_connected():
             self._start_health_monitor()
             return True
-        except Exception as e:
-            with self._lock:
-                self.stats.state = ConnectionState.ERROR
-                self.stats.last_error = str(e)
-            
-            logger.error(f"Failed to connect: {e}")
-            self.callback.on_error(str(e))
-            return False
+        return False
+
+    def ensure_connected(self, max_attempts: Optional[int] = None) -> bool:
+        """
+        Ensure connection is alive, reconnecting with backoff if needed.
+        """
+        attempts = max_attempts or self.config.max_reconnect_attempts
+        backoff_schedule = [1.0, 2.0, 5.0, 10.0, 30.0]
+        last_error: Optional[Exception] = None
+        was_connected = self.is_connected
+
+        for attempt in range(attempts):
+            try:
+                if self._ib and self._ib.isConnected():
+                    ib_probe_ready(self._ib, timeout_s=self.config.connection_timeout_seconds)
+                    if not was_connected:
+                        logger.info(
+                            "ibkr_reconnected host=%s port=%s client_id=%s",
+                            self.config.host,
+                            self.config.port,
+                            self.config.client_id,
+                        )
+                    return True
+
+                self._do_connect()
+                if not was_connected:
+                    logger.info(
+                        "ibkr_reconnected host=%s port=%s client_id=%s",
+                        self.config.host,
+                        self.config.port,
+                        self.config.client_id,
+                    )
+                return True
+            except Exception as e:
+                last_error = e
+                with self._lock:
+                    self.stats.state = ConnectionState.ERROR
+                    self.stats.last_error = str(e)
+                if self._ib and self._ib.isConnected():
+                    try:
+                        self._ib.disconnect()
+                    except Exception:
+                        pass
+                logger.warning("Reconnect attempt %s/%s failed: %s", attempt + 1, attempts, e)
+                delay = backoff_schedule[min(attempt, len(backoff_schedule) - 1)]
+                time.sleep(delay)
+
+        logger.error("Failed to reconnect after %s attempts: %s", attempts, last_error)
+        self.callback.on_error(str(last_error) if last_error else "reconnect_failed")
+        return False
     
     def disconnect(self) -> None:
         """Disconnect from IBKR."""

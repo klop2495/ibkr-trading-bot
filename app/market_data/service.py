@@ -6,6 +6,7 @@ Phase 7 Update: Added methods for OHLC, ATR history, 24h prices.
 
 import os
 import math
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -14,6 +15,7 @@ from app.market_data.indicators import atr, rsi, sma
 from app.market_data.timeframes import timeframe_seconds
 from app.models.snapshot import MarketSnapshot
 from app.storage.repositories import RiskEventsRepo, SnapshotsRepo
+from app.broker.ib_utils import IBConnectionError, IBGatewayNotReady, IBTimeoutError
 
 
 class MarketDataService:
@@ -47,6 +49,13 @@ class MarketDataService:
         self.risk_events_repo = risk_events_repo
         self.last_bar_counts: Dict[Tuple[str, str], int] = {}
         self.last_qa_issues: Dict[Tuple[str, str], List[str]] = {}
+        self._error_log_ts: Dict[Tuple[str, str, str], float] = {}
+        self._error_window_s = int(os.getenv("MARKET_DATA_ERROR_WINDOW_S", "60"))
+        self._max_error_logs_per_cycle = int(os.getenv("MARKET_DATA_MAX_ERROR_LOGS", "20"))
+        self._last_ib_status: str = "ok"
+        self._last_ib_error_code: Optional[str] = None
+        self._last_ib_error_ts: Optional[datetime] = None
+        self._persist_snapshots = True
         
         # Phase 7: Cache for bars data (symbol, timeframe) -> list of bars
         self._bars_cache: Dict[Tuple[str, str], List[Any]] = {}
@@ -69,24 +78,42 @@ class MarketDataService:
         fetch_errors: List[str] = []
         debug_log = os.getenv("CONTROL_PLANE_LOG_LEVEL", "INFO").upper() == "DEBUG"
         self.last_qa_issues.clear()
+        self._persist_snapshots = True
+        ib_untrusted = False
+        ib_error_code = None
+        ib_error_msg = None
+        logged_this_cycle = 0
+        suppressed: Dict[Tuple[str, str, str], int] = {}
         
         for sym in self.symbols:
             for tf in self.timeframes:
                 try:
                     bars = self.fetcher.fetch_historical_bars(sym, tf, end_dt_utc, self.warmup_bars_min)
                 except Exception as exc:
-                    # Log fetch errors to stdout for visibility
-                    error_msg = f"market_data_fetch_error symbol={sym} tf={tf} error={exc}"
-                    print(error_msg)
+                    error_code = self._error_code(exc)
                     fetch_errors.append(f"{sym}/{tf}")
-                    if self.risk_events_repo:
-                        self.risk_events_repo.insert(
-                            event_type="MARKET_DATA_FETCH_ERROR",
-                            severity="error",
-                            symbol=sym,
-                            message=f"Failed to fetch bars: {exc}",
-                            data={"symbol": sym, "timeframe": tf, "error": str(exc)},
-                        )
+                    key = (sym, tf, error_code)
+                    now_ts = time.monotonic()
+                    last_ts = self._error_log_ts.get(key, 0.0)
+                    if logged_this_cycle < self._max_error_logs_per_cycle and (now_ts - last_ts) >= self._error_window_s:
+                        self._error_log_ts[key] = now_ts
+                        logged_this_cycle += 1
+                        print(f"market_data_fetch_error symbol={sym} tf={tf} code={error_code} error={exc}")
+                        if self.risk_events_repo:
+                            self.risk_events_repo.insert(
+                                event_type="MARKET_DATA_FETCH_ERROR",
+                                severity="error",
+                                symbol=sym,
+                                message=f"Failed to fetch bars: {exc}",
+                                data={"symbol": sym, "timeframe": tf, "error": str(exc), "code": error_code},
+                            )
+                    else:
+                        suppressed[key] = suppressed.get(key, 0) + 1
+                    if self._is_critical_ib_error(error_code):
+                        ib_untrusted = True
+                        ib_error_code = error_code
+                        ib_error_msg = str(exc)
+                        break
                     counts[(sym, tf)] = 0
                     continue
                     
@@ -116,7 +143,28 @@ class MarketDataService:
                 snap = self._handle_bars(sym, tf, filtered_bars)
                 if snap:
                     snapshots.append(snap)
+            if ib_untrusted:
+                break
         
+        if suppressed:
+            for (sym, tf, code), count in suppressed.items():
+                print(
+                    f"ib_error_summary symbol={sym} tf={tf} code={code} repeated={count} window_s={self._error_window_s}"
+                )
+
+        if ib_untrusted:
+            self._persist_snapshots = False
+            self._last_ib_status = "untrusted"
+            self._last_ib_error_code = ib_error_code
+            self._last_ib_error_ts = datetime.now(timezone.utc)
+            if ib_error_msg:
+                print(f"ib_untrusted code={ib_error_code} error={ib_error_msg}")
+            return False, []
+
+        self._last_ib_status = "ok"
+        self._last_ib_error_code = None
+        self._last_ib_error_ts = None
+
         warmup_ready = self.is_warmup_ready(counts)
         
         # Log warmup status summary if not ready or if there were errors
@@ -133,6 +181,12 @@ class MarketDataService:
                 print(f"fetch_errors count={len(fetch_errors)} pairs={fetch_errors[:5]}{'...' if len(fetch_errors) > 5 else ''}")
         
         return warmup_ready, snapshots
+
+    def is_ib_untrusted(self) -> bool:
+        return self._last_ib_status == "untrusted"
+
+    def last_ib_error(self) -> Tuple[Optional[str], Optional[datetime]]:
+        return self._last_ib_error_code, self._last_ib_error_ts
 
     def _prepare_bars(self, symbol: str, timeframe: str, bars, end_dt_utc: datetime):
         if not bars:
@@ -234,6 +288,8 @@ class MarketDataService:
         return prev_local < rollover <= curr_local
 
     def _handle_bars(self, symbol: str, timeframe: str, bars):
+        if not self._persist_snapshots:
+            return None
         latest = bars[-1]
         ts = getattr(latest, "date", None) or getattr(latest, "time", None)
         if ts is None:
@@ -321,6 +377,26 @@ class MarketDataService:
         if "DATA_STALE" in issues:
             return "stale"
         return "unknown"
+
+    @staticmethod
+    def _is_critical_ib_error(error_code: str) -> bool:
+        return error_code in {"ib_timeout", "ib_gateway_not_ready", "ib_connection_failed"}
+
+    @staticmethod
+    def _error_code(exc: Exception) -> str:
+        code = getattr(exc, "code", None)
+        if code:
+            return str(code)
+        msg = str(exc).lower()
+        if "timeout" in msg:
+            return "ib_timeout"
+        if "not ready" in msg:
+            return "ib_gateway_not_ready"
+        if "not connected" in msg or "connect" in msg:
+            return "ib_connection_failed"
+        if isinstance(exc, (IBTimeoutError, IBGatewayNotReady, IBConnectionError)):
+            return getattr(exc, "code", "ib_connection_failed")
+        return "unknown_error"
     
     # ========== Phase 7: New Methods ==========
     

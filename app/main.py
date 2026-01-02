@@ -40,6 +40,7 @@ from app.signals.engine_v1 import SignalEngineV1
 from app.storage.repositories import SnapshotsRepo
 from app.models.bot_settings import DEFAULT_SYMBOLS
 from app.broker.state_service import BrokerStateService
+from app.broker.ib_utils import IBFailSafeState
 
 
 DEFAULT_BACKFILL_BATCH = 25
@@ -1406,6 +1407,15 @@ def run_signal_generation_tick(
         # Fetch market data and check warmup
         end_dt_utc = datetime.now(timezone.utc)
         warmup_ready, snapshots = market_data_service.process(end_dt_utc)
+        if market_data_service.is_ib_untrusted():
+            error_code, _ = market_data_service.last_ib_error()
+            return {
+                "generated": 0,
+                "warmup_ready": False,
+                "errors": 1,
+                "mode": "ib_untrusted",
+                "ib_error_code": error_code,
+            }
         
         if not warmup_ready:
             return {
@@ -1480,6 +1490,7 @@ def run_signal_generation_tick(
 def _create_ib_connection(host: str, port: int, client_id: int, retries: int = 3, retry_delay: float = 5.0):
     """Create IB Gateway connection with retry logic and clientId collision handling."""
     from ib_insync import IB
+    from app.broker.ib_utils import ib_probe_ready, IBGatewayNotReady
     
     MAX_CLIENTID_RETRIES = 10
     
@@ -1489,6 +1500,7 @@ def _create_ib_connection(host: str, port: int, client_id: int, retries: int = 3
             ib = IB()
             ib.RequestTimeout = 60
             ib.connect(host, port, clientId=client_id, timeout=60)
+            ib_probe_ready(ib, timeout_s=5.0)
             print(f"IB Gateway connected successfully on attempt {attempt}")
             return ib
         except Exception as e:
@@ -1503,10 +1515,14 @@ def _create_ib_connection(host: str, port: int, client_id: int, retries: int = 3
                         ib = IB()
                         ib.RequestTimeout = 60
                         ib.connect(host, port, clientId=new_client_id, timeout=60)
+                        ib_probe_ready(ib, timeout_s=5.0)
                         print(f"IB Gateway connected with clientId={new_client_id}")
                         return ib
                     except Exception as e2:
                         if "326" in str(e2) or "client id" in str(e2).lower():
+                            continue
+                        if isinstance(e2, IBGatewayNotReady):
+                            time.sleep(retry_delay)
                             continue
                         # Other error - break inner loop
                         break
@@ -1621,7 +1637,7 @@ def main():
 
     # Phase 6: Signal generation from market data
     signal_gen_enabled = os.getenv("SIGNAL_GEN_ENABLED", "1") != "0"
-    signal_gen_mock = os.getenv("SIGNAL_GEN_MOCK", "1") == "1"  # Mock by default (no IB connection required)
+    signal_gen_mock = os.getenv("SIGNAL_GEN_MOCK", "0") == "1"
     signal_gen_interval = int(os.getenv("SIGNAL_GEN_INTERVAL", str(DEFAULT_SIGNAL_GEN_INTERVAL)))
     last_signal_gen_tick = 0.0
     last_signal_gen_log: Optional[str] = None
@@ -1641,22 +1657,18 @@ def main():
         if signal_gen_mock:
             fetcher = SeedFetcher(seed=42)  # Deterministic mock data
         else:
-            # Try to connect to IB Gateway
             ib_host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
             ib_port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
-            # Use role-specific clientId for main/marketdata connection
             ib_client_id = int(os.getenv(
-                "IB_CLIENT_ID_MAIN",
-                os.getenv("IB_CLIENT_ID", "151")
+                "IB_CLIENT_ID_MARKETDATA",
+                os.getenv("IB_CLIENT_ID", "152")
             ))
-            ib_conn = _create_ib_connection(ib_host, ib_port, ib_client_id)
-            if ib_conn:
-                from app.market_data.ibkr_fetcher import IBKRFetcher
-                fetcher = IBKRFetcher(ib=ib_conn)
-            else:
-                print("Warning: IB Gateway connection failed, falling back to mock data")
-                fetcher = SeedFetcher(seed=42)
-                signal_gen_mock = True
+            from app.market_data.ibkr_fetcher import IBKRFetcher
+            fetcher = IBKRFetcher(
+                host=ib_host,
+                port=ib_port,
+                client_id=ib_client_id,
+            )
         
         # Initialize MarketDataService
         market_data_service = MarketDataService(
@@ -1683,14 +1695,10 @@ def main():
     # Initialize ExecutionService + BrokerStateService
     owner_uuid_str = str(owner_uuid)
     trades_history_repo = TradesHistoryRepo(db)
-    broker_ib = None
-    if not signal_gen_mock and 'ib_conn' in dir() and ib_conn is not None:
-        broker_ib = ib_conn
-    else:
-        ib_host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
-        ib_port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
-        ib_client_id = int(os.getenv("IB_CLIENT_ID_MAIN", os.getenv("IB_CLIENT_ID", "151")))
-        broker_ib = _create_ib_connection(ib_host, ib_port, ib_client_id, retries=1)
+    ib_host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
+    ib_port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
+    ib_client_id = int(os.getenv("IB_CLIENT_ID_MAIN", os.getenv("IB_CLIENT_ID", "151")))
+    broker_ib = _create_ib_connection(ib_host, ib_port, ib_client_id, retries=1)
 
     broker_state_service = BrokerStateService(
         ib=broker_ib,
@@ -1702,7 +1710,7 @@ def main():
     execution_service = ExecutionService(
         risk_events_repo=risk_events_repo,
         trades_history_repo=trades_history_repo,
-        broker_state_service=broker_state_service,
+        broker_state_service=None,
         bot_settings_repo=bot_settings_repo,
         owner_user_id=owner_uuid_str,
     )
@@ -1710,13 +1718,10 @@ def main():
     # P0-D: Get equity from IB Gateway if connected, else fallback to env
     default_equity = float(os.getenv("DEFAULT_EQUITY", str(DEFAULT_EQUITY)))
     ib_conn_for_equity = None
-    if not signal_gen_mock and 'ib_conn' in dir() and ib_conn is not None:
-        ib_conn_for_equity = ib_conn
-    elif not signal_gen_mock:
-        # Create separate connection for equity fetch
+    if not signal_gen_mock:
         ib_host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
         ib_port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
-        ib_client_id = int(os.getenv("IB_CLIENT_ID_EQUITY", "102"))  # Different clientId
+        ib_client_id = int(os.getenv("IB_CLIENT_ID_EQUITY", "102"))
         ib_conn_for_equity = _create_ib_connection(ib_host, ib_port, ib_client_id, retries=1)
     
     equity_from_ib = _fetch_equity_from_ib(ib_conn_for_equity)
@@ -1748,7 +1753,7 @@ def main():
             print(f"Warning: Failed to save equity to Supabase: {e}")
     
     # Disconnect equity connection if separate
-    if ib_conn_for_equity is not None and (not signal_gen_mock and ('ib_conn' not in dir() or ib_conn is None or ib_conn_for_equity is not ib_conn)):
+    if ib_conn_for_equity is not None:
         try:
             ib_conn_for_equity.disconnect()
         except Exception:
@@ -1833,6 +1838,11 @@ def main():
     # Stats logging interval
     stats_log_interval = int(os.getenv("STATS_LOG_INTERVAL_TICKS", "10"))
     tick_count = 0
+    ib_fail_safe = IBFailSafeState()
+    ib_fail_safe_threshold_s = int(os.getenv("IB_FAILSAFE_UNTRUSTED_SECONDS", "300"))
+    ib_recovery_cycles = int(os.getenv("IB_FAILSAFE_RECOVERY_CYCLES", "3"))
+    ib_fail_safe_warn_window_s = int(os.getenv("IB_FAILSAFE_WARN_WINDOW_S", "60"))
+    last_ib_warn_ts = 0.0
 
     while True:
         tick_count += 1
@@ -1870,6 +1880,39 @@ def main():
                     print(signal_gen_log)
                     last_signal_gen_log = signal_gen_log
                 last_signal_gen_tick = now_ts
+                if not signal_gen_mock and market_data_service:
+                    now_dt = datetime.now(timezone.utc)
+                    if signal_result.get("mode") == "ib_untrusted":
+                        reason = signal_result.get("ib_error_code") or "ib_untrusted"
+                        changed = ib_fail_safe.mark_untrusted(reason, now_dt, ib_fail_safe_threshold_s)
+                        if not ib_fail_safe.disabled:
+                            now_monotonic = time.monotonic()
+                            if now_monotonic - last_ib_warn_ts >= ib_fail_safe_warn_window_s:
+                                last_ib_warn_ts = now_monotonic
+                                if risk_events_repo:
+                                    risk_events_repo.insert(
+                                        event_type="IB_UNTRUSTED_WARN",
+                                        severity="warn",
+                                        message="IB gateway untrusted (short outage)",
+                                        data={"reason": reason},
+                                    )
+                        if changed and risk_events_repo:
+                            risk_events_repo.insert(
+                                event_type="IB_UNTRUSTED",
+                                severity="critical",
+                                message="IB gateway unavailable; trading blocked",
+                                data={"reason": reason},
+                            )
+                    else:
+                        changed = ib_fail_safe.mark_ok(now_dt, ib_recovery_cycles)
+                        if changed and risk_events_repo:
+                            risk_events_repo.insert(
+                                event_type="IB_RECOVERED",
+                                severity="info",
+                                message="IB gateway recovered; trading unblocked",
+                                data={},
+                            )
+                    execution_service.set_fail_safe(ib_fail_safe.disabled, reason=ib_fail_safe.last_reason)
 
         (
             processed_total,
@@ -1921,7 +1964,7 @@ def main():
                 f"fetch_ms={int(fetch_ms_total)} persist_ms={int(persist_ms_total)} total_ms={int(elapsed_ms)} stop_reason={stop_reason} early_break={early_break}{slow_suffix}{symbols_suffix}"
             )
         # Run execution tick if enabled
-        if execution_enabled:
+        if execution_enabled and not execution_service.is_fail_safe_blocked():
             exec_result = run_execution_tick(
                 client=db.client,
                 settings=settings,
