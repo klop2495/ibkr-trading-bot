@@ -5,31 +5,26 @@ Forecast Backtest Script
 Runs the forecast engine on historical data stored in Supabase (market_snapshots)
 and compares predictions with actual price movements.
 
+Uses only 'close' prices from market_snapshots (open/high/low not available).
+ATR-based vote is skipped; 5 of 6 indicators are used.
+
 Usage:
     python -m scripts.forecast_backtest --days 7 --symbol EURUSD
     python -m scripts.forecast_backtest --days 30
-    python -m scripts.forecast_backtest --days 14 --symbol GBPUSD --save
-
-Options:
-    --days N        Number of days to backtest (default: 7)
-    --symbol SYM    Backtest only one symbol (default: all)
-    --save          Save results to Supabase forecast_backtests table
-    --verbose       Print per-forecast details
+    python -m scripts.forecast_backtest --days 14 --symbol GBPUSD --save --verbose
 """
 
 import argparse
 import os
 import sys
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-# Ensure project root is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.models.forecast import FORECAST_HORIZONS
 from app.forecast.indicators_vote import (
     aggregate_votes,
-    vote_atr_trend,
     vote_ma_cross,
     vote_momentum,
     vote_price_vs_ma,
@@ -37,39 +32,15 @@ from app.forecast.indicators_vote import (
     vote_rsi_trend,
 )
 from app.forecast.engine import HORIZON_CONFIG, MIN_BARS_REQUIRED
-from app.market_data.indicators import sma as calc_sma
 
 
-class MockMarketDataService:
-    """Provides OHLC data from a snapshot dictionary for a given point in time."""
-
-    def __init__(self, snapshots: Dict[str, Dict[str, List[Dict[str, Any]]]]):
-        self._data = snapshots
-
-    def get_ohlc(self, symbol: str, timeframe: str, n_bars: int = 250, up_to_idx: int = -1) -> Optional[Dict]:
-        rows = self._data.get(symbol, {}).get(timeframe, [])
-        if not rows:
-            return None
-        end = up_to_idx if up_to_idx >= 0 else len(rows)
-        start = max(0, end - n_bars)
-        subset = rows[start:end]
-        if not subset:
-            return None
-        return {
-            "opens": [r["open"] for r in subset],
-            "highs": [r["high"] for r in subset],
-            "lows": [r["low"] for r in subset],
-            "closes": [r["close"] for r in subset],
-        }
-
-
-def fetch_historical_snapshots(
+def fetch_closes(
     db: Any,
     symbols: List[str],
     since: datetime,
     until: datetime,
 ) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
-    """Fetch market_snapshots from Supabase, grouped by symbol+timeframe."""
+    """Fetch close prices from market_snapshots, grouped by symbol+timeframe."""
     result: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
 
     for symbol in symbols:
@@ -78,7 +49,7 @@ def fetch_historical_snapshots(
             try:
                 res = (
                     db.client.table("market_snapshots")
-                    .select("ts, open, high, low, close")
+                    .select("ts, close")
                     .eq("symbol", symbol)
                     .eq("timeframe", tf)
                     .gte("ts", since.isoformat())
@@ -89,13 +60,7 @@ def fetch_historical_snapshots(
                 )
                 rows = res.data or []
                 result[symbol][tf] = [
-                    {
-                        "ts": r["ts"],
-                        "open": float(r["open"]),
-                        "high": float(r["high"]),
-                        "low": float(r["low"]),
-                        "close": float(r["close"]),
-                    }
+                    {"ts": r["ts"], "close": float(r["close"])}
                     for r in rows
                     if r.get("close") is not None
                 ]
@@ -108,29 +73,38 @@ def fetch_historical_snapshots(
 
 def run_forecast_at_index(
     symbol: str,
-    mds: MockMarketDataService,
-    bar_index: int,
+    data: Dict[str, Dict[str, List[Dict[str, Any]]]],
+    m15_index: int,
 ) -> Optional[Dict[str, Any]]:
-    """Run forecast engine logic for a single symbol at a given bar index."""
-    bars_cache: Dict[str, Dict[str, List[float]]] = {}
-    for tf in ("M15", "H1", "H4"):
-        ohlc = mds.get_ohlc(symbol, tf, n_bars=250, up_to_idx=bar_index)
-        if ohlc and ohlc.get("closes"):
-            bars_cache[tf] = ohlc
-        else:
-            bars_cache[tf] = {"opens": [], "highs": [], "lows": [], "closes": []}
+    """Run forecast using close-only data at a given M15 bar index."""
+    # Build closes cache per timeframe up to m15_index
+    closes_cache: Dict[str, List[float]] = {}
 
-    available_tfs = [tf for tf, d in bars_cache.items() if len(d.get("closes", [])) >= MIN_BARS_REQUIRED]
-    if not available_tfs:
+    m15_bars = data.get(symbol, {}).get("M15", [])
+    if m15_index > len(m15_bars):
+        return None
+
+    m15_closes = [b["close"] for b in m15_bars[:m15_index]]
+    closes_cache["M15"] = m15_closes
+
+    # For H1/H4 use all bars up to the timestamp of current M15 bar
+    if m15_index > 0:
+        current_ts = m15_bars[m15_index - 1]["ts"]
+        for tf in ("H1", "H4"):
+            tf_bars = data.get(symbol, {}).get(tf, [])
+            tf_closes = [b["close"] for b in tf_bars if b["ts"] <= current_ts]
+            closes_cache[tf] = tf_closes
+
+    # Check minimum data
+    available = {tf: c for tf, c in closes_cache.items() if len(c) >= MIN_BARS_REQUIRED}
+    if not available:
         return None
 
     base_price = None
     for tf in ("M15", "H1", "H4"):
-        closes = bars_cache.get(tf, {}).get("closes", [])
-        if closes:
-            base_price = closes[-1]
+        if closes_cache.get(tf):
+            base_price = closes_cache[tf][-1]
             break
-
     if base_price is None:
         return None
 
@@ -140,40 +114,30 @@ def run_forecast_at_index(
         primary_tf = config["primary_tf"]
         secondary_tf = config["secondary_tf"]
         momentum_lookback = config["momentum_lookback"]
-        ma_fast_period = config["ma_fast"]
-        ma_slow_period = config["ma_slow"]
+        ma_fast = config["ma_fast"]
+        ma_slow = config["ma_slow"]
 
-        primary = bars_cache.get(primary_tf, {})
-        closes = primary.get("closes", [])
-        highs = primary.get("highs", [])
-        lows = primary.get("lows", [])
-
+        closes = closes_cache.get(primary_tf, [])
         if len(closes) < MIN_BARS_REQUIRED and secondary_tf:
-            secondary = bars_cache.get(secondary_tf, {})
-            closes = secondary.get("closes", [])
-            highs = secondary.get("highs", [])
-            lows = secondary.get("lows", [])
+            closes = closes_cache.get(secondary_tf, [])
 
         if len(closes) < 15:
             horizons[horizon_min] = {"direction": "neutral", "strength": 0.0}
             continue
 
         votes: List[int] = []
-        votes.append(vote_ma_cross(closes, ma_fast_period, ma_slow_period))
+        votes.append(vote_ma_cross(closes, ma_fast, ma_slow))
         votes.append(vote_rsi_trend(closes))
         if horizon_min <= 240:
             votes.append(vote_rsi_extreme(closes))
-        votes.append(vote_price_vs_ma(closes, ma_fast_period))
+        votes.append(vote_price_vs_ma(closes, ma_fast))
         votes.append(vote_momentum(closes, momentum_lookback))
-        if len(highs) >= 20 and len(lows) >= 20:
-            ma_f = calc_sma(closes, ma_fast_period)
-            ma_s = calc_sma(closes, ma_slow_period)
-            votes.append(vote_atr_trend(highs, lows, closes, ma_f, ma_s))
+        # ATR vote skipped — no OHLC data available
+
         if secondary_tf:
-            sec_data = bars_cache.get(secondary_tf, {})
-            sec_closes = sec_data.get("closes", [])
-            if len(sec_closes) >= ma_slow_period:
-                votes.append(vote_ma_cross(sec_closes, ma_fast_period, ma_slow_period))
+            sec_closes = closes_cache.get(secondary_tf, [])
+            if len(sec_closes) >= ma_slow:
+                votes.append(vote_ma_cross(sec_closes, ma_fast, ma_slow))
 
         direction_str, confidence_str, strength, aligned, total = aggregate_votes(votes)
         horizons[horizon_min] = {"direction": direction_str, "strength": strength}
@@ -184,7 +148,7 @@ def run_forecast_at_index(
 def main():
     parser = argparse.ArgumentParser(description="Forecast Backtest")
     parser.add_argument("--days", type=int, default=7, help="Days to backtest")
-    parser.add_argument("--symbol", type=str, default=None, help="Single symbol (default: all)")
+    parser.add_argument("--symbol", type=str, default=None, help="Single symbol")
     parser.add_argument("--save", action="store_true", help="Save results to DB")
     parser.add_argument("--verbose", action="store_true", help="Print details")
     args = parser.parse_args()
@@ -199,45 +163,42 @@ def main():
 
     symbols = [args.symbol.upper()] if args.symbol else DEFAULT_SYMBOLS
     until = datetime.now(timezone.utc)
-    since = until - timedelta(days=args.days + 2)  # Extra days for warmup
+    since = until - timedelta(days=args.days + 2)
 
     print(f"Forecast Backtest")
     print(f"  Period: {args.days} days")
     print(f"  Symbols: {len(symbols)}")
+    print(f"  Note: ATR vote skipped (no OHLC in snapshots)")
     print(f"  Fetching historical data...")
 
-    snapshots = fetch_historical_snapshots(db, symbols, since, until)
+    data = fetch_closes(db, symbols, since, until)
 
-    # Count available data
     total_bars = 0
     for sym in symbols:
-        m15_count = len(snapshots.get(sym, {}).get("M15", []))
+        m15_count = len(data.get(sym, {}).get("M15", []))
         total_bars += m15_count
         if args.verbose:
-            print(f"  {sym}: M15={m15_count} bars")
+            h1 = len(data.get(sym, {}).get("H1", []))
+            h4 = len(data.get(sym, {}).get("H4", []))
+            print(f"  {sym}: M15={m15_count} H1={h1} H4={h4}")
     print(f"  Total M15 bars: {total_bars}")
 
     if total_bars == 0:
         print("ERROR: No historical data available. Run bot with market data first.")
         sys.exit(1)
 
-    # Run backtest: step through M15 bars, generate forecast, check outcome
     backtest_start = until - timedelta(days=args.days)
     results: Dict[str, Dict[int, Dict[str, int]]] = {}
 
     for sym in symbols:
-        results[sym] = {}
-        for h in FORECAST_HORIZONS:
-            results[sym][h] = {"total": 0, "correct": 0}
+        results[sym] = {h: {"total": 0, "correct": 0} for h in FORECAST_HORIZONS}
 
-        m15_bars = snapshots.get(sym, {}).get("M15", [])
+        m15_bars = data.get(sym, {}).get("M15", [])
         if len(m15_bars) < MIN_BARS_REQUIRED + 10:
-            print(f"  {sym}: Skipping (insufficient data: {len(m15_bars)} bars)")
+            if args.verbose:
+                print(f"  {sym}: Skipping (insufficient data: {len(m15_bars)} bars)")
             continue
 
-        mds = MockMarketDataService(snapshots)
-
-        # Step through every 4th M15 bar (= every hour) within backtest period
         for i in range(MIN_BARS_REQUIRED, len(m15_bars)):
             bar = m15_bars[i]
             bar_ts = bar["ts"]
@@ -249,11 +210,11 @@ def main():
             if bar_dt < backtest_start:
                 continue
 
-            # Only run every 4th bar (hourly) to save compute
+            # Every 4th bar (hourly)
             if i % 4 != 0:
                 continue
 
-            forecast = run_forecast_at_index(sym, mds, i)
+            forecast = run_forecast_at_index(sym, data, i)
             if forecast is None:
                 continue
 
@@ -264,8 +225,7 @@ def main():
                 if predicted == "neutral":
                     continue
 
-                # Find actual price at horizon end
-                bars_ahead = horizon_min // 15  # M15 bars
+                bars_ahead = horizon_min // 15
                 target_idx = i + bars_ahead
                 if target_idx >= len(m15_bars):
                     continue
@@ -285,30 +245,30 @@ def main():
                 if is_correct:
                     results[sym][horizon_min]["correct"] += 1
 
-                if args.verbose and results[sym][horizon_min]["total"] <= 3:
-                    print(f"  {sym} {bar_ts} h{horizon_min}: pred={predicted} actual={actual_dir} {'✅' if is_correct else '❌'}")
+                if args.verbose and results[sym][horizon_min]["total"] <= 2:
+                    icon = "✅" if is_correct else "❌"
+                    print(f"    {sym} h{horizon_min}: pred={predicted} actual={actual_dir} {icon}")
 
-    # Print results
-    print("\n" + "=" * 70)
+    # Results
+    print("\n" + "=" * 72)
     print("BACKTEST RESULTS")
-    print("=" * 70)
+    print("=" * 72)
 
     header = f"{'Symbol':<10}"
     for h in FORECAST_HORIZONS:
-        label = f"h{h}"
-        header += f" {label:>12}"
+        header += f" {'h'+str(h):>12}"
     print(header)
-    print("-" * 70)
+    print("-" * 72)
 
-    grand_totals: Dict[int, Dict[str, int]] = {h: {"total": 0, "correct": 0} for h in FORECAST_HORIZONS}
+    grand: Dict[int, Dict[str, int]] = {h: {"total": 0, "correct": 0} for h in FORECAST_HORIZONS}
 
     for sym in sorted(symbols):
         line = f"{sym:<10}"
         for h in FORECAST_HORIZONS:
             t = results[sym][h]["total"]
             c = results[sym][h]["correct"]
-            grand_totals[h]["total"] += t
-            grand_totals[h]["correct"] += c
+            grand[h]["total"] += t
+            grand[h]["correct"] += c
             if t > 0:
                 pct = c / t * 100
                 line += f" {pct:>6.1f}%({t:>3})"
@@ -316,63 +276,52 @@ def main():
                 line += f"{'—':>12}"
         print(line)
 
-    print("-" * 70)
+    print("-" * 72)
     line = f"{'TOTAL':<10}"
-    all_total = 0
-    all_correct = 0
+    all_t = 0
+    all_c = 0
     for h in FORECAST_HORIZONS:
-        t = grand_totals[h]["total"]
-        c = grand_totals[h]["correct"]
-        all_total += t
-        all_correct += c
+        t = grand[h]["total"]
+        c = grand[h]["correct"]
+        all_t += t
+        all_c += c
         if t > 0:
-            pct = c / t * 100
-            line += f" {pct:>6.1f}%({t:>3})"
+            line += f" {c/t*100:>6.1f}%({t:>3})"
         else:
             line += f"{'—':>12}"
     print(line)
 
-    if all_total > 0:
-        overall = all_correct / all_total * 100
-        print(f"\nOverall accuracy: {overall:.1f}% ({all_correct}/{all_total})")
+    if all_t > 0:
+        print(f"\nOverall accuracy: {all_c/all_t*100:.1f}% ({all_c}/{all_t})")
     else:
         print("\nNo predictions to evaluate.")
 
-    # Save to DB
-    if args.save and all_total > 0:
+    if args.save and all_t > 0:
         try:
             payload = {
                 "ts_utc": datetime.now(timezone.utc).isoformat(),
                 "days": args.days,
                 "symbols": symbols,
-                "total_predictions": all_total,
-                "total_correct": all_correct,
-                "overall_accuracy": round(all_correct / all_total, 4) if all_total > 0 else 0,
+                "total_predictions": all_t,
+                "total_correct": all_c,
+                "overall_accuracy": round(all_c / all_t, 4),
                 "per_horizon": {
                     str(h): {
-                        "total": grand_totals[h]["total"],
-                        "correct": grand_totals[h]["correct"],
-                        "accuracy": round(grand_totals[h]["correct"] / grand_totals[h]["total"], 4)
-                        if grand_totals[h]["total"] > 0 else 0,
+                        "total": grand[h]["total"],
+                        "correct": grand[h]["correct"],
+                        "accuracy": round(grand[h]["correct"] / grand[h]["total"], 4) if grand[h]["total"] > 0 else 0,
                     }
                     for h in FORECAST_HORIZONS
                 },
                 "per_symbol": {
-                    sym: {
-                        str(h): {
-                            "total": results[sym][h]["total"],
-                            "correct": results[sym][h]["correct"],
-                        }
-                        for h in FORECAST_HORIZONS
-                    }
+                    sym: {str(h): results[sym][h] for h in FORECAST_HORIZONS}
                     for sym in symbols
                 },
             }
             db.client.table("forecast_backtests").insert(payload).execute()
             print(f"\nResults saved to forecast_backtests table.")
         except Exception as exc:
-            print(f"\nWarning: Failed to save results: {exc}")
-            print("You may need to create the forecast_backtests table first.")
+            print(f"\nWarning: Failed to save: {exc}")
 
 
 if __name__ == "__main__":
