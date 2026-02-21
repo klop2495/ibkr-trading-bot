@@ -34,36 +34,68 @@ from app.forecast.indicators_vote import (
 from app.forecast.engine import HORIZON_CONFIG, MIN_BARS_REQUIRED
 
 
+def _round_ts(ts_str: str, interval_minutes: int) -> str:
+    """Round a timestamp string down to the nearest interval."""
+    dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+    epoch = int(dt.timestamp())
+    rounded = epoch - (epoch % (interval_minutes * 60))
+    return datetime.fromtimestamp(rounded, tz=timezone.utc).isoformat()
+
+
+def _tf_minutes(tf: str) -> int:
+    return {"M15": 15, "H1": 60, "H4": 240}[tf]
+
+
 def fetch_closes(
     db: Any,
     symbols: List[str],
     since: datetime,
     until: datetime,
 ) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
-    """Fetch close prices from market_snapshots, grouped by symbol+timeframe."""
+    """Fetch close prices from market_snapshots with pagination and dedup into bars."""
     result: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
 
     for symbol in symbols:
         result[symbol] = {}
         for tf in ("M15", "H1", "H4"):
+            interval = _tf_minutes(tf)
+            all_rows: List[Dict[str, Any]] = []
+            cursor = since.isoformat()
+            page_limit = 1000
+            max_pages = 20
+
             try:
-                res = (
-                    db.client.table("market_snapshots")
-                    .select("ts, close")
-                    .eq("symbol", symbol)
-                    .eq("timeframe", tf)
-                    .gte("ts", since.isoformat())
-                    .lte("ts", until.isoformat())
-                    .order("ts", desc=False)
-                    .limit(5000)
-                    .execute()
-                )
-                rows = res.data or []
-                result[symbol][tf] = [
-                    {"ts": r["ts"], "close": float(r["close"])}
-                    for r in rows
-                    if r.get("close") is not None
-                ]
+                for _ in range(max_pages):
+                    res = (
+                        db.client.table("market_snapshots")
+                        .select("ts, close")
+                        .eq("symbol", symbol)
+                        .eq("timeframe", tf)
+                        .gte("ts", cursor)
+                        .lte("ts", until.isoformat())
+                        .order("ts", desc=False)
+                        .limit(page_limit)
+                        .execute()
+                    )
+                    rows = res.data or []
+                    if not rows:
+                        break
+                    all_rows.extend(rows)
+                    if len(rows) < page_limit:
+                        break
+                    # Move cursor past last row
+                    cursor = rows[-1]["ts"]
+
+                # Deduplicate: keep last close per rounded interval
+                seen: Dict[str, Dict[str, Any]] = {}
+                for r in all_rows:
+                    if r.get("close") is None:
+                        continue
+                    key = _round_ts(r["ts"], interval)
+                    seen[key] = {"ts": key, "close": float(r["close"])}
+
+                bars = sorted(seen.values(), key=lambda x: x["ts"])
+                result[symbol][tf] = bars
             except Exception as exc:
                 print(f"  Warning: Failed to fetch {symbol}/{tf}: {exc}")
                 result[symbol][tf] = []
