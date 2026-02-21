@@ -837,5 +837,12 @@ def make_repos(db: SupabaseDB) -> dict[str, Any]:
         repos["performance_tracker"] = PerformanceTrackerRepo(db)
     except Exception:
         pass
-    
+
+    # Phase 8: Price direction forecasts
+    try:
+        from app.storage.forecast_repo import ForecastRepo
+        repos["forecasts"] = ForecastRepo(db)
+    except Exception:
+        pass
+
     return repos

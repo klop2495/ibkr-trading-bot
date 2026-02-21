@@ -727,6 +727,45 @@ async def get_agent_details(decision_id: str):
     }
 
 
+# ============== Forecast API ==============
+
+
+@app.get("/api/forecasts")
+async def get_forecasts():
+    """Get latest price direction forecasts for all symbols."""
+    db = get_db()
+    try:
+        from app.storage.forecast_repo import ForecastRepo
+        repo = ForecastRepo(db)
+        return {"forecasts": repo.get_all_latest()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/forecasts/{symbol}")
+async def get_forecast_by_symbol(symbol: str, limit: int = Query(10, ge=1, le=100)):
+    """Get latest forecasts for a specific symbol."""
+    db = get_db()
+    try:
+        from app.storage.forecast_repo import ForecastRepo
+        repo = ForecastRepo(db)
+        return {"forecasts": repo.get_latest(symbol.upper(), limit=limit)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/forecasts/{symbol}/history")
+async def get_forecast_history(symbol: str, hours: int = Query(24, ge=1, le=168)):
+    """Get forecast history for a symbol within time range."""
+    db = get_db()
+    try:
+        from app.storage.forecast_repo import ForecastRepo
+        repo = ForecastRepo(db)
+        return {"forecasts": repo.get_history(symbol.upper(), hours=hours)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Dashboard HTML
 DASHBOARD_HTML = """
 <!DOCTYPE html>

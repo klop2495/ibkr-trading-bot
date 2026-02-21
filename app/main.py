@@ -1692,6 +1692,26 @@ def main():
     else:
         print("Phase 6: Signal generation DISABLED")
 
+    # Phase 8: Price direction forecast engine (read-only)
+    forecast_enabled = os.getenv("FORECAST_ENABLED", "1") != "0"
+    forecast_interval = int(os.getenv("FORECAST_INTERVAL", str(signal_gen_interval if signal_gen_enabled else 60)))
+    last_forecast_tick = 0.0
+    forecast_engine = None
+    forecast_repo = None
+
+    if forecast_enabled and signal_gen_enabled:
+        try:
+            from app.forecast.engine import ForecastEngine
+            from app.storage.forecast_repo import ForecastRepo
+            forecast_engine = ForecastEngine()
+            forecast_repo = ForecastRepo(db)
+            print(f"Phase 8: Forecast engine ENABLED interval={forecast_interval}s")
+        except Exception as exc:
+            print(f"Phase 8: Forecast engine FAILED to init: {exc}")
+            forecast_enabled = False
+    else:
+        print(f"Phase 8: Forecast engine DISABLED (forecast_enabled={forecast_enabled} signal_gen={signal_gen_enabled})")
+
     # Initialize ExecutionService + BrokerStateService
     owner_uuid_str = str(owner_uuid)
     trades_history_repo = TradesHistoryRepo(db)
@@ -1913,6 +1933,27 @@ def main():
                                 data={},
                             )
                     execution_service.set_fail_safe(ib_fail_safe.disabled, reason=ib_fail_safe.last_reason)
+
+        # Phase 8: Price direction forecast (read-only, no trade impact)
+        if signal_gen_enabled and forecast_enabled and market_data_service:
+            now_ts = time.time()
+            if now_ts - last_forecast_tick >= forecast_interval:
+                try:
+                    active_symbols = getattr(settings, "symbols", None) or []
+                    if active_symbols:
+                        forecasts = forecast_engine.compute_all(
+                            market_data_service=market_data_service,
+                            symbols=active_symbols,
+                        )
+                        if forecasts and forecast_repo:
+                            fc_result = forecast_repo.insert_batch(forecasts)
+                            fc_count = fc_result.get("count", 0)
+                            aligned = sum(1 for f in forecasts if f.all_aligned())
+                            if fc_count > 0:
+                                print(f"forecast generated={fc_count} aligned={aligned}/{len(forecasts)}")
+                except Exception as exc:
+                    print(f"forecast_error: {exc}")
+                last_forecast_tick = now_ts
 
         (
             processed_total,
