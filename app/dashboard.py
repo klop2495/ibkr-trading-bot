@@ -15,8 +15,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+import threading
+
 from app.storage.db import SupabaseDB
 from app.broker.account_api import get_broker_api
+
+# Optimizer state (in-memory, runs as background thread)
+_optimizer_state: Dict[str, Any] = {
+    "status": "idle",  # idle | running | done | error
+    "started_at": None,
+    "finished_at": None,
+    "params": None,
+    "results": None,
+    "error": None,
+    "progress": 0,
+    "total_combos": 0,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -1054,6 +1068,258 @@ DASHBOARD_HTML = """
 </body>
 </html>
 """
+
+
+# ── Forecast Optimizer API ────────────────────────────────────────────
+
+
+def _run_optimizer_thread(days: int, horizon: Optional[int], symbol: Optional[str], quick: bool):
+    """Background thread to run parameter optimization."""
+    global _optimizer_state
+    try:
+        _optimizer_state["status"] = "running"
+        _optimizer_state["started_at"] = datetime.now(timezone.utc).isoformat()
+        _optimizer_state["error"] = None
+        _optimizer_state["results"] = None
+
+        import itertools
+        import time as _time
+        from app.models.forecast import FORECAST_HORIZONS
+        from app.market_data.indicators import rsi as calc_rsi, sma as calc_sma
+
+        QUICK_GRID = {
+            "ma_fast": [10, 20, 30],
+            "ma_slow": [50, 100, 200],
+            "momentum_lookback": [5, 10, 20],
+            "rsi_period": [14],
+            "rsi_lookback": [3],
+            "min_ratio": [0.2],
+        }
+        FULL_GRID = {
+            "ma_fast": [8, 12, 20, 30, 50],
+            "ma_slow": [30, 50, 100, 150, 200],
+            "momentum_lookback": [3, 6, 10, 15, 24],
+            "rsi_period": [7, 10, 14, 21],
+            "rsi_lookback": [2, 3, 5],
+            "min_ratio": [0.15, 0.2, 0.3],
+        }
+        HORIZON_TF = {
+            30: ("M15", None),
+            60: ("H1", "M15"),
+            240: ("H4", "H1"),
+            1440: ("H4", "H1"),
+        }
+        MIN_BARS = 30
+
+        grid = QUICK_GRID if quick else FULL_GRID
+        keys = sorted(grid.keys())
+        combos = []
+        for vals in itertools.product(*(grid[k] for k in keys)):
+            c = dict(zip(keys, vals))
+            if c["ma_fast"] >= c["ma_slow"]:
+                continue
+            combos.append(c)
+
+        horizons = [horizon] if horizon else FORECAST_HORIZONS
+        from app.models.bot_settings import DEFAULT_SYMBOLS
+        symbols = [symbol.upper()] if symbol else DEFAULT_SYMBOLS
+
+        _optimizer_state["total_combos"] = len(combos) * len(horizons)
+
+        db = get_db()
+        until = datetime.now(timezone.utc)
+        since = until - timedelta(days=days + 2)
+        backtest_start = until - timedelta(days=days)
+
+        # Fetch data
+        tf_mins = {"M15": 15, "H1": 60, "H4": 240}
+        data = {}
+        for sym in symbols:
+            data[sym] = {}
+            for tf, interval in tf_mins.items():
+                all_rows = []
+                cursor = since.isoformat()
+                for _ in range(20):
+                    res = (
+                        db.client.table("market_snapshots")
+                        .select("ts, close")
+                        .eq("symbol", sym)
+                        .eq("timeframe", tf)
+                        .gte("ts", cursor)
+                        .lte("ts", until.isoformat())
+                        .order("ts", desc=False)
+                        .limit(1000)
+                        .execute()
+                    )
+                    rows = res.data or []
+                    if not rows:
+                        break
+                    all_rows.extend(rows)
+                    if len(rows) < 1000:
+                        break
+                    cursor = rows[-1]["ts"]
+                seen = {}
+                for r in all_rows:
+                    if r.get("close") is None:
+                        continue
+                    dt = datetime.fromisoformat(r["ts"].replace("Z", "+00:00"))
+                    epoch = int(dt.timestamp())
+                    rounded = epoch - (epoch % (interval * 60))
+                    key = datetime.fromtimestamp(rounded, tz=timezone.utc).isoformat()
+                    seen[key] = {"ts": key, "close": float(r["close"])}
+                data[sym][tf] = sorted(seen.values(), key=lambda x: x["ts"])
+
+        # Inline voter functions
+        def v_ma_cross(closes, fp, sp):
+            if len(closes) < sp: return 0
+            f = calc_sma(closes, fp); s = calc_sma(closes, sp)
+            if f is None or s is None: return 0
+            return 1 if f > s else (-1 if f < s else 0)
+
+        def v_rsi_trend(closes, per=14, lb=3):
+            if len(closes) < per + 1 + lb: return 0
+            now = calc_rsi(closes, per); prev = calc_rsi(closes[:-lb], per)
+            if now is None or prev is None: return 0
+            if now > 50 and now > prev: return 1
+            if now < 50 and now < prev: return -1
+            return 0
+
+        def v_rsi_extreme(closes, per=14):
+            if len(closes) < per + 1: return 0
+            v = calc_rsi(closes, per)
+            if v is None: return 0
+            if v <= 30: return 1
+            if v >= 70: return -1
+            return 0
+
+        def v_price_vs_ma(closes, mp):
+            if len(closes) < mp: return 0
+            ma = calc_sma(closes, mp)
+            if ma is None or ma == 0: return 0
+            return 1 if closes[-1] > ma else (-1 if closes[-1] < ma else 0)
+
+        def v_momentum(closes, lb):
+            if len(closes) < lb + 1: return 0
+            return 1 if closes[-1] > closes[-(lb + 1)] else (-1 if closes[-1] < closes[-(lb + 1)] else 0)
+
+        # Run grid search
+        all_results = {}
+        progress = 0
+        for h in horizons:
+            primary_tf, secondary_tf = HORIZON_TF[h]
+            h_results = []
+            for params in combos:
+                total = 0; correct = 0
+                for sym in symbols:
+                    m15_bars = data.get(sym, {}).get("M15", [])
+                    if len(m15_bars) < MIN_BARS + 10: continue
+                    for i in range(MIN_BARS, len(m15_bars)):
+                        bar = m15_bars[i]
+                        bar_dt = datetime.fromisoformat(bar["ts"].replace("Z", "+00:00"))
+                        if bar_dt < backtest_start: continue
+                        if i % 4 != 0: continue
+                        # build closes
+                        if primary_tf == "M15":
+                            closes = [b["close"] for b in m15_bars[:i]]
+                        else:
+                            cts = m15_bars[i - 1]["ts"] if i > 0 else ""
+                            tf_bars = data.get(sym, {}).get(primary_tf, [])
+                            closes = [b["close"] for b in tf_bars if b["ts"] <= cts]
+                        if len(closes) < MIN_BARS and secondary_tf:
+                            cts = m15_bars[i - 1]["ts"] if i > 0 else ""
+                            tf_bars = data.get(sym, {}).get(secondary_tf, [])
+                            closes = [b["close"] for b in tf_bars if b["ts"] <= cts]
+                        if len(closes) < 15: continue
+                        votes = []
+                        votes.append(v_ma_cross(closes, params["ma_fast"], params["ma_slow"]))
+                        votes.append(v_rsi_trend(closes, params["rsi_period"], params["rsi_lookback"]))
+                        if h <= 240: votes.append(v_rsi_extreme(closes, params["rsi_period"]))
+                        votes.append(v_price_vs_ma(closes, params["ma_fast"]))
+                        votes.append(v_momentum(closes, params["momentum_lookback"]))
+                        if secondary_tf:
+                            cts2 = m15_bars[i - 1]["ts"] if i > 0 else ""
+                            sc = [b["close"] for b in data.get(sym, {}).get(secondary_tf, []) if b["ts"] <= cts2]
+                            if len(sc) >= params["ma_slow"]:
+                                votes.append(v_ma_cross(sc, params["ma_fast"], params["ma_slow"]))
+                        t = len(votes); ups = sum(1 for v in votes if v > 0); downs = sum(1 for v in votes if v < 0)
+                        net = ups - downs; ratio = abs(net) / t if t else 0
+                        if ratio < params["min_ratio"]: continue
+                        direction = "up" if net > 0 else "down"
+                        bars_ahead = h // 15; target_idx = i + bars_ahead
+                        if target_idx >= len(m15_bars): continue
+                        actual_price = m15_bars[target_idx]["close"]; base_price = closes[-1]
+                        pc = actual_price - base_price
+                        if abs(pc) < 1e-6: ad = "neutral"
+                        else: ad = "up" if pc > 0 else "down"
+                        if direction == ad: correct += 1
+                        total += 1
+                acc = correct / total if total > 0 else 0
+                h_results.append({**params, "total": total, "correct": correct, "accuracy": acc})
+                progress += 1
+                _optimizer_state["progress"] = progress
+
+            h_results.sort(key=lambda r: (r["accuracy"], r["total"]), reverse=True)
+
+            # Current defaults for comparison
+            cur = {"ma_fast": 20, "ma_slow": 50, "momentum_lookback": 10, "rsi_period": 14, "rsi_lookback": 3, "min_ratio": 0.2}
+            if h == 1440: cur.update(ma_fast=50, ma_slow=200, momentum_lookback=24)
+            cur_match = [r for r in h_results if r["ma_fast"] == cur["ma_fast"] and r["ma_slow"] == cur["ma_slow"]]
+            cur_acc = cur_match[0]["accuracy"] if cur_match else 0
+
+            all_results[str(h)] = {
+                "top": h_results[:20],
+                "current_accuracy": cur_acc,
+                "current_params": cur,
+                "total_combos": len(combos),
+            }
+
+        _optimizer_state["results"] = all_results
+        _optimizer_state["status"] = "done"
+        _optimizer_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+    except Exception as e:
+        _optimizer_state["status"] = "error"
+        _optimizer_state["error"] = str(e)
+        _optimizer_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        logger.exception(f"Optimizer failed: {e}")
+
+
+class OptimizerRequest(BaseModel):
+    days: int = 30
+    horizon: Optional[int] = None
+    symbol: Optional[str] = None
+    quick: bool = True
+
+
+@app.post("/api/optimizer/run")
+async def run_optimizer(req: OptimizerRequest):
+    """Start a parameter optimization run in the background."""
+    global _optimizer_state
+    if _optimizer_state["status"] == "running":
+        return {"error": "Optimizer already running", "status": "running"}
+    _optimizer_state = {
+        "status": "running",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+        "params": {"days": req.days, "horizon": req.horizon, "symbol": req.symbol, "quick": req.quick},
+        "results": None,
+        "error": None,
+        "progress": 0,
+        "total_combos": 0,
+    }
+    t = threading.Thread(
+        target=_run_optimizer_thread,
+        args=(req.days, req.horizon, req.symbol, req.quick),
+        daemon=True,
+    )
+    t.start()
+    return {"status": "started", "params": _optimizer_state["params"]}
+
+
+@app.get("/api/optimizer/status")
+async def optimizer_status():
+    """Get current optimizer status and results."""
+    return _optimizer_state
 
 
 if __name__ == "__main__":
