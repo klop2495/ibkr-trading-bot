@@ -25,6 +25,12 @@ from app.broker.connection_manager import (
     IBKRConnectionManager,
 )
 from app.broker.state_service import BrokerConnectionError, BrokerStateService
+
+try:
+    from app.forecast.gate import ForecastGate
+    FORECAST_GATE_AVAILABLE = True
+except ImportError:
+    FORECAST_GATE_AVAILABLE = False
 from app.broker.oms import (
     IBKROMS,
     IBKROrderCallback,
@@ -419,6 +425,15 @@ class ExecutionService:
         self._bot_settings_repo = bot_settings_repo
         self._owner_user_id = owner_user_id
         
+        # Forecast gate
+        self._forecast_gate: Optional['ForecastGate'] = None
+        if FORECAST_GATE_AVAILABLE and os.getenv('FORECAST_GATE_ENABLED', '1') == '1':
+            try:
+                self._forecast_gate = ForecastGate()
+                logger.info('ExecutionService: ForecastGate initialized')
+            except Exception as e:
+                logger.warning(f'ExecutionService: Failed to init ForecastGate: {e}')
+        
         # Components (lazy init)
         self._connection_manager: Optional[IBKRConnectionManager] = None
         self._oms: Optional[IBKROMS] = None
@@ -451,6 +466,11 @@ class ExecutionService:
     def performance_tracker(self) -> Optional['AgentPerformanceTracker']:
         """Get performance tracker instance."""
         return self._performance_tracker
+
+    @property
+    def forecast_gate(self) -> Optional['ForecastGate']:
+        """Get forecast gate instance."""
+        return self._forecast_gate
     
     def _determine_mode(self, settings: BotSettings) -> ExecutionMode:
         """Determine execution mode from env and settings."""
@@ -1163,6 +1183,27 @@ class ExecutionService:
         
         # Determine side
         side = self._determine_side(decision, verdict, direction=direction)
+        
+        # Forecast gate: check symbol accuracy and direction alignment
+        if self._forecast_gate and side:
+            fc_allowed, fc_reason = self._forecast_gate.check(
+                symbol=decision.symbol,
+                trade_direction=side.value,
+            )
+            if not fc_allowed:
+                self._log_event(
+                    "EXECUTION_BLOCKED",
+                    "info",
+                    f"Trade blocked by forecast gate for {decision.symbol}: {fc_reason}",
+                    {"decision_id": str(decision.id), "symbol": decision.symbol, "reason": fc_reason},
+                )
+                return ExecutionResult(
+                    executed=False,
+                    mode=self._mode,
+                    symbol=decision.symbol,
+                    side=side,
+                    reason=fc_reason,
+                )
         if side is None:
             self._log_event(
                 "EXECUTION_SKIPPED",

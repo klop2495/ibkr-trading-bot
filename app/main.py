@@ -1954,6 +1954,9 @@ def main():
                             aligned = sum(1 for f in forecasts if f.all_aligned())
                             if fc_count > 0:
                                 print(f"forecast generated={fc_count} aligned={aligned}/{len(forecasts)}")
+                            # Update forecast gate cache
+                            if execution_service and execution_service.forecast_gate:
+                                execution_service.forecast_gate.update_forecasts_batch(forecasts)
                     # Verify past forecasts
                     if forecast_verifier and market_data_service:
                         try:
