@@ -82,3 +82,83 @@ class ForecastRepo:
             .execute()
         )
         return res.data or []
+
+    def get_history_all(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> dict:
+        """
+        Get forecast history with optional filters.
+        Returns {rows, total} for pagination.
+        """
+        query = self.db.client.table(self.table).select("*", count="exact")
+        if symbol:
+            query = query.eq("symbol", symbol.upper())
+        if since:
+            query = query.gte("ts_utc", since)
+        if until:
+            query = query.lte("ts_utc", until)
+        query = query.order("ts_utc", desc=True).range(offset, offset + limit - 1)
+        res = query.execute()
+        return {
+            "rows": res.data or [],
+            "total": res.count if hasattr(res, "count") and res.count is not None else len(res.data or []),
+        }
+
+    def get_accuracy_stats(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        hours: int = 168,
+    ) -> dict:
+        """
+        Compute accuracy stats from verified forecasts.
+        Returns accuracy per horizon and overall.
+        """
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        query = (
+            self.db.client.table(self.table)
+            .select(
+                "h30_correct, h60_correct, h240_correct, h1440_correct, "
+                "h30_direction, h60_direction, h240_direction, h1440_direction"
+            )
+            .gte("ts_utc", since)
+            .not_.is_("verified_at", "null")
+        )
+        if symbol:
+            query = query.eq("symbol", symbol.upper())
+        res = query.limit(2000).execute()
+        rows = res.data or []
+
+        stats: Dict[str, Dict[str, int]] = {}
+        for prefix in ("h30", "h60", "h240", "h1440"):
+            correct_key = f"{prefix}_correct"
+            dir_key = f"{prefix}_direction"
+            total = 0
+            correct = 0
+            for row in rows:
+                d = row.get(dir_key)
+                c = row.get(correct_key)
+                if d and d != "neutral" and c is not None:
+                    total += 1
+                    if c:
+                        correct += 1
+            stats[prefix] = {
+                "total": total,
+                "correct": correct,
+                "accuracy": round(correct / total, 4) if total > 0 else 0.0,
+            }
+
+        all_total = sum(s["total"] for s in stats.values())
+        all_correct = sum(s["correct"] for s in stats.values())
+        stats["overall"] = {
+            "total": all_total,
+            "correct": all_correct,
+            "accuracy": round(all_correct / all_total, 4) if all_total > 0 else 0.0,
+        }
+        return stats

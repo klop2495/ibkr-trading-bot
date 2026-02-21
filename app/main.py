@@ -1699,12 +1699,15 @@ def main():
     forecast_engine = None
     forecast_repo = None
 
+    forecast_verifier = None
     if forecast_enabled and signal_gen_enabled:
         try:
             from app.forecast.engine import ForecastEngine
             from app.storage.forecast_repo import ForecastRepo
+            from app.forecast.verifier import ForecastVerifier
             forecast_engine = ForecastEngine()
             forecast_repo = ForecastRepo(db)
+            forecast_verifier = ForecastVerifier(db)
             print(f"Phase 8: Forecast engine ENABLED interval={forecast_interval}s")
         except Exception as exc:
             print(f"Phase 8: Forecast engine FAILED to init: {exc}")
@@ -1951,6 +1954,17 @@ def main():
                             aligned = sum(1 for f in forecasts if f.all_aligned())
                             if fc_count > 0:
                                 print(f"forecast generated={fc_count} aligned={aligned}/{len(forecasts)}")
+                    # Verify past forecasts
+                    if forecast_verifier and market_data_service:
+                        try:
+                            verified = forecast_verifier.verify_pending(
+                                market_data_service=market_data_service,
+                                symbols=active_symbols,
+                            )
+                            if verified > 0:
+                                print(f"forecast_verified count={verified}")
+                        except Exception as vexc:
+                            print(f"forecast_verify_error: {vexc}")
                 except Exception as exc:
                     print(f"forecast_error: {exc}")
                 last_forecast_tick = now_ts

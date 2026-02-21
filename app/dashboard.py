@@ -766,6 +766,46 @@ async def get_forecast_history(symbol: str, hours: int = Query(24, ge=1, le=168)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/forecasts-history")
+async def get_forecasts_history(
+    symbol: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Get paginated forecast history with filters."""
+    db = get_db()
+    try:
+        from app.storage.forecast_repo import ForecastRepo
+        repo = ForecastRepo(db)
+        result = repo.get_history_all(
+            symbol=symbol,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/forecasts-accuracy")
+async def get_forecasts_accuracy(
+    symbol: Optional[str] = None,
+    hours: int = Query(168, ge=1, le=720),
+):
+    """Get forecast accuracy statistics."""
+    db = get_db()
+    try:
+        from app.storage.forecast_repo import ForecastRepo
+        repo = ForecastRepo(db)
+        return repo.get_accuracy_stats(symbol=symbol, hours=hours)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Dashboard HTML
 DASHBOARD_HTML = """
 <!DOCTYPE html>
