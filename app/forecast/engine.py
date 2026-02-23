@@ -47,15 +47,20 @@ HORIZON_CONFIG = {
     1440: {"primary_tf": "H4", "secondary_tf": "H1", "momentum_lookback": 24, "ma_fast": 50, "ma_slow": 200},
 }
 
-# Indicator weights — empirically derived
+# Indicator weights — empirically derived from 407 verified forecasts (2026-02-23)
+# ma_cross_inv: 64% accuracy, 100% active rate — best global predictor
+# price_vs_ma: 58% accuracy, 100% active — stable second
+# momentum: 51% globally, contrarian for JPY pairs (13-21%) — reduced
+# rsi_trend: 50%, only 14% active — minimal contribution
+# rsi_momentum: 53%, only 16% active — minimal contribution
 WEIGHTS = {
-    "momentum": 2.0,       # STRONG: 85% accuracy, +18% delta
-    "price_vs_ma": 1.0,    # GOOD: 60% accuracy, stable across pairs
-    "ma_cross_inv": 1.0,   # INVERTED: raw ma_cross is contrarian (-28% delta)
-    "rsi_momentum": 1.0,   # INVERTED RSI extreme: momentum not mean-reversion
-    "rsi_trend": 1.0,      # OK when it fires, but mostly neutral
+    "ma_cross_inv": 2.0,   # BEST: 64% accuracy, always fires, inverted
+    "price_vs_ma": 1.0,    # GOOD: 58% accuracy, always fires
+    "momentum": 0.5,       # WEAK globally (51%), contrarian for JPY pairs
+    "rsi_momentum": 0.5,   # MARGINAL: 53%, rarely fires (16%)
+    "rsi_trend": 0.5,      # MARGINAL: 50%, rarely fires (14%)
     "atr_trend": 0.5,      # Supplementary, needs OHLC
-    "secondary_ma": 0.5,   # Secondary TF confirmation, reduced weight
+    "secondary_ma": 0.5,   # Secondary TF confirmation, inverted
 }
 
 # Minimum bars needed for reliable indicator calculation

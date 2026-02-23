@@ -407,4 +407,68 @@ for sym in top:
         acc = f"{int(cc/tt*100)}%" if tt > 0 else "-"
         print(f"  {name:<15s} | {cc:>8d} | {ww:>6d} | {acc:>6s} | {nn:>8d}")
 
+# ─────────────────────────────────────────
+# SECTION: Simulate NEW weights (ma_cross_inv=2, momentum=0.5)
+# ─────────────────────────────────────────
+print(f"\n{'='*80}")
+print(f"  SIMULATED: NEW WEIGHTS (ma_cross_inv=2.0, price_vs_ma=1.0, rest=0.5)")
+print(f"{'='*80}")
+
+NEW_WEIGHTS = {'ma_cross_inv': 2.0, 'price_vs_ma': 1.0, 'momentum': 0.5, 'rsi_momentum': 0.5, 'rsi_trend': 0.5}
+
+new_correct = 0
+new_wrong = 0
+new_neutral = 0
+new_per_pair = {}
+
+for row in all_h30:
+    symbol = row['symbol']
+    bp = row.get('base_price')
+    ap = row.get('h30_actual_price')
+    if not bp or not ap:
+        continue
+    actual_sign = 1 if ap > bp else -1
+    
+    bars = get_bars(symbol, row['ts_utc'])
+    if len(bars) < 20:
+        continue
+    
+    w_sum = 0
+    t_weight = 0
+    for name in INDICATOR_NAMES:
+        vote = calc_indicator(bars, name)
+        if vote != 0:
+            w = NEW_WEIGHTS[name]
+            w_sum += vote * w
+            t_weight += w
+    
+    if t_weight == 0:
+        new_neutral += 1
+        continue
+    
+    pred = 1 if w_sum > 0 else -1
+    if symbol not in new_per_pair:
+        new_per_pair[symbol] = {'c': 0, 'w': 0}
+    
+    if pred == actual_sign:
+        new_correct += 1
+        new_per_pair[symbol]['c'] += 1
+    else:
+        new_wrong += 1
+    new_per_pair[symbol]['w'] = new_per_pair[symbol].get('w', 0) + (0 if pred == actual_sign else 1)
+
+new_total = new_correct + new_wrong
+new_acc = f"{int(new_correct/new_total*100)}%" if new_total > 0 else "-"
+old_acc = f"61%"  # from current weighted vote
+print(f"NEW weights: {new_correct}/{new_total} ({new_acc}) vs OLD weights: 251/407 (61%)")
+print(f"Neutral: {new_neutral}")
+
+print(f"\n  {'Symbol':<9s} | {'New Acc':>10s} | {'Samples':>8s}")
+print(f"  {'-'*34}")
+for sym in sorted(new_per_pair.keys()):
+    p = new_per_pair[sym]
+    t = p['c'] + p['w']
+    a = f"{int(p['c']/t*100)}%" if t > 0 else '-'
+    print(f"  {sym:<9s} | {p['c']}/{t} {a:>5s} | {t:>8d}")
+
 print(f"\nDone. Timestamp: {now.isoformat()[:19]}")
