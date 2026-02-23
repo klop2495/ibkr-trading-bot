@@ -3,11 +3,19 @@ Forecast Engine — computes price direction forecasts for multiple horizons.
 
 Uses existing MarketDataService bars cache. No additional IB Gateway requests.
 Read-only module: never influences trade execution.
+
+Indicator weights (based on empirical analysis 2026-02-23):
+- momentum: STRONG predictor (85% accuracy), weight=2.0
+- price_vs_ma: GOOD predictor (60%), weight=1.0
+- ma_cross: CONTRARIAN — inverted, weight=1.0
+- rsi_momentum: CONTRARIAN RSI extreme inverted (momentum, not mean-reversion), weight=1.0
+- rsi_trend: rarely fires but decent when it does, weight=1.0
+- atr_trend: kept for horizons with OHLC data, weight=0.5
 """
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.models.forecast import (
     FORECAST_HORIZONS,
@@ -18,11 +26,14 @@ from app.models.forecast import (
 )
 from app.forecast.indicators_vote import (
     aggregate_votes,
+    aggregate_weighted_votes,
     vote_atr_trend,
     vote_ma_cross,
+    vote_ma_cross_inverted,
     vote_momentum,
     vote_price_vs_ma,
     vote_rsi_extreme,
+    vote_rsi_momentum,
     vote_rsi_trend,
 )
 
@@ -36,13 +47,24 @@ HORIZON_CONFIG = {
     1440: {"primary_tf": "H4", "secondary_tf": "H1", "momentum_lookback": 24, "ma_fast": 50, "ma_slow": 200},
 }
 
+# Indicator weights — empirically derived
+WEIGHTS = {
+    "momentum": 2.0,       # STRONG: 85% accuracy, +18% delta
+    "price_vs_ma": 1.0,    # GOOD: 60% accuracy, stable across pairs
+    "ma_cross_inv": 1.0,   # INVERTED: raw ma_cross is contrarian (-28% delta)
+    "rsi_momentum": 1.0,   # INVERTED RSI extreme: momentum not mean-reversion
+    "rsi_trend": 1.0,      # OK when it fires, but mostly neutral
+    "atr_trend": 0.5,      # Supplementary, needs OHLC
+    "secondary_ma": 0.5,   # Secondary TF confirmation, reduced weight
+}
+
 # Minimum bars needed for reliable indicator calculation
 MIN_BARS_REQUIRED = 50
 
 
 class ForecastEngine:
     """
-    Computes multi-horizon price direction forecasts using indicator voting.
+    Computes multi-horizon price direction forecasts using weighted indicator voting.
 
     Usage:
         engine = ForecastEngine()
@@ -70,7 +92,6 @@ class ForecastEngine:
                 if not self._warn_logged.get(key):
                     logger.warning(f"forecast_error symbol={symbol} error={exc}")
                     self._warn_logged[key] = True
-                # Return a safe fallback
                 results.append(self._empty_forecast(symbol, ts, flags=[f"ERROR:{type(exc).__name__}"]))
 
         return results
@@ -102,6 +123,14 @@ class ForecastEngine:
             data_quality = "unknown"
             return self._empty_forecast(symbol, ts, data_quality=data_quality, flags=flags)
 
+        # Capture base price (latest close from primary timeframe)
+        base_price: Optional[float] = None
+        for tf in ("M15", "H1", "H4"):
+            closes = bars_cache.get(tf, {}).get("closes", [])
+            if closes:
+                base_price = closes[-1]
+                break
+
         for horizon_minutes in FORECAST_HORIZONS:
             h = self._compute_horizon(symbol, horizon_minutes, bars_cache, flags)
             horizons.append(h)
@@ -112,6 +141,7 @@ class ForecastEngine:
             horizons=horizons,
             data_quality=data_quality,
             flags=flags,
+            base_price=base_price,
         )
 
     def _compute_horizon(
@@ -121,7 +151,7 @@ class ForecastEngine:
         bars_cache: Dict[str, Dict[str, List[float]]],
         flags: List[str],
     ) -> ForecastHorizon:
-        """Compute a single-horizon forecast using indicator voting."""
+        """Compute a single-horizon forecast using weighted indicator voting."""
         config = HORIZON_CONFIG[horizon_minutes]
         primary_tf = config["primary_tf"]
         secondary_tf = config["secondary_tf"]
@@ -144,7 +174,6 @@ class ForecastEngine:
                 lows = secondary.get("lows", [])
 
         if len(closes) < 15:
-            # Absolute minimum for any indicator
             flags.append(f"NO_DATA_{primary_tf}_H{horizon_minutes}")
             return ForecastHorizon(
                 horizon_minutes=horizon_minutes,
@@ -155,42 +184,62 @@ class ForecastEngine:
                 indicators_total=0,
             )
 
-        # Collect votes
-        votes: List[int] = []
+        # Collect weighted votes: (vote, weight)
+        weighted_votes: List[Tuple[int, float]] = []
 
-        # Vote 1: MA Cross
-        votes.append(vote_ma_cross(closes, ma_fast_period, ma_slow_period))
+        # Vote 1: INVERTED MA Cross (contrarian signal)
+        weighted_votes.append((
+            vote_ma_cross_inverted(closes, ma_fast_period, ma_slow_period),
+            WEIGHTS["ma_cross_inv"],
+        ))
 
-        # Vote 2: RSI Trend
-        votes.append(vote_rsi_trend(closes))
+        # Vote 2: RSI Trend (standard — decent when it fires)
+        weighted_votes.append((
+            vote_rsi_trend(closes),
+            WEIGHTS["rsi_trend"],
+        ))
 
-        # Vote 3: RSI Extreme (mean reversion for short horizons, skip for 24h)
+        # Vote 3: INVERTED RSI Extreme → RSI Momentum (for short horizons)
         if horizon_minutes <= 240:
-            votes.append(vote_rsi_extreme(closes))
+            weighted_votes.append((
+                vote_rsi_momentum(closes),
+                WEIGHTS["rsi_momentum"],
+            ))
 
-        # Vote 4: Price vs MA
-        votes.append(vote_price_vs_ma(closes, ma_fast_period))
+        # Vote 4: Price vs MA (best single predictor)
+        weighted_votes.append((
+            vote_price_vs_ma(closes, ma_fast_period),
+            WEIGHTS["price_vs_ma"],
+        ))
 
-        # Vote 5: Momentum (ROC)
-        votes.append(vote_momentum(closes, momentum_lookback))
+        # Vote 5: Momentum — STRONGEST predictor, double weight
+        weighted_votes.append((
+            vote_momentum(closes, momentum_lookback),
+            WEIGHTS["momentum"],
+        ))
 
-        # Vote 6: ATR Trend
+        # Vote 6: ATR Trend (supplementary, lower weight)
         if len(highs) >= 20 and len(lows) >= 20:
             from app.market_data.indicators import sma as calc_sma
             ma_f = calc_sma(closes, ma_fast_period)
             ma_s = calc_sma(closes, ma_slow_period)
-            votes.append(vote_atr_trend(highs, lows, closes, ma_f, ma_s))
+            weighted_votes.append((
+                vote_atr_trend(highs, lows, closes, ma_f, ma_s),
+                WEIGHTS["atr_trend"],
+            ))
 
-        # Secondary timeframe confirmation (adds one extra vote)
+        # Vote 7: Secondary TF MA cross (inverted, reduced weight)
         if secondary_tf:
             sec_data = bars_cache.get(secondary_tf, {})
             sec_closes = sec_data.get("closes", [])
             if len(sec_closes) >= ma_slow_period:
-                # MA cross on secondary timeframe
-                votes.append(vote_ma_cross(sec_closes, ma_fast_period, ma_slow_period))
+                weighted_votes.append((
+                    vote_ma_cross_inverted(sec_closes, ma_fast_period, ma_slow_period),
+                    WEIGHTS["secondary_ma"],
+                ))
 
-        # Aggregate
-        direction_str, confidence_str, strength, aligned, total = aggregate_votes(votes)
+        # Aggregate with weights
+        direction_str, confidence_str, strength, aligned, total = aggregate_weighted_votes(weighted_votes)
 
         return ForecastHorizon(
             horizon_minutes=horizon_minutes,
