@@ -63,6 +63,7 @@ class ForecastResult(BaseModel):
     horizons: List[ForecastHorizon]
     data_quality: str = "ok"
     flags: List[str] = Field(default_factory=list)
+    base_price: Optional[float] = None  # close price at forecast time
 
     @field_validator("symbol", mode="before")
     @classmethod
@@ -107,6 +108,7 @@ class ForecastResult(BaseModel):
             "flags": self.flags,
             "all_aligned": self.all_aligned(),
             "dominant_direction": self.dominant_direction().value,
+            "base_price": self.base_price,
         }
         for h in self.horizons:
             prefix = f"h{h.horizon_minutes}"
