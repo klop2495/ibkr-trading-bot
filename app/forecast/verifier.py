@@ -33,6 +33,49 @@ class ForecastVerifier:
         self.db = db
         self._last_log: Optional[str] = None
 
+    def reset_bad_verifications(self, batch: int = 500) -> int:
+        """
+        Reset verifications where all horizons got the same actual_price
+        (indicates stale/incorrect price was used).
+        """
+        try:
+            # Find verified rows where h30 and h240 have identical actual_price
+            # (impossible in practice — different time horizons)
+            res = (
+                self.db.client.table("price_forecasts")
+                .select("id, h30_actual_price, h60_actual_price, h240_actual_price, h1440_actual_price")
+                .not_.is_("verified_at", "null")
+                .order("ts_utc", desc=False)
+                .limit(batch)
+                .execute()
+            )
+            rows = res.data or []
+            reset_ids = []
+            for row in rows:
+                prices = [row.get(f"{p}_actual_price") for p in ["h30", "h60", "h240", "h1440"]]
+                non_null = [p for p in prices if p is not None]
+                if len(non_null) >= 2 and len(set(non_null)) == 1:
+                    # All actual prices identical — bad verification
+                    reset_ids.append(row["id"])
+            if not reset_ids:
+                return 0
+            # Reset in batches of 50
+            reset_count = 0
+            for i in range(0, len(reset_ids), 50):
+                batch_ids = reset_ids[i:i+50]
+                self.db.client.table("price_forecasts").update({
+                    "verified_at": None,
+                    "h30_correct": None, "h30_actual": None, "h30_actual_price": None,
+                    "h60_correct": None, "h60_actual": None, "h60_actual_price": None,
+                    "h240_correct": None, "h240_actual": None, "h240_actual_price": None,
+                    "h1440_correct": None, "h1440_actual": None, "h1440_actual_price": None,
+                }).in_("id", batch_ids).execute()
+                reset_count += len(batch_ids)
+            return reset_count
+        except Exception as exc:
+            logger.warning(f"reset_bad_verifications error: {exc}")
+            return 0
+
     def verify_pending(
         self,
         market_data_service: Any,
@@ -178,11 +221,23 @@ class ForecastVerifier:
     def _get_historical_price(self, symbol: str, target_ts: datetime) -> Optional[float]:
         """
         Get close price from market_snapshots nearest to target_ts.
-        Looks for the M15 bar closest to the target time.
+        Uses a wider search window and picks the bar closest to target time.
+        Returns None if no bar found within reasonable window or if market was closed.
         """
         try:
-            # Look for bar within ±15 min window
-            window_start = (target_ts - timedelta(minutes=15)).isoformat()
+            # Check if target_ts falls on weekend (forex closed Fri 22:00 - Sun 22:00 UTC)
+            wd = target_ts.weekday()  # 0=Mon .. 6=Sun
+            hour = target_ts.hour
+            if wd == 5:  # Saturday — market closed
+                return None
+            if wd == 6 and hour < 22:  # Sunday before 22:00 — still closed
+                return None
+            if wd == 4 and hour >= 22:  # Friday after 22:00 — closed
+                return None
+
+            # Search window: look back up to 30 min before target, up to 15 min after
+            # This handles cases where M15 bars may not align perfectly with target
+            window_start = (target_ts - timedelta(minutes=30)).isoformat()
             window_end = (target_ts + timedelta(minutes=15)).isoformat()
             res = (
                 self.db.client.table("market_snapshots")
@@ -192,12 +247,29 @@ class ForecastVerifier:
                 .gte("ts", window_start)
                 .lte("ts", window_end)
                 .order("ts", desc=True)
-                .limit(1)
-                .execute()
-            )
+                .limit(3)
+            ).execute()
             rows = res.data or []
-            if rows and rows[0].get("close") is not None:
-                return float(rows[0]["close"])
+            if not rows:
+                return None
+
+            # Pick the bar closest to target_ts
+            best = None
+            best_delta = float('inf')
+            for row in rows:
+                if row.get("close") is None:
+                    continue
+                bar_ts_str = row.get("ts", "")
+                if not bar_ts_str:
+                    continue
+                bar_ts = datetime.fromisoformat(bar_ts_str.replace("Z", "+00:00"))
+                if bar_ts.tzinfo is None:
+                    bar_ts = bar_ts.replace(tzinfo=timezone.utc)
+                delta = abs((target_ts - bar_ts).total_seconds())
+                if delta < best_delta:
+                    best_delta = delta
+                    best = float(row["close"])
+            return best
         except Exception:
             pass
         return None
