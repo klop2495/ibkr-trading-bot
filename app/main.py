@@ -1700,6 +1700,9 @@ def main():
     forecast_repo = None
 
     forecast_verifier = None
+    forecast_verify_interval = int(os.getenv("FORECAST_VERIFY_INTERVAL", "60"))  # verify every 60s
+    forecast_verify_batch = int(os.getenv("FORECAST_VERIFY_BATCH", "500"))  # 500 per tick
+    last_forecast_verify_tick = 0.0
     if forecast_enabled and signal_gen_enabled:
         try:
             from app.forecast.engine import ForecastEngine
@@ -1708,7 +1711,7 @@ def main():
             forecast_engine = ForecastEngine()
             forecast_repo = ForecastRepo(db)
             forecast_verifier = ForecastVerifier(db)
-            print(f"Phase 8: Forecast engine ENABLED interval={forecast_interval}s")
+            print(f"Phase 8: Forecast engine ENABLED interval={forecast_interval}s verify_interval={forecast_verify_interval}s verify_batch={forecast_verify_batch}")
         except Exception as exc:
             print(f"Phase 8: Forecast engine FAILED to init: {exc}")
             forecast_enabled = False
@@ -1957,20 +1960,26 @@ def main():
                             # Update forecast gate cache
                             if execution_service and execution_service.forecast_gate:
                                 execution_service.forecast_gate.update_forecasts_batch(forecasts)
-                    # Verify past forecasts
-                    if forecast_verifier and market_data_service:
-                        try:
-                            verified = forecast_verifier.verify_pending(
-                                market_data_service=market_data_service,
-                                symbols=active_symbols,
-                            )
-                            if verified > 0:
-                                print(f"forecast_verified count={verified}")
-                        except Exception as vexc:
-                            print(f"forecast_verify_error: {vexc}")
                 except Exception as exc:
                     print(f"forecast_error: {exc}")
                 last_forecast_tick = now_ts
+
+        # Forecast verification — runs independently, more frequently than forecast generation
+        if forecast_verifier and market_data_service and forecast_enabled:
+            now_ts = time.time()
+            if now_ts - last_forecast_verify_tick >= forecast_verify_interval:
+                try:
+                    active_symbols = getattr(settings, "symbols", None) or []
+                    verified = forecast_verifier.verify_pending(
+                        market_data_service=market_data_service,
+                        symbols=active_symbols,
+                        limit=forecast_verify_batch,
+                    )
+                    if verified > 0:
+                        print(f"forecast_verified count={verified}")
+                except Exception as vexc:
+                    print(f"forecast_verify_error: {vexc}")
+                last_forecast_verify_tick = now_ts
 
         (
             processed_total,
