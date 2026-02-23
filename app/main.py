@@ -1694,7 +1694,7 @@ def main():
 
     # Phase 8: Price direction forecast engine (read-only)
     forecast_enabled = os.getenv("FORECAST_ENABLED", "1") != "0"
-    forecast_interval = int(os.getenv("FORECAST_INTERVAL", str(signal_gen_interval if signal_gen_enabled else 60)))
+    forecast_interval = int(os.getenv("FORECAST_INTERVAL", "900"))  # 15 min: aligned with M15 bar close
     last_forecast_tick = 0.0
     forecast_engine = None
     forecast_repo = None

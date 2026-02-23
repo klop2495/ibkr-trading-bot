@@ -21,6 +21,9 @@ class ForecastVerifier:
     """
     Verifies past forecasts by comparing predicted direction with actual price.
 
+    Uses historical prices from market_snapshots (M15 bars) for accurate
+    verification at the exact horizon end time, not current price.
+
     Usage:
         verifier = ForecastVerifier(db)
         count = verifier.verify_pending(market_data_service, symbols)
@@ -98,14 +101,21 @@ class ForecastVerifier:
         if not hasattr(forecast_ts, 'tzinfo') or forecast_ts.tzinfo is None:
             forecast_ts = forecast_ts.replace(tzinfo=timezone.utc)
 
-        # Get current price for this symbol
-        current_price = self._get_current_price(symbol, mds)
-        if current_price is None:
-            return False
-
-        # If base_price is missing, we can't verify
+        # If base_price is missing, reconstruct from historical M15 bar at forecast time
         if base_price is None:
-            return False
+            base_price = self._get_historical_price(symbol, forecast_ts)
+            if base_price is not None:
+                try:
+                    self.db.client.table("price_forecasts").update(
+                        {"base_price": base_price}
+                    ).eq("id", row_id).execute()
+                except Exception:
+                    pass
+            else:
+                # Fallback: use current price from cache (less accurate)
+                base_price = self._get_current_price(symbol, mds)
+                if base_price is None:
+                    return False
 
         update_data: Dict[str, Any] = {}
         all_verified = True
@@ -124,14 +134,18 @@ class ForecastVerifier:
 
             predicted = row.get(f"{prefix}_direction")
             if not predicted or predicted == "neutral":
-                # Neutral predictions are always "correct" (no claim made)
                 update_data[correct_col] = True
                 update_data[f"{prefix}_actual"] = "neutral"
-                update_data[f"{prefix}_actual_price"] = current_price
                 continue
 
-            # Use current price as best approximation
-            actual_price = current_price
+            # Get actual price at horizon end from historical data
+            actual_price = self._get_historical_price(symbol, horizon_end)
+            if actual_price is None:
+                # Fallback to current price if horizon just elapsed
+                actual_price = self._get_current_price(symbol, mds)
+            if actual_price is None:
+                all_verified = False
+                continue
 
             # Determine actual direction
             price_change = actual_price - base_price
@@ -160,6 +174,33 @@ class ForecastVerifier:
         except Exception as exc:
             logger.warning(f"forecast_verify_update_error id={row_id} error={exc}")
             return False
+
+    def _get_historical_price(self, symbol: str, target_ts: datetime) -> Optional[float]:
+        """
+        Get close price from market_snapshots nearest to target_ts.
+        Looks for the M15 bar closest to the target time.
+        """
+        try:
+            # Look for bar within ±15 min window
+            window_start = (target_ts - timedelta(minutes=15)).isoformat()
+            window_end = (target_ts + timedelta(minutes=15)).isoformat()
+            res = (
+                self.db.client.table("market_snapshots")
+                .select("close, ts")
+                .eq("symbol", symbol)
+                .eq("timeframe", "M15")
+                .gte("ts", window_start)
+                .lte("ts", window_end)
+                .order("ts", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = res.data or []
+            if rows and rows[0].get("close") is not None:
+                return float(rows[0]["close"])
+        except Exception:
+            pass
+        return None
 
     def _get_current_price(self, symbol: str, mds: Any) -> Optional[float]:
         """Get latest close price from market data service cache."""

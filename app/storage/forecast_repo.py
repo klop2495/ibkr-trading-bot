@@ -26,13 +26,54 @@ class ForecastRepo:
             return {"count": 0, "error": str(exc)}
 
     def insert_batch(self, forecasts: List[ForecastResult]) -> dict:
-        """Insert multiple forecasts in one call."""
+        """Insert multiple forecasts, skipping duplicates where direction hasn't changed."""
         if not forecasts:
             return {"count": 0}
-        payloads = [f.to_db_row() for f in forecasts]
+
+        # Dedup: check latest forecast per symbol, skip if identical directions
+        symbols = list({f.symbol for f in forecasts})
+        existing: Dict[str, Any] = {}
+        try:
+            res = (
+                self.db.client.table(self.table)
+                .select("symbol, h30_direction, h60_direction, h240_direction, h1440_direction")
+                .in_("symbol", symbols)
+                .order("ts_utc", desc=True)
+                .limit(len(symbols) * 2)
+                .execute()
+            )
+            for row in (res.data or []):
+                sym = row.get("symbol")
+                if sym and sym not in existing:
+                    existing[sym] = (
+                        row.get("h30_direction"),
+                        row.get("h60_direction"),
+                        row.get("h240_direction"),
+                        row.get("h1440_direction"),
+                    )
+        except Exception:
+            pass  # If lookup fails, insert all
+
+        filtered: list = []
+        for f in forecasts:
+            prev = existing.get(f.symbol)
+            if prev:
+                current = tuple(
+                    (h.direction.value if h else None)
+                    for h_min in [30, 60, 240, 1440]
+                    for h in [f.horizon(h_min)]
+                )
+                if current == prev:
+                    continue  # Skip — identical directions
+            filtered.append(f)
+
+        if not filtered:
+            return {"count": 0, "skipped": len(forecasts)}
+
+        payloads = [f.to_db_row() for f in filtered]
         try:
             res = self.db.client.table(self.table).insert(payloads).execute()
-            return {"count": len(res.data or []), "data": res.data}
+            return {"count": len(res.data or []), "skipped": len(forecasts) - len(filtered)}
         except Exception as exc:
             return {"count": 0, "error": str(exc)}
 
