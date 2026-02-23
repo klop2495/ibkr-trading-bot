@@ -73,6 +73,7 @@ class IBKRFetcher:
         self._history_contract_mode = os.getenv("IBKR_HISTORY_CONTRACT_MODE", "cash").lower()
         self._bars_cache: dict[tuple[str, str], list[Any]] = {}
         self._last_bar_ts: dict[tuple[str, str], datetime] = {}
+        self._bars_cache_ts: dict[tuple[str, str], float] = {}  # epoch seconds when cache was filled
 
     def _safe_disconnect(self) -> None:
         if not self._ib:
@@ -199,6 +200,8 @@ class IBKRFetcher:
         key = (symbol, timeframe)
         interval_minutes = TIMEFRAME_MINUTES.get(timeframe, 15)
         interval_seconds = interval_minutes * 60
+        # Cache refresh interval: re-fetch even within same bar to get updated close
+        cache_max_age_s = int(os.getenv("IBKR_BARS_CACHE_MAX_AGE_S", "60"))
         if key in self._bars_cache and key in self._last_bar_ts:
             last_ts = self._last_bar_ts[key]
             if last_ts.tzinfo is None:
@@ -206,7 +209,10 @@ class IBKRFetcher:
             epoch = int(end_dt_utc.timestamp())
             current_bar_epoch = epoch - (epoch % interval_seconds)
             current_bar_ts = datetime.fromtimestamp(current_bar_epoch, tz=end_dt_utc.tzinfo)
-            if last_ts >= current_bar_ts:
+            # Check cache age — even if same bar, refresh if stale
+            cache_ts = self._bars_cache_ts.get(key)
+            cache_age = (end_dt_utc.timestamp() - cache_ts) if cache_ts else float('inf')
+            if last_ts >= current_bar_ts and cache_age < cache_max_age_s:
                 return self._bars_cache[key]
 
         try:
@@ -241,6 +247,7 @@ class IBKRFetcher:
                 if last_bar_ts is not None:
                     self._bars_cache[key] = bars
                     self._last_bar_ts[key] = last_bar_ts
+                    self._bars_cache_ts[key] = time.time()
             return bars
         except IBTimeoutError:
             if self._owns_connection:

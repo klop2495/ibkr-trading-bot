@@ -2089,7 +2089,7 @@ def main():
                             data={"error": str(exc)},
                         )
 
-        # Broker state periodic sync
+        # Broker state periodic sync + update live prices for open trades
         now_ts = time.time()
         if now_ts - last_broker_sync_tick >= broker_sync_interval:
             try:
@@ -2109,6 +2109,45 @@ def main():
                             message=f"Broker sync failed: {err}",
                             data={"error": err},
                         )
+                # Update current_price + unrealized_pnl for open trades from broker positions
+                try:
+                    state = broker_state_service.get_state()
+                    if state and state.positions:
+                        open_trades = trades_history_repo.get_active_trades_full() if trades_history_repo else []
+                        updated_count = 0
+                        for trade in open_trades:
+                            meta = trade.get("meta") or {}
+                            trade_key = meta.get("instrument_key")
+                            if not trade_key:
+                                continue
+                            pos = state.positions.get(trade_key)
+                            if not pos:
+                                continue
+                            # Calculate mid-price from avg_cost + unrealized_pnl
+                            entry_price = float(trade.get("entry_price") or 0)
+                            qty = float(trade.get("quantity") or 0)
+                            side = str(trade.get("side") or "").upper()
+                            upnl = pos.unrealized_pnl
+                            current_price = None
+                            if qty > 0 and entry_price > 0:
+                                if side.startswith("B") or side == "LONG":
+                                    current_price = entry_price + (upnl / qty)
+                                else:
+                                    current_price = entry_price - (upnl / qty)
+                            try:
+                                update_data = {"unrealized_pnl": upnl}
+                                if current_price is not None:
+                                    update_data["current_price"] = current_price
+                                db.client.table("trades_history").update(
+                                    update_data
+                                ).eq("id", str(trade.get("id"))).execute()
+                                updated_count += 1
+                            except Exception:
+                                pass
+                        if updated_count > 0:
+                            print(f"broker_prices_updated count={updated_count}")
+                except Exception as price_exc:
+                    print(f"broker_prices_update_error: {price_exc}")
             except Exception as exc:
                 print(f"broker_sync_tick_error: {exc}")
                 if risk_events_repo:
