@@ -232,24 +232,24 @@ class ForecastVerifier:
             update_data[f"{prefix}_actual"] = actual_dir
             update_data[f"{prefix}_actual_price"] = actual_price
 
+        # Determine if we should force-verify to prevent queue blocking
+        age_hours = (now - forecast_ts).total_seconds() / 3600
+
         if not update_data and all_verified:
             # All horizons already verified, just stamp it
             update_data["verified_at"] = now.isoformat()
         elif not update_data:
-            # Nothing to update and not all verified yet
-            # Check if forecast is old enough that missing data won't arrive
-            max_horizon = timedelta(minutes=1440)  # 24h
-            if now - forecast_ts > max_horizon + timedelta(hours=2):
-                # Forecast is >26h old, data won't arrive — mark verified with what we have
+            # Nothing new to update — force if old enough
+            if age_hours > 4:
                 update_data["verified_at"] = now.isoformat()
             else:
                 return False
 
-        # Mark as fully verified if all horizons checked OR forecast is stale
+        # Mark as fully verified if all horizons checked OR forecast old enough
         if all_verified:
             update_data["verified_at"] = now.isoformat()
-        elif now - forecast_ts > timedelta(minutes=1440) + timedelta(hours=2):
-            # >26h old — force verified to prevent queue blocking
+        elif age_hours > 4:
+            # >4h old — force verified with partial results to prevent queue blocking
             update_data["verified_at"] = now.isoformat()
 
         try:
