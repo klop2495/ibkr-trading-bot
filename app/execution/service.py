@@ -429,8 +429,12 @@ class ExecutionService:
         self._forecast_gate: Optional['ForecastGate'] = None
         if FORECAST_GATE_AVAILABLE and os.getenv('FORECAST_GATE_ENABLED', '1') == '1':
             try:
-                self._forecast_gate = ForecastGate()
-                logger.info('ExecutionService: ForecastGate initialized')
+                # Try to get DB from repos for rolling accuracy queries
+                gate_db = None
+                if risk_events_repo and hasattr(risk_events_repo, 'db'):
+                    gate_db = risk_events_repo.db
+                self._forecast_gate = ForecastGate(db=gate_db)
+                logger.info(f'ExecutionService: ForecastGate initialized db={gate_db is not None}')
             except Exception as e:
                 logger.warning(f'ExecutionService: Failed to init ForecastGate: {e}')
         

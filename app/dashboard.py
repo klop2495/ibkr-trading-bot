@@ -1322,6 +1322,35 @@ async def optimizer_status():
     return _optimizer_state
 
 
+# ========== Adaptive Forecast Gate Status ==========
+
+_forecast_gate_instance = None
+
+def set_forecast_gate(gate):
+    """Set the forecast gate instance from main.py."""
+    global _forecast_gate_instance
+    _forecast_gate_instance = gate
+
+
+@app.get("/api/forecast-gate/status")
+async def forecast_gate_status():
+    """Get adaptive forecast gate status - rolling accuracy per pair."""
+    if _forecast_gate_instance is None:
+        # Fallback: create temporary gate to read from DB
+        try:
+            from app.forecast.gate import AdaptiveForecastGate
+            db = SupabaseDB()
+            gate = AdaptiveForecastGate(db=db)
+            gate._refresh_accuracy()
+            return gate.get_status()
+        except Exception as e:
+            return {"error": str(e), "enabled": False}
+    
+    # Force refresh if stale
+    _forecast_gate_instance.refresh_if_needed()
+    return _forecast_gate_instance.get_status()
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("DASHBOARD_PORT", "8080"))
