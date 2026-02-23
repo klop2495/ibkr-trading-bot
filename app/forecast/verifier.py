@@ -33,6 +33,19 @@ class ForecastVerifier:
         self.db = db
         self._last_log: Optional[str] = None
 
+    @staticmethod
+    def _is_weekend(ts: datetime) -> bool:
+        """Check if timestamp falls during forex weekend (Fri 22:00 - Sun 22:00 UTC)."""
+        wd = ts.weekday()  # 0=Mon .. 6=Sun
+        hour = ts.hour
+        if wd == 5:  # Saturday
+            return True
+        if wd == 6 and hour < 22:  # Sunday before 22:00
+            return True
+        if wd == 4 and hour >= 22:  # Friday after 22:00
+            return True
+        return False
+
     def reset_bad_verifications(self, batch: int = 500) -> int:
         """
         Reset verifications where all horizons got the same actual_price
@@ -143,6 +156,21 @@ class ForecastVerifier:
 
         if not hasattr(forecast_ts, 'tzinfo') or forecast_ts.tzinfo is None:
             forecast_ts = forecast_ts.replace(tzinfo=timezone.utc)
+
+        # Skip forecasts generated during weekend (no valid market data)
+        if self._is_weekend(forecast_ts):
+            # Mark as verified with neutral results to avoid re-processing
+            try:
+                self.db.client.table("price_forecasts").update({
+                    "verified_at": now.isoformat(),
+                    "h30_correct": None, "h30_actual": "weekend",
+                    "h60_correct": None, "h60_actual": "weekend",
+                    "h240_correct": None, "h240_actual": "weekend",
+                    "h1440_correct": None, "h1440_actual": "weekend",
+                }).eq("id", row_id).execute()
+            except Exception:
+                pass
+            return True
 
         # If base_price is missing, reconstruct from historical M15 bar at forecast time
         if base_price is None:
