@@ -32,6 +32,11 @@ from app.forecast.indicators_vote import (
     vote_rsi_momentum,
     vote_rsi_trend,
 )
+from app.market_data.indicators import (
+    adx as calc_adx,
+    bollinger_bands as calc_bb,
+    is_squeeze as calc_squeeze,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +140,58 @@ class ForecastEngine:
             h = self._compute_horizon(symbol, horizon_minutes, bars_cache, flags)
             horizons.append(h)
 
+        # === Advanced filter metadata (log-only, not blocking) ===
+
+        # ADX on M15 (primary timeframe for H30)
+        adx_value = None
+        m15 = bars_cache.get("M15", {})
+        m15_h = m15.get("highs", [])
+        m15_l = m15.get("lows", [])
+        m15_c = m15.get("closes", [])
+        if len(m15_c) >= 30 and len(m15_h) == len(m15_c) and len(m15_l) == len(m15_c):
+            adx_value = calc_adx(m15_h, m15_l, m15_c, period=14)
+
+        # Bollinger Bands width + squeeze on M15
+        bb_width = None
+        bb_squeeze = None
+        if len(m15_c) >= 20:
+            bb = calc_bb(m15_c, period=20, std_mult=2.0)
+            if bb:
+                bb_width = bb["width"]
+            if len(m15_h) >= 20 and len(m15_l) >= 20:
+                bb_squeeze = calc_squeeze(m15_h, m15_l, m15_c)
+
+        # MTF conflict: H4 direction vs H30 direction
+        mtf_conflict = None
+        mtf_h4_direction = None
+        h30_horizon = next((h for h in horizons if h.horizon_minutes == 30), None)
+        h4_data = bars_cache.get("H4", {})
+        h4_closes = h4_data.get("closes", [])
+        if h30_horizon and h30_horizon.direction.value != "neutral" and len(h4_closes) >= 50:
+            # Determine H4 trend via price vs MA(20) + momentum
+            from app.forecast.indicators_vote import vote_price_vs_ma, vote_momentum
+            h4_trend_ma = vote_price_vs_ma(h4_closes, 20)
+            h4_trend_mom = vote_momentum(h4_closes, 10)
+            h4_net = h4_trend_ma + h4_trend_mom
+            if h4_net > 0:
+                mtf_h4_direction = "up"
+            elif h4_net < 0:
+                mtf_h4_direction = "down"
+            else:
+                mtf_h4_direction = "neutral"
+
+            # Conflict = H4 strong direction opposite to H30
+            if mtf_h4_direction != "neutral" and h30_horizon.direction.value != mtf_h4_direction:
+                # Check if H4 has strong ADX to confirm real conflict
+                h4_h = h4_data.get("highs", [])
+                h4_l = h4_data.get("lows", [])
+                h4_adx = None
+                if len(h4_h) >= 30 and len(h4_l) >= 30:
+                    h4_adx = calc_adx(h4_h, h4_l, h4_closes, period=14)
+                mtf_conflict = h4_adx is not None and h4_adx > 25  # Only flag if H4 ADX is strong
+            else:
+                mtf_conflict = False
+
         return ForecastResult(
             ts_utc=ts,
             symbol=symbol,
@@ -142,6 +199,11 @@ class ForecastEngine:
             data_quality=data_quality,
             flags=flags,
             base_price=base_price,
+            adx_value=adx_value,
+            bb_width=bb_width,
+            bb_squeeze=bb_squeeze,
+            mtf_conflict=mtf_conflict,
+            mtf_h4_direction=mtf_h4_direction,
         )
 
     def _compute_horizon(

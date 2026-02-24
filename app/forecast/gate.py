@@ -218,8 +218,14 @@ class AdaptiveForecastGate:
     def update_forecast(self, symbol: str, dominant_direction: str, strength: float,
                         h30_confidence: Optional[str] = None,
                         h30_aligned: Optional[int] = None,
-                        h30_total: Optional[int] = None) -> None:
-        """Update cached forecast for a symbol with quality data."""
+                        h30_total: Optional[int] = None,
+                        adx_value: Optional[float] = None,
+                        bb_width: Optional[float] = None,
+                        bb_squeeze: Optional[bool] = None,
+                        mtf_conflict: Optional[bool] = None,
+                        mtf_h4_direction: Optional[str] = None,
+                        spread_pips: Optional[float] = None) -> None:
+        """Update cached forecast for a symbol with quality + advanced filter data."""
         self._forecast_cache[symbol] = {
             "direction": dominant_direction,
             "strength": strength,
@@ -227,6 +233,13 @@ class AdaptiveForecastGate:
             "h30_confidence": h30_confidence,
             "h30_aligned": h30_aligned,
             "h30_total": h30_total,
+            # Advanced filter metadata
+            "adx_value": adx_value,
+            "bb_width": bb_width,
+            "bb_squeeze": bb_squeeze,
+            "mtf_conflict": mtf_conflict,
+            "mtf_h4_direction": mtf_h4_direction,
+            "spread_pips": spread_pips,
         }
 
     def update_forecasts_batch(self, forecasts: list) -> None:
@@ -264,6 +277,12 @@ class AdaptiveForecastGate:
                     h30_confidence=h30_confidence,
                     h30_aligned=h30_aligned,
                     h30_total=h30_total,
+                    adx_value=getattr(fc, "adx_value", None),
+                    bb_width=getattr(fc, "bb_width", None),
+                    bb_squeeze=getattr(fc, "bb_squeeze", None),
+                    mtf_conflict=getattr(fc, "mtf_conflict", None),
+                    mtf_h4_direction=getattr(fc, "mtf_h4_direction", None),
+                    spread_pips=getattr(fc, "spread_pips", None),
                 )
 
     def check(self, symbol: str, trade_direction: str) -> Tuple[bool, Optional[str]]:
@@ -322,6 +341,58 @@ class AdaptiveForecastGate:
                         )
                         logger.info(f"QualityFilter blocked {symbol}: {reason}")
                         return False, reason
+
+        # Check 2b: Advanced filters (ADX, Squeeze, MTF) — configurable blocking
+        if self._quality_filter_enabled:
+            forecast = self._forecast_cache.get(symbol)
+            if forecast:
+                adx_val = forecast.get("adx_value")
+                squeeze = forecast.get("bb_squeeze")
+                mtf_conf = forecast.get("mtf_conflict")
+
+                # ADX filter
+                adx_gate_enabled = os.getenv("GATE_ADX_ENABLED", "0") == "1"
+                adx_min = float(os.getenv("GATE_ADX_MIN", "20"))
+                if adx_val is not None and adx_val < adx_min:
+                    if adx_gate_enabled:
+                        reason = f"adx_filter:adx={adx_val:.1f}<{adx_min} (flat market)"
+                        logger.info(f"ADXFilter blocked {symbol}: {reason}")
+                        return False, reason
+                    else:
+                        logger.debug(f"ADXFilter would_block {symbol}: adx={adx_val:.1f}<{adx_min}")
+
+                # Squeeze filter
+                squeeze_gate_enabled = os.getenv("GATE_SQUEEZE_ENABLED", "0") == "1"
+                if squeeze is True:
+                    if squeeze_gate_enabled:
+                        reason = f"squeeze_filter:BB_inside_Keltner (no volatility)"
+                        logger.info(f"SqueezeFilter blocked {symbol}: {reason}")
+                        return False, reason
+                    else:
+                        logger.debug(f"SqueezeFilter would_block {symbol}: squeeze=True")
+
+                # MTF conflict filter
+                mtf_gate_enabled = os.getenv("GATE_MTF_VETO_ENABLED", "0") == "1"
+                if mtf_conf is True:
+                    h4_dir = forecast.get("mtf_h4_direction", "?")
+                    if mtf_gate_enabled:
+                        reason = f"mtf_conflict:H4={h4_dir} vs signal (strong H4 trend opposes)"
+                        logger.info(f"MTFFilter blocked {symbol}: {reason}")
+                        return False, reason
+                    else:
+                        logger.debug(f"MTFFilter would_block {symbol}: H4={h4_dir} conflict")
+
+                # Spread filter
+                spread_gate_enabled = os.getenv("GATE_SPREAD_ENABLED", "0") == "1"
+                spread_max = float(os.getenv("GATE_SPREAD_MAX_PIPS", "3.0"))
+                spread_val = forecast.get("spread_pips")
+                if spread_val is not None and spread_val > spread_max:
+                    if spread_gate_enabled:
+                        reason = f"spread_filter:spread={spread_val:.1f}>{spread_max} pips"
+                        logger.info(f"SpreadFilter blocked {symbol}: {reason}")
+                        return False, reason
+                    else:
+                        logger.debug(f"SpreadFilter would_block {symbol}: spread={spread_val:.1f}")
 
         # Check 3: Trading hours filter
         if self._hours_filter_enabled and self._trading_hours:
@@ -387,6 +458,13 @@ class AdaptiveForecastGate:
                 "h30_confidence": fc.get("h30_confidence"),
                 "h30_aligned": fc.get("h30_aligned"),
                 "h30_total": fc.get("h30_total"),
+                # Advanced filter metadata
+                "adx_value": fc.get("adx_value"),
+                "bb_width": fc.get("bb_width"),
+                "bb_squeeze": fc.get("bb_squeeze"),
+                "mtf_conflict": fc.get("mtf_conflict"),
+                "mtf_h4_direction": fc.get("mtf_h4_direction"),
+                "spread_pips": fc.get("spread_pips"),
             }
 
         return {
@@ -412,6 +490,26 @@ class AdaptiveForecastGate:
                 "hours_filter_enabled": self._hours_filter_enabled,
                 "trading_hours_utc": sorted(self._trading_hours),
                 "stats": dict(self._quality_stats),
+            },
+            "advanced_filters": {
+                "adx": {
+                    "enabled": os.getenv("GATE_ADX_ENABLED", "0") == "1",
+                    "min_value": float(os.getenv("GATE_ADX_MIN", "20")),
+                    "mode": "blocking" if os.getenv("GATE_ADX_ENABLED", "0") == "1" else "log_only",
+                },
+                "squeeze": {
+                    "enabled": os.getenv("GATE_SQUEEZE_ENABLED", "0") == "1",
+                    "mode": "blocking" if os.getenv("GATE_SQUEEZE_ENABLED", "0") == "1" else "log_only",
+                },
+                "mtf_veto": {
+                    "enabled": os.getenv("GATE_MTF_VETO_ENABLED", "0") == "1",
+                    "mode": "blocking" if os.getenv("GATE_MTF_VETO_ENABLED", "0") == "1" else "log_only",
+                },
+                "spread": {
+                    "enabled": os.getenv("GATE_SPREAD_ENABLED", "0") == "1",
+                    "max_pips": float(os.getenv("GATE_SPREAD_MAX_PIPS", "3.0")),
+                    "mode": "blocking" if os.getenv("GATE_SPREAD_ENABLED", "0") == "1" else "log_only",
+                },
             },
         }
 

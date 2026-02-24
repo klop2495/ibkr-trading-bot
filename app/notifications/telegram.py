@@ -134,6 +134,23 @@ class TelegramNotifier:
                             f"  {hz_label}: {conf} • {aligned}/{total} aligned • {str_pct}"
                         )
 
+                # Advanced filter indicators
+                adv_parts = []
+                adx_val = info.get("adx_value")
+                if adx_val is not None:
+                    adx_emoji = "🟢" if adx_val >= 25 else "🟡" if adx_val >= 20 else "🔴"
+                    adv_parts.append(f"ADX {adx_val:.0f}{adx_emoji}")
+                if info.get("bb_squeeze"):
+                    adv_parts.append("🔴 Squeeze")
+                if info.get("mtf_conflict"):
+                    h4d = (info.get("mtf_h4_direction") or "?").upper()
+                    adv_parts.append(f"⚠️ H4={h4d}")
+                elif info.get("mtf_h4_direction"):
+                    h4d = info["mtf_h4_direction"].upper()
+                    adv_parts.append(f"H4={h4d}")
+                if adv_parts:
+                    detail_parts.append(f"  {' • '.join(adv_parts)}")
+
             lines.append(f"{arrow}<b>{symbol}</b>  ▸  {dir_text}")
             for dp in detail_parts:
                 lines.append(dp)

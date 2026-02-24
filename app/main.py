@@ -2034,11 +2034,31 @@ def main():
                                 if changed or new_bar_detected:
                                     for sym, direction, conf, al, tot, strength, passed, reasons in all_pairs_info:
                                         mark = "✅" if passed else "❌"
+                                        # Get advanced filter metadata for this symbol
+                                        fc_match = next((f for f in forecasts if f.symbol == sym), None)
+                                        adv = ""
+                                        if fc_match:
+                                            parts = []
+                                            if fc_match.adx_value is not None:
+                                                adx_flag = "🔴" if fc_match.adx_value < 20 else "🟢"
+                                                parts.append(f"ADX={fc_match.adx_value:.1f}{adx_flag}")
+                                            if fc_match.bb_squeeze is not None:
+                                                sq_flag = "🔴SQ" if fc_match.bb_squeeze else ""
+                                                if sq_flag:
+                                                    parts.append(sq_flag)
+                                            if fc_match.bb_width is not None:
+                                                parts.append(f"BBw={fc_match.bb_width:.4f}")
+                                            if fc_match.mtf_conflict is True:
+                                                parts.append(f"MTF_CONFLICT🔴(H4={fc_match.mtf_h4_direction})")
+                                            elif fc_match.mtf_h4_direction:
+                                                parts.append(f"H4={fc_match.mtf_h4_direction}")
+                                            if parts:
+                                                adv = " | " + " ".join(parts)
                                         print(
                                             f"forecast_quality {sym:8s} {direction:4s} "
                                             f"conf={conf:6s} aligned={al}/{tot} "
                                             f"str={strength:.2f} hour={current_hour:02d} "
-                                            f"{mark} {','.join(reasons) if reasons else 'PASSED'}"
+                                            f"{mark} {','.join(reasons) if reasons else 'PASSED'}{adv}"
                                         )
                                     if new_signals:
                                         print(f"🟢 NEW_SIGNALS: {', '.join(sorted(new_signals))}")
@@ -2047,9 +2067,7 @@ def main():
                                             tg_passed_info = []
                                             for sym, direction, conf, al, tot, strength, passed, reasons in all_pairs_info:
                                                 if passed:
-                                                    # Build h30/h60 info for Telegram
                                                     pair_info = {"symbol": sym}
-                                                    # Find matching forecast for h60 data
                                                     fc_match = next((f for f in forecasts if f.symbol == sym), None)
                                                     h30_data = {"passed": True, "confidence": conf, "aligned": al, "total": tot, "strength": strength}
                                                     pair_info["h30"] = h30_data
@@ -2067,6 +2085,11 @@ def main():
                                                                 h60_reasons.append(f"aligned={h60_aligned}<{gate._min_aligned}")
                                                             h60_passed = not h60_reasons
                                                             pair_info["h60"] = {"passed": h60_passed, "confidence": h60_conf, "aligned": h60_aligned, "total": h60_total, "strength": h60_str}
+                                                        # Add advanced filter metadata to TG message
+                                                        pair_info["adx_value"] = fc_match.adx_value
+                                                        pair_info["bb_squeeze"] = fc_match.bb_squeeze
+                                                        pair_info["mtf_conflict"] = fc_match.mtf_conflict
+                                                        pair_info["mtf_h4_direction"] = fc_match.mtf_h4_direction
                                                     tg_passed_info.append(pair_info)
                                             tg_notifier.notify_new_signals(
                                                 new_signals=new_signals,

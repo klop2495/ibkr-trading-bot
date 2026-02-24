@@ -65,6 +65,14 @@ class ForecastResult(BaseModel):
     flags: List[str] = Field(default_factory=list)
     base_price: Optional[float] = None  # close price at forecast time
 
+    # Advanced filter metadata (Phase 2 — computed but not blocking initially)
+    adx_value: Optional[float] = None        # ADX(14) on primary TF — trend strength
+    bb_width: Optional[float] = None         # Bollinger Band width (normalized)
+    bb_squeeze: Optional[bool] = None        # True if BB inside Keltner (squeeze)
+    mtf_conflict: Optional[bool] = None      # True if H4 disagrees with H30 direction
+    mtf_h4_direction: Optional[str] = None   # H4 dominant direction for reference
+    spread_pips: Optional[float] = None      # Current spread from broker (if available)
+
     @field_validator("symbol", mode="before")
     @classmethod
     def normalize_symbol(cls, v):
@@ -117,4 +125,17 @@ class ForecastResult(BaseModel):
             row[f"{prefix}_strength"] = round(h.strength, 4)
             row[f"{prefix}_aligned"] = h.indicators_aligned
             row[f"{prefix}_total"] = h.indicators_total
+        # Advanced filter metadata
+        if self.adx_value is not None:
+            row["adx_value"] = round(self.adx_value, 2)
+        if self.bb_width is not None:
+            row["bb_width"] = round(self.bb_width, 6)
+        if self.bb_squeeze is not None:
+            row["bb_squeeze"] = self.bb_squeeze
+        if self.mtf_conflict is not None:
+            row["mtf_conflict"] = self.mtf_conflict
+        if self.mtf_h4_direction is not None:
+            row["mtf_h4_direction"] = self.mtf_h4_direction
+        if self.spread_pips is not None:
+            row["spread_pips"] = round(self.spread_pips, 2)
         return row
