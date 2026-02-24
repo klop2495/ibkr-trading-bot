@@ -4,13 +4,9 @@ Forecast Engine — computes price direction forecasts for multiple horizons.
 Uses existing MarketDataService bars cache. No additional IB Gateway requests.
 Read-only module: never influences trade execution.
 
-Indicator weights (based on empirical analysis 2026-02-23):
-- momentum: STRONG predictor (85% accuracy), weight=2.0
-- price_vs_ma: GOOD predictor (60%), weight=1.0
-- ma_cross: CONTRARIAN — inverted, weight=1.0
-- rsi_momentum: CONTRARIAN RSI extreme inverted (momentum, not mean-reversion), weight=1.0
-- rsi_trend: rarely fires but decent when it does, weight=1.0
-- atr_trend: kept for horizons with OHLC data, weight=0.5
+All indicator weights set to 1.0 (default). Empirical weight optimization on 407
+samples (2026-02-23) led to overfitting: HIGH confidence accuracy dropped 50%→17%.
+Gate-based pair filtering is more effective than weight tuning.
 """
 
 import logging
@@ -47,20 +43,19 @@ HORIZON_CONFIG = {
     1440: {"primary_tf": "H4", "secondary_tf": "H1", "momentum_lookback": 24, "ma_fast": 50, "ma_slow": 200},
 }
 
-# Indicator weights — empirically derived from 407 verified forecasts (2026-02-23)
-# ma_cross_inv: 64% accuracy, 100% active rate — best global predictor
-# price_vs_ma: 58% accuracy, 100% active — stable second
-# momentum: 51% globally, contrarian for JPY pairs (13-21%) — reduced
-# rsi_trend: 50%, only 14% active — minimal contribution
-# rsi_momentum: 53%, only 16% active — minimal contribution
+# Indicator weights — all set to 1.0 (default)
+# Empirical weight optimization (2026-02-23) proved to be overfitting:
+# - Custom weights: accuracy dropped 53% → 35%, HIGH conf 50% → 17%
+# - Rollback to 1.0: accuracy recovering to ~48%+ within hours
+# Lesson: gate-based pair filtering > weight tuning on small samples
 WEIGHTS = {
-    "ma_cross_inv": 2.0,   # BEST: 64% accuracy, always fires, inverted
-    "price_vs_ma": 1.0,    # GOOD: 58% accuracy, always fires
-    "momentum": 0.5,       # WEAK globally (51%), contrarian for JPY pairs
-    "rsi_momentum": 0.5,   # MARGINAL: 53%, rarely fires (16%)
-    "rsi_trend": 0.5,      # MARGINAL: 50%, rarely fires (14%)
-    "atr_trend": 0.5,      # Supplementary, needs OHLC
-    "secondary_ma": 0.5,   # Secondary TF confirmation, inverted
+    "ma_cross_inv": 1.0,
+    "price_vs_ma": 1.0,
+    "momentum": 1.0,
+    "rsi_momentum": 1.0,
+    "rsi_trend": 1.0,
+    "atr_trend": 1.0,
+    "secondary_ma": 1.0,
 }
 
 # Minimum bars needed for reliable indicator calculation
