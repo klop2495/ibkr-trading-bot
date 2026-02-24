@@ -1351,6 +1351,204 @@ async def forecast_gate_status():
     return _forecast_gate_instance.get_status()
 
 
+# ========== Binary Signals API ==========
+
+@app.get("/api/binary-signals")
+async def binary_signals():
+    """
+    Quality-filtered forecast signals for binary options.
+    
+    Returns all pairs with H30 and H60 horizon data, each checked against
+    the quality filter (confidence=MEDIUM, aligned>=4, trading hours).
+    
+    Empirical basis: 1000-sample analysis (2026-02-24)
+    - MEDIUM + aligned>=4 = 86% accuracy on H30
+    - Trading hours 08-11, 20-23 UTC = best performance
+    """
+    db = SupabaseDB()
+    now = datetime.now(timezone.utc)
+    current_hour = now.hour
+    
+    # Quality filter config (from gate or env defaults)
+    gate = _forecast_gate_instance
+    min_aligned = int(os.getenv("FORECAST_GATE_MIN_ALIGNED", "4"))
+    required_confidence = os.getenv("FORECAST_GATE_REQUIRED_CONFIDENCE", "medium").lower()
+    hours_filter_enabled = os.getenv("FORECAST_GATE_HOURS_FILTER", "1") == "1"
+    default_hours = "08,09,10,11,20,21,22,23"
+    trading_hours_str = os.getenv("FORECAST_GATE_TRADING_HOURS", default_hours)
+    trading_hours = set()
+    for part in trading_hours_str.split(","):
+        part = part.strip()
+        if part.isdigit():
+            h = int(part)
+            if 0 <= h <= 23:
+                trading_hours.add(h)
+    
+    if gate:
+        min_aligned = gate._min_aligned
+        required_confidence = gate._required_confidence
+        hours_filter_enabled = gate._hours_filter_enabled
+        trading_hours = gate._trading_hours
+    
+    in_trading_hours = not hours_filter_enabled or current_hour in trading_hours
+    
+    # Get latest forecasts from DB (last 30 min to cover recent cycle)
+    try:
+        cutoff = (now - timedelta(minutes=60)).isoformat()
+        res = db.client.table("price_forecasts").select(
+            "symbol, ts_utc, base_price, "
+            "h30_direction, h30_confidence, h30_strength, h30_aligned, h30_total, "
+            "h60_direction, h60_confidence, h60_strength, h60_aligned, h60_total, "
+            "dominant_direction, all_aligned"
+        ).gte("ts_utc", cutoff).order("ts_utc", desc=True).limit(200).execute()
+        rows = res.data or []
+    except Exception as e:
+        return {"error": str(e), "pairs": [], "summary": {}}
+    
+    # Deduplicate: latest forecast per symbol
+    latest_by_symbol: Dict[str, Dict] = {}
+    for row in rows:
+        sym = row.get("symbol")
+        if sym and sym not in latest_by_symbol:
+            latest_by_symbol[sym] = row
+    
+    def _check_horizon(row: Dict, prefix: str) -> Dict:
+        """Check quality filter for one horizon."""
+        direction = row.get(f"{prefix}_direction") or "neutral"
+        confidence = (row.get(f"{prefix}_confidence") or "low").lower()
+        strength = float(row.get(f"{prefix}_strength") or 0)
+        aligned_count = int(row.get(f"{prefix}_aligned") or 0)
+        total = int(row.get(f"{prefix}_total") or 0)
+        
+        reasons = []
+        if direction == "neutral":
+            reasons.append("neutral")
+        if confidence != required_confidence:
+            reasons.append(f"conf={confidence}")
+        if aligned_count < min_aligned:
+            reasons.append(f"aligned={aligned_count}<{min_aligned}")
+        if hours_filter_enabled and current_hour not in trading_hours:
+            reasons.append(f"hour={current_hour}")
+        
+        passed = len(reasons) == 0
+        
+        return {
+            "direction": direction,
+            "confidence": confidence,
+            "strength": round(strength, 3),
+            "aligned": aligned_count,
+            "total": total,
+            "passed": passed,
+            "reasons": reasons,
+        }
+    
+    # Build response for each pair
+    pairs = []
+    passed_h30 = 0
+    passed_h60 = 0
+    
+    for sym, row in sorted(latest_by_symbol.items()):
+        ts_str = row.get("ts_utc", "")
+        try:
+            ts_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            age_seconds = int((now - ts_dt).total_seconds())
+        except Exception:
+            age_seconds = -1
+        
+        h30 = _check_horizon(row, "h30")
+        h60 = _check_horizon(row, "h60")
+        
+        if h30["passed"]:
+            passed_h30 += 1
+        if h60["passed"]:
+            passed_h60 += 1
+        
+        pairs.append({
+            "symbol": sym,
+            "h30": h30,
+            "h60": h60,
+            "base_price": row.get("base_price"),
+            "dominant_direction": row.get("dominant_direction"),
+            "all_aligned": row.get("all_aligned"),
+            "timestamp": ts_str,
+            "age_seconds": age_seconds,
+        })
+    
+    # Sort: passed signals first, then by aligned desc
+    pairs.sort(key=lambda p: (
+        -(1 if p["h30"]["passed"] or p["h60"]["passed"] else 0),
+        -(p["h30"]["aligned"] + p["h60"]["aligned"]),
+    ))
+    
+    # Get accuracy stats for verified forecasts (last 48h)
+    accuracy_stats = {}
+    try:
+        acc_cutoff = (now - timedelta(hours=48)).isoformat()
+        acc_res = db.client.table("price_forecasts").select(
+            "symbol, h30_correct, h30_confidence, h30_aligned, "
+            "h60_correct, h60_confidence, h60_aligned"
+        ).not_.is_("verified_at", "null").gte("ts_utc", acc_cutoff).execute()
+        acc_rows = acc_res.data or []
+        
+        # Global accuracy for passed-filter forecasts
+        h30_passed_correct = 0
+        h30_passed_total = 0
+        h60_passed_correct = 0
+        h60_passed_total = 0
+        
+        for r in acc_rows:
+            h30_conf = (r.get("h30_confidence") or "").lower()
+            h30_al = int(r.get("h30_aligned") or 0)
+            if h30_conf == required_confidence and h30_al >= min_aligned:
+                if r.get("h30_correct") is not None:
+                    h30_passed_total += 1
+                    if r["h30_correct"]:
+                        h30_passed_correct += 1
+            
+            h60_conf = (r.get("h60_confidence") or "").lower()
+            h60_al = int(r.get("h60_aligned") or 0)
+            if h60_conf == required_confidence and h60_al >= min_aligned:
+                if r.get("h60_correct") is not None:
+                    h60_passed_total += 1
+                    if r["h60_correct"]:
+                        h60_passed_correct += 1
+        
+        accuracy_stats = {
+            "h30": {
+                "correct": h30_passed_correct,
+                "total": h30_passed_total,
+                "accuracy": round(h30_passed_correct / h30_passed_total, 3) if h30_passed_total > 0 else None,
+            },
+            "h60": {
+                "correct": h60_passed_correct,
+                "total": h60_passed_total,
+                "accuracy": round(h60_passed_correct / h60_passed_total, 3) if h60_passed_total > 0 else None,
+            },
+        }
+    except Exception:
+        pass
+    
+    return {
+        "pairs": pairs,
+        "summary": {
+            "total_pairs": len(pairs),
+            "passed_h30": passed_h30,
+            "passed_h60": passed_h60,
+            "current_hour_utc": current_hour,
+            "in_trading_hours": in_trading_hours,
+            "trading_hours_utc": sorted(trading_hours),
+            "updated_at": now.isoformat(),
+        },
+        "filter_config": {
+            "required_confidence": required_confidence,
+            "min_aligned": min_aligned,
+            "hours_filter_enabled": hours_filter_enabled,
+            "trading_hours_utc": sorted(trading_hours),
+        },
+        "accuracy_48h": accuracy_stats,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("DASHBOARD_PORT", "8080"))
