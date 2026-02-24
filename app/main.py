@@ -1960,6 +1960,47 @@ def main():
                             # Update forecast gate cache
                             if execution_service and execution_service.forecast_gate:
                                 execution_service.forecast_gate.update_forecasts_batch(forecasts)
+
+                            # Quality filter screening log — shows which pairs pass all filters
+                            gate = execution_service.forecast_gate if execution_service else None
+                            if gate and getattr(gate, '_quality_filter_enabled', False):
+                                current_hour = datetime.now(timezone.utc).hour
+                                passed_list = []
+                                for fc in forecasts:
+                                    h30 = fc.horizon(30)
+                                    if not h30 or h30.direction.value == "neutral":
+                                        continue
+                                    conf = h30.confidence.value
+                                    aligned = h30.indicators_aligned
+                                    total = h30.indicators_total
+                                    direction = h30.direction.value.upper()
+                                    strength = h30.strength
+
+                                    # Check all filters
+                                    reasons = []
+                                    if conf != gate._required_confidence:
+                                        reasons.append(f"conf={conf}")
+                                    if aligned < gate._min_aligned:
+                                        reasons.append(f"aligned={aligned}<{gate._min_aligned}")
+                                    if gate._hours_filter_enabled and current_hour not in gate._trading_hours:
+                                        reasons.append(f"hour={current_hour}")
+
+                                    if not reasons:
+                                        mark = "✅"
+                                        passed_list.append(f"{fc.symbol}:{direction}")
+                                    else:
+                                        mark = "❌"
+                                    print(
+                                        f"forecast_quality {fc.symbol:8s} {direction:4s} "
+                                        f"conf={conf:6s} aligned={aligned}/{total} "
+                                        f"str={strength:.2f} hour={current_hour:02d} "
+                                        f"{mark} {','.join(reasons) if reasons else 'PASSED'}"
+                                    )
+                                # Summary line
+                                print(
+                                    f"forecast_quality_summary passed={len(passed_list)}/{len(forecasts)} "
+                                    f"hour={current_hour:02d} [{', '.join(passed_list) if passed_list else 'none'}]"
+                                )
                 except Exception as exc:
                     print(f"forecast_error: {exc}")
                 last_forecast_tick = now_ts
