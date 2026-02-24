@@ -29,7 +29,7 @@ def main():
 
     res = db.client.table("price_forecasts").select(
         f"symbol, ts_utc, {dir_col}, {conf_col}, {correct_col}, {strength_col}, "
-        f"dominant_direction, all_aligned, data_quality, indicators_detail"
+        f"dominant_direction, all_aligned, data_quality"
     ).not_.is_("verified_at", "null").not_.is_(
         correct_col, "null"
     ).neq(

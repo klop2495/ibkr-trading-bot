@@ -41,6 +41,7 @@ from app.storage.repositories import SnapshotsRepo
 from app.models.bot_settings import DEFAULT_SYMBOLS
 from app.broker.state_service import BrokerStateService
 from app.broker.ib_utils import IBFailSafeState
+from app.notifications.telegram import TelegramNotifier
 
 
 DEFAULT_BACKFILL_BATCH = 25
@@ -1722,6 +1723,14 @@ def main():
     else:
         print(f"Phase 8: Forecast engine DISABLED (forecast_enabled={forecast_enabled} signal_gen={signal_gen_enabled})")
 
+    # Telegram notifications for binary signals
+    tg_notifier = TelegramNotifier()
+    tg_notify_lost = os.getenv("TG_NOTIFY_LOST_SIGNALS", "1") != "0"
+    # Track trading hours transitions
+    _prev_in_trading_hours: Optional[bool] = None
+    # Trading hours for notifications (same as quality filter)
+    _tg_trading_hours = {8, 9, 10, 11, 20, 21, 22, 23}
+
     # Initialize ExecutionService + BrokerStateService
     owner_uuid_str = str(owner_uuid)
     trades_history_repo = TradesHistoryRepo(db)
@@ -2033,8 +2042,46 @@ def main():
                                         )
                                     if new_signals:
                                         print(f"🟢 NEW_SIGNALS: {', '.join(sorted(new_signals))}")
+                                        # Telegram notification for new signals
+                                        try:
+                                            tg_passed_info = []
+                                            for sym, direction, conf, al, tot, strength, passed, reasons in all_pairs_info:
+                                                if passed:
+                                                    # Build h30/h60 info for Telegram
+                                                    pair_info = {"symbol": sym}
+                                                    # Find matching forecast for h60 data
+                                                    fc_match = next((f for f in forecasts if f.symbol == sym), None)
+                                                    h30_data = {"passed": True, "confidence": conf, "aligned": al, "total": tot, "strength": strength}
+                                                    pair_info["h30"] = h30_data
+                                                    if fc_match:
+                                                        h60 = fc_match.horizon(60)
+                                                        if h60:
+                                                            h60_conf = h60.confidence.value
+                                                            h60_aligned = h60.indicators_aligned
+                                                            h60_total = h60.indicators_total
+                                                            h60_str = h60.strength
+                                                            h60_reasons = []
+                                                            if h60_conf != gate._required_confidence:
+                                                                h60_reasons.append(f"conf={h60_conf}")
+                                                            if h60_aligned < gate._min_aligned:
+                                                                h60_reasons.append(f"aligned={h60_aligned}<{gate._min_aligned}")
+                                                            h60_passed = not h60_reasons
+                                                            pair_info["h60"] = {"passed": h60_passed, "confidence": h60_conf, "aligned": h60_aligned, "total": h60_total, "strength": h60_str}
+                                                    tg_passed_info.append(pair_info)
+                                            tg_notifier.notify_new_signals(
+                                                new_signals=new_signals,
+                                                all_passed=tg_passed_info,
+                                                current_hour=current_hour,
+                                            )
+                                        except Exception as tg_exc:
+                                            print(f"tg_notify_error: {tg_exc}")
                                     if lost_signals:
                                         print(f"🔴 LOST_SIGNALS: {', '.join(sorted(lost_signals))}")
+                                        if tg_notify_lost:
+                                            try:
+                                                tg_notifier.notify_lost_signals(lost_signals)
+                                            except Exception as tg_exc:
+                                                print(f"tg_notify_lost_error: {tg_exc}")
 
                                 # Always print summary
                                 print(
@@ -2044,6 +2091,18 @@ def main():
                                     f"[{', '.join(passed_list) if passed_list else 'none'}]"
                                 )
                                 _prev_passed_set = current_passed_set
+
+                                # Trading hours transition notifications
+                                in_hours_now = current_hour in _tg_trading_hours
+                                if _prev_in_trading_hours is not None and in_hours_now != _prev_in_trading_hours:
+                                    try:
+                                        if in_hours_now:
+                                            tg_notifier.notify_trading_hours_start(current_hour)
+                                        else:
+                                            tg_notifier.notify_trading_hours_end(current_hour)
+                                    except Exception as tg_exc:
+                                        print(f"tg_hours_notify_error: {tg_exc}")
+                                _prev_in_trading_hours = in_hours_now
                 except Exception as exc:
                     print(f"forecast_error: {exc}")
                 last_forecast_tick = now_ts
