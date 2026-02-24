@@ -1698,6 +1698,10 @@ def main():
     last_forecast_tick = 0.0
     forecast_engine = None
     forecast_repo = None
+    # Bar-aligned forecast trigger: track last M15 bar timestamp to detect new bars
+    _last_m15_bar_ts: Optional[str] = None
+    # Change detection: track previous quality filter results
+    _prev_passed_set: set = set()
 
     forecast_verifier = None
     forecast_verify_interval = int(os.getenv("FORECAST_VERIFY_INTERVAL", "60"))  # verify every 60s
@@ -1940,10 +1944,28 @@ def main():
                             )
                     execution_service.set_fail_safe(ib_fail_safe.disabled, reason=ib_fail_safe.last_reason)
 
-        # Phase 8: Price direction forecast (read-only, no trade impact)
+        # Phase 8: Price direction forecast — triggered by NEW M15 bar close
+        # Instead of a fixed timer, detect when M15 bars cache gets a new bar.
+        # This eliminates 0-14 min random latency between bar close and forecast.
+        # Fallback: still run on timer if bar detection fails.
         if signal_gen_enabled and forecast_enabled and market_data_service:
             now_ts = time.time()
-            if now_ts - last_forecast_tick >= forecast_interval:
+            # Detect new M15 bar by checking latest bar timestamp for any symbol
+            new_bar_detected = False
+            try:
+                for _sym in (getattr(settings, "symbols", None) or [])[:1]:  # check first symbol
+                    _bars = market_data_service._bars_cache.get((_sym, "M15"), [])
+                    if _bars:
+                        _latest_ts = str(getattr(_bars[-1], "date", None) or getattr(_bars[-1], "time", ""))
+                        if _latest_ts and _latest_ts != _last_m15_bar_ts:
+                            if _last_m15_bar_ts is not None:  # skip first iteration
+                                new_bar_detected = True
+                            _last_m15_bar_ts = _latest_ts
+            except Exception:
+                pass
+            # Trigger: new bar OR timer fallback
+            timer_trigger = (now_ts - last_forecast_tick >= forecast_interval)
+            if new_bar_detected or timer_trigger:
                 try:
                     active_symbols = getattr(settings, "symbols", None) or []
                     if active_symbols:
@@ -1955,52 +1977,73 @@ def main():
                             fc_result = forecast_repo.insert_batch(forecasts)
                             fc_count = fc_result.get("count", 0)
                             aligned = sum(1 for f in forecasts if f.all_aligned())
+                            trigger_type = "bar" if new_bar_detected else "timer"
                             if fc_count > 0:
-                                print(f"forecast generated={fc_count} aligned={aligned}/{len(forecasts)}")
+                                print(f"forecast generated={fc_count} aligned={aligned}/{len(forecasts)} trigger={trigger_type}")
                             # Update forecast gate cache
                             if execution_service and execution_service.forecast_gate:
                                 execution_service.forecast_gate.update_forecasts_batch(forecasts)
 
-                            # Quality filter screening log — shows which pairs pass all filters
+                            # Quality filter screening log with change detection
                             gate = execution_service.forecast_gate if execution_service else None
                             if gate and getattr(gate, '_quality_filter_enabled', False):
                                 current_hour = datetime.now(timezone.utc).hour
                                 passed_list = []
+                                all_pairs_info = []
                                 for fc in forecasts:
                                     h30 = fc.horizon(30)
                                     if not h30 or h30.direction.value == "neutral":
                                         continue
                                     conf = h30.confidence.value
-                                    aligned = h30.indicators_aligned
+                                    aligned_count = h30.indicators_aligned
                                     total = h30.indicators_total
                                     direction = h30.direction.value.upper()
                                     strength = h30.strength
 
-                                    # Check all filters
                                     reasons = []
                                     if conf != gate._required_confidence:
                                         reasons.append(f"conf={conf}")
-                                    if aligned < gate._min_aligned:
-                                        reasons.append(f"aligned={aligned}<{gate._min_aligned}")
+                                    if aligned_count < gate._min_aligned:
+                                        reasons.append(f"aligned={aligned_count}<{gate._min_aligned}")
                                     if gate._hours_filter_enabled and current_hour not in gate._trading_hours:
                                         reasons.append(f"hour={current_hour}")
 
-                                    if not reasons:
-                                        mark = "✅"
+                                    passed = not reasons
+                                    if passed:
                                         passed_list.append(f"{fc.symbol}:{direction}")
-                                    else:
-                                        mark = "❌"
-                                    print(
-                                        f"forecast_quality {fc.symbol:8s} {direction:4s} "
-                                        f"conf={conf:6s} aligned={aligned}/{total} "
-                                        f"str={strength:.2f} hour={current_hour:02d} "
-                                        f"{mark} {','.join(reasons) if reasons else 'PASSED'}"
-                                    )
-                                # Summary line
+                                    all_pairs_info.append((
+                                        fc.symbol, direction, conf, aligned_count, total, strength, passed, reasons
+                                    ))
+
+                                # Change detection: compare with previous cycle
+                                current_passed_set = set(passed_list)
+                                changed = current_passed_set != _prev_passed_set
+                                new_signals = current_passed_set - _prev_passed_set
+                                lost_signals = _prev_passed_set - current_passed_set
+
+                                # Full log on changes, summary-only when stable
+                                if changed or new_bar_detected:
+                                    for sym, direction, conf, al, tot, strength, passed, reasons in all_pairs_info:
+                                        mark = "✅" if passed else "❌"
+                                        print(
+                                            f"forecast_quality {sym:8s} {direction:4s} "
+                                            f"conf={conf:6s} aligned={al}/{tot} "
+                                            f"str={strength:.2f} hour={current_hour:02d} "
+                                            f"{mark} {','.join(reasons) if reasons else 'PASSED'}"
+                                        )
+                                    if new_signals:
+                                        print(f"🟢 NEW_SIGNALS: {', '.join(sorted(new_signals))}")
+                                    if lost_signals:
+                                        print(f"🔴 LOST_SIGNALS: {', '.join(sorted(lost_signals))}")
+
+                                # Always print summary
                                 print(
                                     f"forecast_quality_summary passed={len(passed_list)}/{len(forecasts)} "
-                                    f"hour={current_hour:02d} [{', '.join(passed_list) if passed_list else 'none'}]"
+                                    f"hour={current_hour:02d} trigger={trigger_type} "
+                                    f"changed={'YES' if changed else 'no'} "
+                                    f"[{', '.join(passed_list) if passed_list else 'none'}]"
                                 )
+                                _prev_passed_set = current_passed_set
                 except Exception as exc:
                     print(f"forecast_error: {exc}")
                 last_forecast_tick = now_ts
