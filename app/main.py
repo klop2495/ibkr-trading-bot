@@ -1729,7 +1729,7 @@ def main():
     # Track trading hours transitions
     _prev_in_trading_hours: Optional[bool] = None
     # Trading hours for notifications (same as quality filter)
-    _tg_trading_hours = {8, 9, 10, 11, 20, 21, 22, 23}
+    _tg_trading_hours = {8, 9, 10, 11, 13, 14, 15, 16}
 
     # Initialize ExecutionService + BrokerStateService
     owner_uuid_str = str(owner_uuid)
@@ -2124,8 +2124,9 @@ def main():
                                             tg_notifier.notify_trading_hours_start(current_hour)
                                         else:
                                             tg_notifier.notify_trading_hours_end(current_hour)
-                                            # Send daily report when evening session ends (after hour 23)
-                                            if current_hour == 0 or current_hour == 12:
+                                            # Send daily report when session ends
+                                            # hour=12 = after morning session, hour=17 = after afternoon session
+                                            if current_hour == 17 or current_hour == 12:
                                                 try:
                                                     tg_notifier.notify_daily_report(db.client)
                                                 except Exception as dr_exc:
