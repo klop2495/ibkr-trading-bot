@@ -136,9 +136,13 @@ class ForecastEngine:
                 base_price = closes[-1]
                 break
 
+        h30_votes_json = None
         for horizon_minutes in FORECAST_HORIZONS:
+            self._last_votes = None
             h = self._compute_horizon(symbol, horizon_minutes, bars_cache, flags)
             horizons.append(h)
+            if horizon_minutes == 30 and self._last_votes:
+                h30_votes_json = self._last_votes
 
         # === Advanced filter metadata (log-only, not blocking) ===
 
@@ -204,6 +208,7 @@ class ForecastEngine:
             bb_squeeze=bb_squeeze,
             mtf_conflict=mtf_conflict,
             mtf_h4_direction=mtf_h4_direction,
+            h30_votes_json=h30_votes_json,
         )
 
     def _compute_horizon(
@@ -246,62 +251,59 @@ class ForecastEngine:
                 indicators_total=0,
             )
 
-        # Collect weighted votes: (vote, weight)
+        # Collect weighted votes: (vote, weight) + named votes dict for audit
         weighted_votes: List[Tuple[int, float]] = []
+        named_votes: Dict[str, int] = {}
 
         # Vote 1: INVERTED MA Cross (contrarian signal)
-        weighted_votes.append((
-            vote_ma_cross_inverted(closes, ma_fast_period, ma_slow_period),
-            WEIGHTS["ma_cross_inv"],
-        ))
+        v = vote_ma_cross_inverted(closes, ma_fast_period, ma_slow_period)
+        weighted_votes.append((v, WEIGHTS["ma_cross_inv"]))
+        named_votes["ma_cross_inv"] = v
 
         # Vote 2: RSI Trend (standard — decent when it fires)
-        weighted_votes.append((
-            vote_rsi_trend(closes),
-            WEIGHTS["rsi_trend"],
-        ))
+        v = vote_rsi_trend(closes)
+        weighted_votes.append((v, WEIGHTS["rsi_trend"]))
+        named_votes["rsi_trend"] = v
 
         # Vote 3: INVERTED RSI Extreme → RSI Momentum (for short horizons)
         if horizon_minutes <= 240:
-            weighted_votes.append((
-                vote_rsi_momentum(closes),
-                WEIGHTS["rsi_momentum"],
-            ))
+            v = vote_rsi_momentum(closes)
+            weighted_votes.append((v, WEIGHTS["rsi_momentum"]))
+            named_votes["rsi_momentum"] = v
 
         # Vote 4: Price vs MA (best single predictor)
-        weighted_votes.append((
-            vote_price_vs_ma(closes, ma_fast_period),
-            WEIGHTS["price_vs_ma"],
-        ))
+        v = vote_price_vs_ma(closes, ma_fast_period)
+        weighted_votes.append((v, WEIGHTS["price_vs_ma"]))
+        named_votes["price_vs_ma"] = v
 
         # Vote 5: Momentum — STRONGEST predictor, double weight
-        weighted_votes.append((
-            vote_momentum(closes, momentum_lookback),
-            WEIGHTS["momentum"],
-        ))
+        v = vote_momentum(closes, momentum_lookback)
+        weighted_votes.append((v, WEIGHTS["momentum"]))
+        named_votes["momentum"] = v
 
         # Vote 6: ATR Trend (supplementary, lower weight)
         if len(highs) >= 20 and len(lows) >= 20:
             from app.market_data.indicators import sma as calc_sma
             ma_f = calc_sma(closes, ma_fast_period)
             ma_s = calc_sma(closes, ma_slow_period)
-            weighted_votes.append((
-                vote_atr_trend(highs, lows, closes, ma_f, ma_s),
-                WEIGHTS["atr_trend"],
-            ))
+            v = vote_atr_trend(highs, lows, closes, ma_f, ma_s)
+            weighted_votes.append((v, WEIGHTS["atr_trend"]))
+            named_votes["atr_trend"] = v
 
         # Vote 7: Secondary TF MA cross (inverted, reduced weight)
         if secondary_tf:
             sec_data = bars_cache.get(secondary_tf, {})
             sec_closes = sec_data.get("closes", [])
             if len(sec_closes) >= ma_slow_period:
-                weighted_votes.append((
-                    vote_ma_cross_inverted(sec_closes, ma_fast_period, ma_slow_period),
-                    WEIGHTS["secondary_ma"],
-                ))
+                v = vote_ma_cross_inverted(sec_closes, ma_fast_period, ma_slow_period)
+                weighted_votes.append((v, WEIGHTS["secondary_ma"]))
+                named_votes["secondary_ma"] = v
 
         # Aggregate with weights
         direction_str, confidence_str, strength, aligned, total = aggregate_weighted_votes(weighted_votes)
+
+        # Store named votes for H30 audit trail
+        self._last_votes = named_votes if horizon_minutes == 30 else getattr(self, '_last_votes', None)
 
         return ForecastHorizon(
             horizon_minutes=horizon_minutes,

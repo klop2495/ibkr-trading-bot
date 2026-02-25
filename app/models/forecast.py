@@ -10,9 +10,10 @@ Forecast generates directional predictions for 4 time horizons:
 Read-only module: does NOT influence trade execution.
 """
 
+import json
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -72,6 +73,14 @@ class ForecastResult(BaseModel):
     mtf_conflict: Optional[bool] = None      # True if H4 disagrees with H30 direction
     mtf_h4_direction: Optional[str] = None   # H4 dominant direction for reference
     spread_pips: Optional[float] = None      # Current spread from broker (if available)
+    h30_votes_json: Optional[dict] = None     # Individual indicator votes for H30 horizon
+
+    # Volatility regime filter (Phase 3 — BBW toxic band detection)
+    vol_regime_blocked: Optional[bool] = None   # True if BBW in toxic band
+    vol_regime_reason: Optional[str] = None     # e.g. "TOXIC_BBW_BAND"
+
+    # Per-indicator vote audit trail (Phase 3)
+    h30_votes_json: Optional[str] = None        # JSON: [{name, vote, weight}, ...]
 
     @field_validator("symbol", mode="before")
     @classmethod
@@ -138,4 +147,12 @@ class ForecastResult(BaseModel):
             row["mtf_h4_direction"] = self.mtf_h4_direction
         if self.spread_pips is not None:
             row["spread_pips"] = round(self.spread_pips, 2)
+        # Volatility regime
+        if self.vol_regime_blocked is not None:
+            row["vol_regime_blocked"] = self.vol_regime_blocked
+        if self.vol_regime_reason is not None:
+            row["vol_regime_reason"] = self.vol_regime_reason
+        # Per-indicator vote audit
+        if self.h30_votes_json is not None:
+            row["h30_votes_json"] = self.h30_votes_json
         return row
