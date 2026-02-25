@@ -92,78 +92,86 @@ class TelegramNotifier:
         current_hour: int,
     ) -> int:
         """
-        Send notification about new quality-filtered signals.
+        Send one Telegram message PER new signal.
 
-        Args:
-            new_signals: Set of "SYMBOL:DIRECTION" strings that are new this cycle
-            all_passed: List of dicts with full signal info for all currently passed pairs
-            current_hour: Current UTC hour
+        Each message contains: symbol, direction, price, time,
+        horizon details, and advanced filter indicators.
+        Only quality-confirmed signals are sent.
         """
         if not self.enabled or not new_signals:
             return 0
 
-        now_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
-
-        lines = [f"🟢 <b>New Binary Signal{'s' if len(new_signals) > 1 else ''}</b>  •  {now_str}"]
-        lines.append("")
+        now = datetime.now(timezone.utc)
+        now_str = now.strftime("%H:%M UTC")
+        total_sent = 0
 
         for sig_key in sorted(new_signals):
             parts = sig_key.split(":")
             symbol = parts[0] if parts else sig_key
             direction = parts[1] if len(parts) > 1 else "?"
 
-            # Find full info from all_passed
+            # Find matching pair_info
             info = next((p for p in all_passed if p.get("symbol") == symbol), None)
+            # Use direction from pair_info if available (more reliable)
+            if info and info.get("direction"):
+                direction = info["direction"]
 
-            arrow = "🔴 " if direction == "DOWN" else "🟢 "
-            dir_text = f"<b>{direction}</b>"
+            # Direction
+            if direction == "DOWN":
+                dir_text = "🟥⬇ PUT"
+            else:
+                dir_text = "🟩⬆ CALL"
 
-            detail_parts = []
+            # Price
+            price = info.get("base_price") if info else None
+            if price is not None:
+                is_jpy = "JPY" in symbol
+                price_str = f"{price:.3f}" if is_jpy else f"{price:.5f}"
+            else:
+                price_str = "—"
+
+            # Build message
+            lines = [
+                f"{dir_text}  <b>{symbol}</b>",
+                f"💰 {price_str}  •  {now_str}",
+            ]
+
+            # Horizon details (compact)
             if info:
-                # Show which horizons passed
+                hz_parts = []
                 for hz_key in ["h30", "h60"]:
                     hz = info.get(hz_key)
                     if hz and hz.get("passed"):
                         hz_label = "30m" if hz_key == "h30" else "60m"
-                        conf = hz.get("confidence", "?").upper()
                         aligned = hz.get("aligned", "?")
                         total = hz.get("total", "?")
-                        strength = hz.get("strength")
-                        str_pct = f"{strength * 100:.0f}%" if strength else "?"
-                        detail_parts.append(
-                            f"  {hz_label}: {conf} • {aligned}/{total} aligned • {str_pct}"
-                        )
+                        hz_parts.append(f"{hz_label}:{aligned}/{total}")
+                if hz_parts:
+                    lines.append(" • ".join(hz_parts))
 
-                # Advanced filter indicators
+                # Advanced filters (compact line)
                 adv_parts = []
                 adx_val = info.get("adx_value")
                 if adx_val is not None:
                     adx_emoji = "🟢" if adx_val >= 25 else "🟡" if adx_val >= 20 else "🔴"
                     adv_parts.append(f"ADX {adx_val:.0f}{adx_emoji}")
                 if info.get("bb_squeeze"):
-                    adv_parts.append("🔴 Squeeze")
+                    adv_parts.append("⚠️Squeeze")
                 if info.get("mtf_conflict"):
                     h4d = (info.get("mtf_h4_direction") or "?").upper()
-                    adv_parts.append(f"⚠️ H4={h4d}")
+                    adv_parts.append(f"⚠️H4={h4d}")
                 elif info.get("mtf_h4_direction"):
                     h4d = info["mtf_h4_direction"].upper()
                     adv_parts.append(f"H4={h4d}")
                 if adv_parts:
-                    detail_parts.append(f"  {' • '.join(adv_parts)}")
+                    lines.append(" • ".join(adv_parts))
 
-            lines.append(f"{arrow}<b>{symbol}</b>  ▸  {dir_text}")
-            for dp in detail_parts:
-                lines.append(dp)
-            lines.append("")
+            text = "\n".join(lines)
+            sent = self.broadcast(text)
+            total_sent += sent
 
-        # Link to dashboard
-        if self.web_base_url:
-            lines.append(f'<a href="{self.web_base_url}/admin/binary-signals">📊 Open Dashboard</a>')
-
-        text = "\n".join(lines)
-        sent = self.broadcast(text)
-        print(f"tg_new_signals sent={sent} signals={len(new_signals)}")
-        return sent
+        print(f"tg_new_signals sent={total_sent} signals={len(new_signals)}")
+        return total_sent
 
     def notify_lost_signals(self, lost_signals: Set[str]) -> int:
         """Send notification when signals are lost (optional, less urgent)."""

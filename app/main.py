@@ -2067,8 +2067,9 @@ def main():
                                             tg_passed_info = []
                                             for sym, direction, conf, al, tot, strength, passed, reasons in all_pairs_info:
                                                 if passed:
-                                                    pair_info = {"symbol": sym}
+                                                    pair_info = {"symbol": sym, "direction": direction}
                                                     fc_match = next((f for f in forecasts if f.symbol == sym), None)
+                                                    pair_info["base_price"] = fc_match.base_price if fc_match else None
                                                     h30_data = {"passed": True, "confidence": conf, "aligned": al, "total": tot, "strength": strength}
                                                     pair_info["h30"] = h30_data
                                                     if fc_match:
