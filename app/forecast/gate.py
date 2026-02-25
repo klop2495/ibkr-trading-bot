@@ -7,7 +7,7 @@ are allowed. Refreshes every REFRESH_INTERVAL_SECONDS.
 
 Quality filter (empirical, 1000-sample analysis 2026-02-24):
   - MEDIUM confidence + aligned>=4 = 86% accuracy (63/73 samples)
-  - Trading hours 08-11, 13-16 UTC = London open + London/NY overlap
+  - Trading hours 08-11, 17-19 UTC = London open + late session
   - HIGH confidence is a trap (lagging consensus), LOW too noisy
 
 Config via env vars:
@@ -21,7 +21,7 @@ Config via env vars:
   FORECAST_GATE_QUALITY_FILTER=1   (enable confidence+aligned filter)
   FORECAST_GATE_MIN_ALIGNED=4      (minimum indicators aligned)
   FORECAST_GATE_REQUIRED_CONFIDENCE=medium  (required confidence level)
-  FORECAST_GATE_TRADING_HOURS=08,09,10,11,13,14,15,16  (UTC hours to allow)
+  FORECAST_GATE_TRADING_HOURS=08,09,10,11,17,18,19  (UTC hours to allow)
   FORECAST_GATE_HOURS_FILTER=1     (enable trading hours filter)
 """
 
@@ -88,7 +88,7 @@ class AdaptiveForecastGate:
 
         # Trading hours filter
         self._hours_filter_enabled = os.getenv("FORECAST_GATE_HOURS_FILTER", "1") == "1"
-        default_hours = "08,09,10,11,13,14,15,16"
+        default_hours = "08,09,10,11,17,18,19"
         self._trading_hours = _parse_trading_hours(
             os.getenv("FORECAST_GATE_TRADING_HOURS", default_hours)
         )
