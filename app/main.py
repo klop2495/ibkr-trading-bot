@@ -2124,6 +2124,12 @@ def main():
                                             tg_notifier.notify_trading_hours_start(current_hour)
                                         else:
                                             tg_notifier.notify_trading_hours_end(current_hour)
+                                            # Send daily report when evening session ends (after hour 23)
+                                            if current_hour == 0 or current_hour == 12:
+                                                try:
+                                                    tg_notifier.notify_daily_report(db.client)
+                                                except Exception as dr_exc:
+                                                    print(f"tg_daily_report_error: {dr_exc}")
                                     except Exception as tg_exc:
                                         print(f"tg_hours_notify_error: {tg_exc}")
                                 _prev_in_trading_hours = in_hours_now

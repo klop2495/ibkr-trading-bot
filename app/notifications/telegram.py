@@ -101,8 +101,11 @@ class TelegramNotifier:
         if not self.enabled or not new_signals:
             return 0
 
-        now = datetime.now(timezone.utc)
-        now_str = now.strftime("%H:%M UTC")
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Paris"))
+        # CET (winter) / CEST (summer)
+        tz_abbr = "CEST" if now.dst() else "CET"
+        now_str = now.strftime(f"%H:%M {tz_abbr}")
         total_sent = 0
 
         for sig_key in sorted(new_signals):
@@ -216,3 +219,143 @@ class TelegramNotifier:
             f"Outside active hours. No signals will be generated."
         )
         return self.broadcast(text)
+
+    def notify_daily_report(self, db_client) -> int:
+        """
+        Send daily performance report with accuracy breakdown.
+
+        Queries last 24h verified forecasts and computes:
+        - Overall H30 accuracy
+        - Quality filtered (MED + aligned>=4) accuracy
+        - Breakdown by time period (early vs late session)
+        - ADX correlation
+        - Squeeze correlation
+        - Top/worst performing pairs
+        """
+        if not self.enabled or not db_client:
+            return 0
+
+        try:
+            from zoneinfo import ZoneInfo
+            now_paris = datetime.now(ZoneInfo("Europe/Paris"))
+            tz_abbr = "CEST" if now_paris.dst() else "CET"
+            date_str = now_paris.strftime(f"%d %b %Y")
+
+            cutoff = (datetime.now(timezone.utc).replace(hour=0, minute=0, second=0)).isoformat()
+            res = db_client.table("price_forecasts").select(
+                "symbol, ts_utc, h30_direction, h30_confidence, h30_aligned, h30_correct, "
+                "h60_direction, h60_confidence, h60_aligned, h60_correct, "
+                "adx_value, bb_squeeze, mtf_conflict"
+            ).gte("ts_utc", cutoff).order("ts_utc", desc=True).limit(500).execute()
+
+            all_rows = res.data or []
+
+            # H30 verified rows
+            h30_rows = [r for r in all_rows if r.get("h30_correct") is not None]
+            if not h30_rows:
+                return 0  # Nothing to report
+
+            h30_ok = sum(1 for r in h30_rows if r["h30_correct"])
+            h30_total = len(h30_rows)
+            h30_pct = round(h30_ok / h30_total * 100) if h30_total else 0
+
+            # Quality filtered (MED + aligned>=4)
+            qf = [r for r in h30_rows
+                  if (r.get("h30_confidence") or "").lower() == "medium"
+                  and (r.get("h30_aligned") or 0) >= 4]
+            qf_ok = sum(1 for r in qf if r["h30_correct"])
+            qf_total = len(qf)
+            qf_pct = round(qf_ok / qf_total * 100) if qf_total else 0
+
+            # H60 stats
+            h60_rows = [r for r in all_rows if r.get("h60_correct") is not None]
+            h60_ok = sum(1 for r in h60_rows if r["h60_correct"])
+            h60_total = len(h60_rows)
+            h60_pct = round(h60_ok / h60_total * 100) if h60_total else 0
+
+            # Time breakdown (on quality filtered)
+            early = [r for r in qf if int(r["ts_utc"][11:13]) < 10]
+            late = [r for r in qf if int(r["ts_utc"][11:13]) >= 10]
+            e_ok = sum(1 for r in early if r["h30_correct"])
+            l_ok = sum(1 for r in late if r["h30_correct"])
+
+            # ADX breakdown (on quality filtered)
+            adx_high = [r for r in qf if r.get("adx_value") and r["adx_value"] >= 25]
+            adx_low = [r for r in qf if r.get("adx_value") and r["adx_value"] < 25]
+            ah_ok = sum(1 for r in adx_high if r["h30_correct"])
+            al_ok = sum(1 for r in adx_low if r["h30_correct"])
+
+            # Squeeze breakdown (on quality filtered)
+            sq = [r for r in qf if r.get("bb_squeeze")]
+            nosq = [r for r in qf if not r.get("bb_squeeze")]
+            sq_ok = sum(1 for r in sq if r["h30_correct"])
+            nosq_ok = sum(1 for r in nosq if r["h30_correct"])
+
+            # Per-symbol stats (on quality filtered)
+            sym_stats: dict = {}
+            for r in qf:
+                s = r["symbol"]
+                if s not in sym_stats:
+                    sym_stats[s] = {"ok": 0, "total": 0}
+                sym_stats[s]["total"] += 1
+                if r["h30_correct"]:
+                    sym_stats[s]["ok"] += 1
+
+            # Accuracy emoji
+            def acc_emoji(pct: int) -> str:
+                if pct >= 75: return "🟢"
+                if pct >= 55: return "🟡"
+                return "🔴"
+
+            def fmt_acc(ok: int, total: int) -> str:
+                if total == 0: return "—"
+                pct = round(ok / total * 100)
+                return f"{acc_emoji(pct)} {ok}/{total} = {pct}%"
+
+            # Build message
+            lines = [
+                f"📊 <b>Daily Report</b>  •  {date_str}",
+                "",
+                f"<b>H30 Overall:</b> {fmt_acc(h30_ok, h30_total)}",
+                f"<b>H30 Quality:</b> {fmt_acc(qf_ok, qf_total)}",
+                f"<b>H60 Overall:</b> {fmt_acc(h60_ok, h60_total)}",
+                "",
+                "<b>⏰ By Session (quality):</b>",
+                f"  08-10 UTC: {fmt_acc(e_ok, len(early))}",
+                f"  10+  UTC: {fmt_acc(l_ok, len(late))}",
+                "",
+                "<b>📈 By ADX (quality):</b>",
+                f"  ADX≥25 trend: {fmt_acc(ah_ok, len(adx_high))}",
+                f"  ADX&lt;25 flat: {fmt_acc(al_ok, len(adx_low))}",
+                "",
+                "<b>📉 By Squeeze (quality):</b>",
+                f"  Squeeze: {fmt_acc(sq_ok, len(sq))}",
+                f"  Normal: {fmt_acc(nosq_ok, len(nosq))}",
+            ]
+
+            # Top/worst pairs
+            if sym_stats:
+                sorted_syms = sorted(sym_stats.items(), key=lambda x: x[1]["ok"] / max(x[1]["total"], 1), reverse=True)
+                best = [(s, d) for s, d in sorted_syms if d["total"] >= 2 and d["ok"] / d["total"] >= 0.75]
+                worst = [(s, d) for s, d in sorted_syms if d["total"] >= 2 and d["ok"] / d["total"] < 0.55]
+                if best:
+                    lines.append("")
+                    lines.append("<b>🏆 Best pairs:</b>")
+                    for s, d in best[:5]:
+                        pct = round(d["ok"] / d["total"] * 100)
+                        lines.append(f"  {s}: {d['ok']}/{d['total']} = {pct}%")
+                if worst:
+                    lines.append("")
+                    lines.append("<b>⚠️ Weak pairs:</b>")
+                    for s, d in worst[:5]:
+                        pct = round(d["ok"] / d["total"] * 100)
+                        lines.append(f"  {s}: {d['ok']}/{d['total']} = {pct}%")
+
+            text = "\n".join(lines)
+            sent = self.broadcast(text)
+            print(f"tg_daily_report sent={sent} h30={h30_ok}/{h30_total} qf={qf_ok}/{qf_total}")
+            return sent
+
+        except Exception as exc:
+            print(f"tg_daily_report_error: {exc}")
+            return 0
