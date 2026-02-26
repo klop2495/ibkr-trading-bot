@@ -73,14 +73,16 @@ class ForecastResult(BaseModel):
     mtf_conflict: Optional[bool] = None      # True if H4 disagrees with H30 direction
     mtf_h4_direction: Optional[str] = None   # H4 dominant direction for reference
     spread_pips: Optional[float] = None      # Current spread from broker (if available)
-    h30_votes_json: Optional[dict] = None     # Individual indicator votes for H30 horizon
+    # Per-indicator vote audit trail
+    h30_votes_json: Optional[dict] = None     # {"ma_cross_inv": -1, "momentum": 1, ...}
+
+    # A/B test: alternative scoring with inverted contrarian weights
+    h30_alt_direction: Optional[str] = None   # direction from alt scoring
+    h30_alt_strength: Optional[float] = None  # strength from alt scoring
 
     # Volatility regime filter (Phase 3 — BBW toxic band detection)
     vol_regime_blocked: Optional[bool] = None   # True if BBW in toxic band
     vol_regime_reason: Optional[str] = None     # e.g. "TOXIC_BBW_BAND"
-
-    # Per-indicator vote audit trail (Phase 3)
-    h30_votes_json: Optional[str] = None        # JSON: [{name, vote, weight}, ...]
 
     @field_validator("symbol", mode="before")
     @classmethod
@@ -155,4 +157,9 @@ class ForecastResult(BaseModel):
         # Per-indicator vote audit
         if self.h30_votes_json is not None:
             row["h30_votes_json"] = self.h30_votes_json
+        # A/B alt scoring
+        if self.h30_alt_direction is not None:
+            row["h30_alt_direction"] = self.h30_alt_direction
+        if self.h30_alt_strength is not None:
+            row["h30_alt_strength"] = round(self.h30_alt_strength, 4)
         return row

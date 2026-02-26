@@ -137,12 +137,16 @@ class ForecastEngine:
                 break
 
         h30_votes_json = None
+        h30_alt_direction = None
+        h30_alt_strength = None
         for horizon_minutes in FORECAST_HORIZONS:
             self._last_votes = None
             h = self._compute_horizon(symbol, horizon_minutes, bars_cache, flags)
             horizons.append(h)
             if horizon_minutes == 30 and self._last_votes:
                 h30_votes_json = self._last_votes
+                # A/B test: compute alternative direction with inverted contrarian weights
+                h30_alt_direction, h30_alt_strength = self._compute_alt_scoring(self._last_votes)
 
         # === Advanced filter metadata (log-only, not blocking) ===
 
@@ -209,6 +213,8 @@ class ForecastEngine:
             mtf_conflict=mtf_conflict,
             mtf_h4_direction=mtf_h4_direction,
             h30_votes_json=h30_votes_json,
+            h30_alt_direction=h30_alt_direction,
+            h30_alt_strength=h30_alt_strength,
         )
 
     def _compute_horizon(
@@ -313,6 +319,29 @@ class ForecastEngine:
             indicators_aligned=aligned,
             indicators_total=total,
         )
+
+    # A/B alternative weights: invert contrarians (price_vs_ma, momentum, atr_trend)
+    ALT_WEIGHTS = {
+        "ma_cross_inv": 1.0,      # KEEP: +23.1% delta (good predictor)
+        "rsi_trend": 0.0,         # DROP: weak, often neutral
+        "rsi_momentum": 0.0,      # DROP: 14% participation, no data
+        "price_vs_ma": -1.0,      # INVERT: -15.2% delta (contrarian)
+        "momentum": -1.0,         # INVERT: -8.5% delta (contrarian)
+        "atr_trend": -1.0,        # INVERT: -15.2% delta (contrarian)
+        "secondary_ma": 0.0,      # Not in H30
+    }
+
+    def _compute_alt_scoring(self, votes: Dict[str, int]) -> Tuple[Optional[str], Optional[float]]:
+        """Compute alternative direction using inverted contrarian weights (A/B test)."""
+        weighted = []
+        for ind, vote in votes.items():
+            w = self.ALT_WEIGHTS.get(ind, 0.0)
+            if w != 0.0 and vote != 0:
+                weighted.append((vote, w))
+        if not weighted:
+            return None, None
+        direction, _, strength, _, _ = aggregate_weighted_votes(weighted)
+        return direction, strength
 
     @staticmethod
     def _empty_forecast(

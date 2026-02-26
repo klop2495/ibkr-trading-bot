@@ -219,19 +219,20 @@ def aggregate_weighted_votes(
     if active_count == 0:
         return ("neutral", "low", 0.0, 0, total_count)
 
-    total_weight = sum(w for _, w in active)
+    total_weight = sum(abs(w) for _, w in active)
     if total_weight == 0:
         return ("neutral", "low", 0.0, 0, total_count)
 
     weighted_sum = sum(v * w for v, w in active)
-    # strength = how much weight is aligned / total weight
+    # strength = how much weight is aligned / total weight (abs for negative weights)
     strength = abs(weighted_sum) / total_weight
 
     if strength < 0.2:
         return ("neutral", "low", round(strength, 4), 0, total_count)
 
     direction = "up" if weighted_sum > 0 else "down"
-    aligned = sum(1 for v, _ in active if (v > 0) == (weighted_sum > 0))
+    # Count votes whose effective contribution aligns with final direction
+    aligned = sum(1 for v, w in active if (v * w > 0) == (weighted_sum > 0))
 
     if strength >= 0.7:
         confidence = "high"
