@@ -83,6 +83,9 @@ class ForecastResult(BaseModel):
     # A/B test 2: ma_cross_inv direction when ma!=pv + ADX>=30 + top8 symbols
     h30_alt2_direction: Optional[str] = None  # direction by ma_cross_inv only (None if filter not passed)
 
+    # A/B test 3: ma!=pv + ADX>=30 + momentum=ma + top8 (stricter filter)
+    h30_alt3_direction: Optional[str] = None  # direction by ma_cross_inv (None if filter not passed)
+
     # Volatility regime filter (Phase 3 — BBW toxic band detection)
     vol_regime_blocked: Optional[bool] = None   # True if BBW in toxic band
     vol_regime_reason: Optional[str] = None     # e.g. "TOXIC_BBW_BAND"
@@ -160,12 +163,15 @@ class ForecastResult(BaseModel):
         # Per-indicator vote audit
         if self.h30_votes_json is not None:
             row["h30_votes_json"] = self.h30_votes_json
-        # A/B alt scoring
-        if self.h30_alt_direction is not None:
-            row["h30_alt_direction"] = self.h30_alt_direction
-        if self.h30_alt_strength is not None:
-            row["h30_alt_strength"] = round(self.h30_alt_strength, 4)
-        # A/B alt2: selective signal
+        # A/B alt1: DISABLED — inverted weights strategy is unprofitable
+        # if self.h30_alt_direction is not None:
+        #     row["h30_alt_direction"] = self.h30_alt_direction
+        # if self.h30_alt_strength is not None:
+        #     row["h30_alt_strength"] = round(self.h30_alt_strength, 4)
+        # A/B alt2: selective signal (ma!=pv + ADX>=30 + top8)
         if self.h30_alt2_direction is not None:
             row["h30_alt2_direction"] = self.h30_alt2_direction
+        # A/B alt3: stricter filter (ma!=pv + ADX>=30 + momentum=ma + top8)
+        if self.h30_alt3_direction is not None:
+            row["h30_alt3_direction"] = self.h30_alt3_direction
         return row

@@ -213,9 +213,11 @@ class ForecastEngine:
             mtf_conflict=mtf_conflict,
             mtf_h4_direction=mtf_h4_direction,
             h30_votes_json=h30_votes_json,
-            h30_alt_direction=h30_alt_direction,
-            h30_alt_strength=h30_alt_strength,
+            # Alt1 DISABLED — unprofitable strategy
+            # h30_alt_direction=h30_alt_direction,
+            # h30_alt_strength=h30_alt_strength,
             h30_alt2_direction=self._compute_alt2_signal(symbol, h30_votes_json, adx_value),
+            h30_alt3_direction=self._compute_alt3_signal(symbol, h30_votes_json, adx_value),
         )
 
     def _compute_horizon(
@@ -348,6 +350,24 @@ class ForecastEngine:
         if ma == 0 or pv == 0 or ma == pv:
             return None
         if adx_value is None or adx_value < 30:
+            return None
+        return "up" if ma == 1 else "down"
+
+    def _compute_alt3_signal(self, symbol: str, votes: Optional[Dict[str, int]], adx_value: Optional[float]) -> Optional[str]:
+        """A/B test 3: ma!=pv + ADX>=30 + momentum agrees with ma + top8.
+        Stricter version of alt2 — requires momentum to confirm ma_cross_inv direction.
+        Returns 'up'/'down' if signal passes all filters, None otherwise."""
+        if not votes or symbol not in self.ALT2_SYMBOLS:
+            return None
+        ma = votes.get("ma_cross_inv", 0)
+        pv = votes.get("price_vs_ma", 0)
+        mom = votes.get("momentum", 0)
+        if ma == 0 or pv == 0 or ma == pv:
+            return None
+        if adx_value is None or adx_value < 30:
+            return None
+        # Alt3 extra filter: momentum must agree with ma_cross_inv
+        if mom != ma:
             return None
         return "up" if ma == 1 else "down"
 
