@@ -215,6 +215,7 @@ class ForecastEngine:
             h30_votes_json=h30_votes_json,
             h30_alt_direction=h30_alt_direction,
             h30_alt_strength=h30_alt_strength,
+            h30_alt2_direction=self._compute_alt2_signal(symbol, h30_votes_json, adx_value),
         )
 
     def _compute_horizon(
@@ -330,6 +331,25 @@ class ForecastEngine:
         "atr_trend": -1.0,        # INVERT: -15.2% delta (contrarian)
         "secondary_ma": 0.0,      # Not in H30
     }
+
+    # A/B alt2: top 8 symbols where signal is valid
+    ALT2_SYMBOLS = {
+        "EURCHF", "CHFJPY", "EURJPY", "AUDJPY",
+        "CADJPY", "NZDJPY", "EURGBP", "USDJPY",
+    }
+
+    def _compute_alt2_signal(self, symbol: str, votes: Optional[Dict[str, int]], adx_value: Optional[float]) -> Optional[str]:
+        """A/B test 2: ma_cross_inv direction when ma!=pv + ADX>=30 + top8.
+        Returns 'up'/'down' if signal passes all filters, None otherwise."""
+        if not votes or symbol not in self.ALT2_SYMBOLS:
+            return None
+        ma = votes.get("ma_cross_inv", 0)
+        pv = votes.get("price_vs_ma", 0)
+        if ma == 0 or pv == 0 or ma == pv:
+            return None
+        if adx_value is None or adx_value < 30:
+            return None
+        return "up" if ma == 1 else "down"
 
     def _compute_alt_scoring(self, votes: Dict[str, int]) -> Tuple[Optional[str], Optional[float]]:
         """Compute alternative direction using inverted contrarian weights (A/B test)."""

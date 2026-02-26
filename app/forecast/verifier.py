@@ -110,7 +110,7 @@ class ForecastVerifier:
                 .select("id, ts_utc, symbol, base_price, "
                         "h30_direction, h60_direction, h240_direction, h1440_direction, "
                         "h30_correct, h60_correct, h240_correct, h1440_correct, "
-                        "h30_alt_direction")
+                        "h30_alt_direction, h30_alt2_direction")
                 .is_("verified_at", "null")
                 .lte("ts_utc", cutoff.isoformat())
                 .order("ts_utc", desc=False)
@@ -240,6 +240,10 @@ class ForecastVerifier:
                     update_data["h30_alt_correct"] = (alt_dir == actual_dir)
                 elif alt_dir == "neutral":
                     update_data["h30_alt_correct"] = True
+                # A/B test 2: verify alt2
+                alt2_dir = row.get("h30_alt2_direction")
+                if alt2_dir and alt2_dir != "neutral":
+                    update_data["h30_alt2_correct"] = (alt2_dir == actual_dir)
 
         # Determine if we should force-verify to prevent queue blocking
         age_hours = (now - forecast_ts).total_seconds() / 3600

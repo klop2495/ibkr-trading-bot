@@ -80,6 +80,9 @@ class ForecastResult(BaseModel):
     h30_alt_direction: Optional[str] = None   # direction from alt scoring
     h30_alt_strength: Optional[float] = None  # strength from alt scoring
 
+    # A/B test 2: ma_cross_inv direction when ma!=pv + ADX>=30 + top8 symbols
+    h30_alt2_direction: Optional[str] = None  # direction by ma_cross_inv only (None if filter not passed)
+
     # Volatility regime filter (Phase 3 — BBW toxic band detection)
     vol_regime_blocked: Optional[bool] = None   # True if BBW in toxic band
     vol_regime_reason: Optional[str] = None     # e.g. "TOXIC_BBW_BAND"
@@ -162,4 +165,7 @@ class ForecastResult(BaseModel):
             row["h30_alt_direction"] = self.h30_alt_direction
         if self.h30_alt_strength is not None:
             row["h30_alt_strength"] = round(self.h30_alt_strength, 4)
+        # A/B alt2: selective signal
+        if self.h30_alt2_direction is not None:
+            row["h30_alt2_direction"] = self.h30_alt2_direction
         return row
