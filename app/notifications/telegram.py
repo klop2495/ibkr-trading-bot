@@ -176,6 +176,66 @@ class TelegramNotifier:
         print(f"tg_new_signals sent={total_sent} signals={len(new_signals)}")
         return total_sent
 
+    def notify_alt_signal(
+        self,
+        symbol: str,
+        strategy: str,  # "alt2" or "alt3"
+        direction: str,  # "up" or "down"
+        base_price: float,
+        adx_value: float | None = None,
+        votes: dict | None = None,
+        h4_direction: str | None = None,
+    ) -> int:
+        """Send Alt2/Alt3 signal notification to Telegram."""
+        if not self.enabled:
+            return 0
+
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Paris"))
+        tz_abbr = "CEST" if now.dst() else "CET"
+        now_str = now.strftime(f"%H:%M {tz_abbr}")
+
+        if direction == "down":
+            dir_text = "\U0001f7e5\u2b07 PUT"
+        else:
+            dir_text = "\U0001f7e9\u2b06 CALL"
+
+        is_jpy = "JPY" in symbol
+        price_str = f"{base_price:.3f}" if is_jpy else f"{base_price:.5f}"
+
+        strat_label = "\U0001f52c ALT3" if strategy == "alt3" else "\U0001f3af ALT2"
+        strat_desc = "Alt2+momentum" if strategy == "alt3" else "ma\u2260pv + ADX\u226530 + top8"
+
+        lines = [
+            f"{dir_text}  <b>{symbol}</b>  [{strat_label}]",
+            f"\U0001f4b0 {price_str}  \u2022  {now_str}",
+            f"Strategy: {strat_desc}",
+        ]
+
+        # ADX
+        if adx_value is not None:
+            adx_emoji = "\U0001f7e2" if adx_value >= 30 else "\U0001f7e1" if adx_value >= 25 else "\U0001f534"
+            lines.append(f"ADX {adx_value:.0f}{adx_emoji}")
+
+        # Votes
+        if votes:
+            ma = votes.get("ma_cross_inv", "?")
+            pv = votes.get("price_vs_ma", "?")
+            mom = votes.get("momentum", "?")
+            lines.append(f"Votes: ma={ma} pv={pv} mom={mom}")
+
+        # H4
+        if h4_direction:
+            lines.append(f"H4={h4_direction.upper()}")
+
+        if self.web_base_url:
+            lines.append(f'\n<a href="{self.web_base_url}/admin/binary-signals">\U0001f4ca Open Signals</a>')
+
+        text = "\n".join(lines)
+        sent = self.broadcast(text)
+        print(f"tg_alt_signal sent={sent} strategy={strategy} symbol={symbol} dir={direction}")
+        return sent
+
     def notify_lost_signals(self, lost_signals: Set[str]) -> int:
         """Send notification when signals are lost (optional, less urgent)."""
         if not self.enabled or not lost_signals:

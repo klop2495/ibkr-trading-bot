@@ -1993,6 +1993,31 @@ def main():
                             if execution_service and execution_service.forecast_gate:
                                 execution_service.forecast_gate.update_forecasts_batch(forecasts)
 
+                            # Alt2/Alt3 Telegram notifications
+                            try:
+                                for fc in forecasts:
+                                    for strat, attr in [("alt2", "h30_alt2_direction"), ("alt3", "h30_alt3_direction")]:
+                                        alt_dir = getattr(fc, attr, None)
+                                        if alt_dir:
+                                            import json as _json
+                                            _votes = None
+                                            if fc.h30_votes_json:
+                                                try:
+                                                    _votes = _json.loads(fc.h30_votes_json) if isinstance(fc.h30_votes_json, str) else fc.h30_votes_json
+                                                except Exception:
+                                                    pass
+                                            tg_notifier.notify_alt_signal(
+                                                symbol=fc.symbol,
+                                                strategy=strat,
+                                                direction=alt_dir,
+                                                base_price=fc.base_price or 0,
+                                                adx_value=fc.adx_value,
+                                                votes=_votes,
+                                                h4_direction=fc.mtf_h4_direction,
+                                            )
+                            except Exception as alt_tg_exc:
+                                print(f"tg_alt_notify_error: {alt_tg_exc}")
+
                             # Quality filter screening log with change detection
                             gate = execution_service.forecast_gate if execution_service else None
                             if gate and getattr(gate, '_quality_filter_enabled', False):
@@ -2062,43 +2087,8 @@ def main():
                                         )
                                     if new_signals:
                                         print(f"🟢 NEW_SIGNALS: {', '.join(sorted(new_signals))}")
-                                        # Telegram notification for new signals
-                                        try:
-                                            tg_passed_info = []
-                                            for sym, direction, conf, al, tot, strength, passed, reasons in all_pairs_info:
-                                                if passed:
-                                                    pair_info = {"symbol": sym, "direction": direction}
-                                                    fc_match = next((f for f in forecasts if f.symbol == sym), None)
-                                                    pair_info["base_price"] = fc_match.base_price if fc_match else None
-                                                    h30_data = {"passed": True, "confidence": conf, "aligned": al, "total": tot, "strength": strength}
-                                                    pair_info["h30"] = h30_data
-                                                    if fc_match:
-                                                        h60 = fc_match.horizon(60)
-                                                        if h60:
-                                                            h60_conf = h60.confidence.value
-                                                            h60_aligned = h60.indicators_aligned
-                                                            h60_total = h60.indicators_total
-                                                            h60_str = h60.strength
-                                                            h60_reasons = []
-                                                            if h60_conf != gate._required_confidence:
-                                                                h60_reasons.append(f"conf={h60_conf}")
-                                                            if h60_aligned < gate._min_aligned:
-                                                                h60_reasons.append(f"aligned={h60_aligned}<{gate._min_aligned}")
-                                                            h60_passed = not h60_reasons
-                                                            pair_info["h60"] = {"passed": h60_passed, "confidence": h60_conf, "aligned": h60_aligned, "total": h60_total, "strength": h60_str}
-                                                        # Add advanced filter metadata to TG message
-                                                        pair_info["adx_value"] = fc_match.adx_value
-                                                        pair_info["bb_squeeze"] = fc_match.bb_squeeze
-                                                        pair_info["mtf_conflict"] = fc_match.mtf_conflict
-                                                        pair_info["mtf_h4_direction"] = fc_match.mtf_h4_direction
-                                                    tg_passed_info.append(pair_info)
-                                            tg_notifier.notify_new_signals(
-                                                new_signals=new_signals,
-                                                all_passed=tg_passed_info,
-                                                current_hour=current_hour,
-                                            )
-                                        except Exception as tg_exc:
-                                            print(f"tg_notify_error: {tg_exc}")
+                                        # Alt1 Telegram notifications DISABLED — only Alt2/Alt3 sent via TG
+                                        # (Alt2/Alt3 notifications are sent above in the forecast insert block)
                                     if lost_signals:
                                         print(f"🔴 LOST_SIGNALS: {', '.join(sorted(lost_signals))}")
                                         if tg_notify_lost:
