@@ -1993,30 +1993,42 @@ def main():
                             if execution_service and execution_service.forecast_gate:
                                 execution_service.forecast_gate.update_forecasts_batch(forecasts)
 
-                            # Alt2/Alt3 Telegram notifications
-                            try:
-                                for fc in forecasts:
-                                    for strat, attr in [("alt2", "h30_alt2_direction"), ("alt3", "h30_alt3_direction")]:
-                                        alt_dir = getattr(fc, attr, None)
-                                        if alt_dir:
-                                            import json as _json
-                                            _votes = None
-                                            if fc.h30_votes_json:
-                                                try:
-                                                    _votes = _json.loads(fc.h30_votes_json) if isinstance(fc.h30_votes_json, str) else fc.h30_votes_json
-                                                except Exception:
-                                                    pass
-                                            tg_notifier.notify_alt_signal(
-                                                symbol=fc.symbol,
-                                                strategy=strat,
-                                                direction=alt_dir,
-                                                base_price=fc.base_price or 0,
-                                                adx_value=fc.adx_value,
-                                                votes=_votes,
-                                                h4_direction=fc.mtf_h4_direction,
-                                            )
-                            except Exception as alt_tg_exc:
-                                print(f"tg_alt_notify_error: {alt_tg_exc}")
+                            # Alt2/Alt3 Telegram notifications — only when forecasts actually written to DB
+                            if fc_count > 0:
+                                try:
+                                    # Get symbols that were actually inserted (not deduped)
+                                    _inserted_syms = set()
+                                    _fc_data = fc_result.get("data")
+                                    if _fc_data:
+                                        for _row in _fc_data:
+                                            _s = _row.get("symbol") if isinstance(_row, dict) else None
+                                            if _s:
+                                                _inserted_syms.add(_s)
+                                    for fc in forecasts:
+                                        # Only notify for freshly inserted forecasts
+                                        if _inserted_syms and fc.symbol not in _inserted_syms:
+                                            continue
+                                        for strat, attr in [("alt2", "h30_alt2_direction"), ("alt3", "h30_alt3_direction")]:
+                                            alt_dir = getattr(fc, attr, None)
+                                            if alt_dir:
+                                                import json as _json
+                                                _votes = None
+                                                if fc.h30_votes_json:
+                                                    try:
+                                                        _votes = _json.loads(fc.h30_votes_json) if isinstance(fc.h30_votes_json, str) else fc.h30_votes_json
+                                                    except Exception:
+                                                        pass
+                                                tg_notifier.notify_alt_signal(
+                                                    symbol=fc.symbol,
+                                                    strategy=strat,
+                                                    direction=alt_dir,
+                                                    base_price=fc.base_price or 0,
+                                                    adx_value=fc.adx_value,
+                                                    votes=_votes,
+                                                    h4_direction=fc.mtf_h4_direction,
+                                                )
+                                except Exception as alt_tg_exc:
+                                    print(f"tg_alt_notify_error: {alt_tg_exc}")
 
                             # Quality filter screening log with change detection
                             gate = execution_service.forecast_gate if execution_service else None

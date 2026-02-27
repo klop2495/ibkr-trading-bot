@@ -208,6 +208,27 @@ class ForecastVerifier:
             if not predicted or predicted == "neutral":
                 update_data[correct_col] = True
                 update_data[f"{prefix}_actual"] = "neutral"
+                # Still verify alt strategies for H30 even when original is neutral
+                if horizon_min == 30:
+                    alt2_dir = row.get("h30_alt2_direction")
+                    alt3_dir = row.get("h30_alt3_direction")
+                    if alt2_dir or alt3_dir:
+                        # Need actual price to determine actual_dir
+                        _actual_price = self._get_historical_price(symbol, horizon_end)
+                        if _actual_price is None:
+                            _actual_price = self._get_current_price(symbol, mds)
+                        if _actual_price is not None and base_price is not None:
+                            _pc = _actual_price - base_price
+                            if abs(_pc) < 1e-6:
+                                _adir = "neutral"
+                            elif _pc > 0:
+                                _adir = "up"
+                            else:
+                                _adir = "down"
+                            if alt2_dir and alt2_dir != "neutral":
+                                update_data["h30_alt2_correct"] = (alt2_dir == _adir)
+                            if alt3_dir and alt3_dir != "neutral":
+                                update_data["h30_alt3_correct"] = (alt3_dir == _adir)
                 continue
 
             # Get actual price at horizon end from historical data
