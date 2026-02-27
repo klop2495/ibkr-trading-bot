@@ -1725,7 +1725,7 @@ def main():
         print(f"Phase 8: Forecast engine DISABLED (forecast_enabled={forecast_enabled} signal_gen={signal_gen_enabled})")
 
     # Signal Lifecycle Manager — dedup + cooldown for Alt2 signals
-    signal_lifecycle = SignalLifecycleManager()
+    signal_lifecycle = SignalLifecycleManager(supabase_client=db.client)
     if signal_lifecycle.enabled:
         print(f"SignalLifecycleManager: enabled blacklist_hours={sorted(signal_lifecycle.blacklist_hours)}")
         # Register with dashboard for /api/signal-lifecycle endpoint

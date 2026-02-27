@@ -1604,6 +1604,14 @@ async def binary_signals():
 # Global reference to lifecycle manager (set from main.py or startup)
 _signal_lifecycle_manager = None
 
+# Lazy Supabase client for dashboard container
+_dashboard_supabase = None
+def _get_supabase_client():
+    global _dashboard_supabase
+    if _dashboard_supabase is None:
+        _dashboard_supabase = SupabaseDB().client
+    return _dashboard_supabase
+
 
 def set_signal_lifecycle_manager(manager):
     global _signal_lifecycle_manager
@@ -1612,21 +1620,38 @@ def set_signal_lifecycle_manager(manager):
 
 @app.get("/api/signal-lifecycle")
 def signal_lifecycle_status():
-    """Get signal lifecycle status — dedup, cooldown, blacklist hours."""
-    if _signal_lifecycle_manager is None:
-        return {"enabled": False, "message": "lifecycle manager not initialized"}
-    return _signal_lifecycle_manager.get_status()
+    """Get signal lifecycle status — dedup, cooldown, blacklist hours.
+    Reads from in-memory manager if available, otherwise from Supabase."""
+    if _signal_lifecycle_manager is not None:
+        return _signal_lifecycle_manager.get_status()
+    # Fallback: read persisted state from Supabase (dashboard runs in separate container)
+    try:
+        from app.forecast.signal_lifecycle import SignalLifecycleManager
+        data = SignalLifecycleManager.load_from_supabase(_get_supabase_client())
+        if data:
+            return data
+    except Exception as exc:
+        pass
+    return {"enabled": False, "message": "lifecycle state not available"}
 
 
 @app.get("/api/signal-lifecycle/{symbol}")
 def signal_lifecycle_symbol(symbol: str):
     """Get lifecycle status for a specific symbol."""
-    if _signal_lifecycle_manager is None:
-        return {"status": "unknown"}
-    return {
-        "symbol": symbol.upper(),
-        "status": _signal_lifecycle_manager.get_signal_status(symbol.upper()),
-    }
+    sym = symbol.upper()
+    if _signal_lifecycle_manager is not None:
+        return {"symbol": sym, "status": _signal_lifecycle_manager.get_signal_status(sym)}
+    # Fallback: read from Supabase
+    try:
+        from app.forecast.signal_lifecycle import SignalLifecycleManager
+        data = SignalLifecycleManager.load_from_supabase(_get_supabase_client())
+        if data and "symbols" in data:
+            sym_data = data["symbols"].get(sym)
+            if sym_data:
+                return {"symbol": sym, **sym_data}
+    except Exception:
+        pass
+    return {"symbol": sym, "status": "unknown"}
 
 
 if __name__ == "__main__":

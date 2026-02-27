@@ -79,7 +79,7 @@ class SignalLifecycleManager:
         mgr.record_verification(symbol, correct=True/False, now_utc)
     """
 
-    def __init__(self):
+    def __init__(self, supabase_client=None):
         self._enabled = os.getenv("SIGNAL_LIFECYCLE_ENABLED", "1") == "1"
         self._cooldown_1 = int(os.getenv("SIGNAL_COOLDOWN_1", "30"))  # minutes
         self._cooldown_2 = int(os.getenv("SIGNAL_COOLDOWN_2", "60"))
@@ -89,11 +89,16 @@ class SignalLifecycleManager:
         )
 
         self._states: Dict[str, SignalState] = {}
+        self._supabase = supabase_client
+        self._persist_key = "signal_lifecycle_state"  # row key in KV table
+        self._last_persist_ts: float = 0
+        self._persist_interval: float = 30.0  # persist every 30s max
 
         logger.info(
             f"SignalLifecycleManager init: enabled={self._enabled} "
             f"cooldowns={self._cooldown_1}/{self._cooldown_2}/{self._cooldown_3_mode}min "
-            f"blacklist_hours={sorted(self._blacklist_hours)}"
+            f"blacklist_hours={sorted(self._blacklist_hours)} "
+            f"supabase={'yes' if self._supabase else 'no'}"
         )
 
     @property
@@ -168,6 +173,7 @@ class SignalLifecycleManager:
         state.pending_direction = direction
         state.pending_ts = now
         logger.info(f"lifecycle_signal_recorded {symbol} dir={direction}")
+        self.persist_to_supabase()
 
     def record_verification(
         self, symbol: str, correct: bool, now: Optional[datetime] = None,
@@ -215,6 +221,7 @@ class SignalLifecycleManager:
                 f"lifecycle_cooldown {symbol} streak={streak} "
                 f"cooldown={cd_min:.0f}m until={state.cooldown_until.isoformat()}"
             )
+        self.persist_to_supabase()
 
     def get_status(self) -> Dict[str, Any]:
         """Get lifecycle status for dashboard API."""
@@ -258,6 +265,51 @@ class SignalLifecycleManager:
                 "ready": sum(1 for s in self._states.values() if not s.pending_direction and (not s.cooldown_until or now >= s.cooldown_until)),
             },
         }
+
+    # ── Supabase persistence ──────────────────────────────────────────
+
+    def persist_to_supabase(self, force: bool = False) -> bool:
+        """Persist full lifecycle status as JSON to Supabase bot_kv table.
+        Rate-limited to once per _persist_interval seconds unless force=True."""
+        if not self._supabase:
+            return False
+        now_mono = time.monotonic()
+        if not force and (now_mono - self._last_persist_ts) < self._persist_interval:
+            return False
+        try:
+            import json
+            status = self.get_status()
+            payload = json.dumps(status, default=str)
+            # Upsert into bot_kv table (key-value store)
+            self._supabase.table("bot_kv").upsert(
+                {"key": self._persist_key, "value": payload, "updated_at": datetime.now(timezone.utc).isoformat()},
+                on_conflict="key",
+            ).execute()
+            self._last_persist_ts = now_mono
+            return True
+        except Exception as exc:
+            logger.warning(f"lifecycle_persist_error: {exc}")
+            return False
+
+    @staticmethod
+    def load_from_supabase(supabase_client) -> Optional[Dict[str, Any]]:
+        """Load lifecycle status from Supabase bot_kv. Used by dashboard container."""
+        if not supabase_client:
+            return None
+        try:
+            import json
+            res = supabase_client.table("bot_kv").select("value, updated_at").eq(
+                "key", "signal_lifecycle_state"
+            ).limit(1).execute()
+            rows = getattr(res, "data", None) or []
+            if not rows:
+                return None
+            data = json.loads(rows[0]["value"])
+            data["_persisted_at"] = rows[0].get("updated_at")
+            return data
+        except Exception as exc:
+            logger.warning(f"lifecycle_load_error: {exc}")
+            return None
 
     def get_signal_status(self, symbol: str) -> str:
         """Get simple status string for a symbol: ready/pending/cooldown/blacklisted."""
