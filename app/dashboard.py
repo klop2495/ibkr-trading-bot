@@ -1599,6 +1599,36 @@ async def binary_signals():
     }
 
 
+# ── Signal Lifecycle Status ────────────────────────────────────────────
+
+# Global reference to lifecycle manager (set from main.py or startup)
+_signal_lifecycle_manager = None
+
+
+def set_signal_lifecycle_manager(manager):
+    global _signal_lifecycle_manager
+    _signal_lifecycle_manager = manager
+
+
+@app.get("/api/signal-lifecycle")
+def signal_lifecycle_status():
+    """Get signal lifecycle status — dedup, cooldown, blacklist hours."""
+    if _signal_lifecycle_manager is None:
+        return {"enabled": False, "message": "lifecycle manager not initialized"}
+    return _signal_lifecycle_manager.get_status()
+
+
+@app.get("/api/signal-lifecycle/{symbol}")
+def signal_lifecycle_symbol(symbol: str):
+    """Get lifecycle status for a specific symbol."""
+    if _signal_lifecycle_manager is None:
+        return {"status": "unknown"}
+    return {
+        "symbol": symbol.upper(),
+        "status": _signal_lifecycle_manager.get_signal_status(symbol.upper()),
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("DASHBOARD_PORT", "8080"))

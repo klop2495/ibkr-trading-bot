@@ -42,6 +42,7 @@ from app.models.bot_settings import DEFAULT_SYMBOLS
 from app.broker.state_service import BrokerStateService
 from app.broker.ib_utils import IBFailSafeState
 from app.notifications.telegram import TelegramNotifier
+from app.forecast.signal_lifecycle import SignalLifecycleManager
 
 
 DEFAULT_BACKFILL_BATCH = 25
