@@ -200,3 +200,74 @@
 ## 2025-12-16 — Add agents spec scaffold and dev changelog
 - Summary: Documented agent layer contracts, aggregation, and fail-safe fallbacks; added dev changelog.
 - Files: `docs/agents_spec.md`, `docs/CHANGELOG_DEV.md`
+
+---
+
+## 2026-02-28 — Signal Lifecycle Manager: дедупликация + cooldown + blacklist hours
+
+### Задача
+Alt2 стратегия (ma≠pv + ADX≥30 + top-8 symbols) генерирует до 17 дублирующих сигналов для одной и той же пары в одном тренде (пример: CHFJPY 27 фев — 17 "down" подряд). Кроме того, accuracy Alt2 значительно падает в часы перехода торговых сессий (Asian→London, London→NY, NY lunch).
+
+### Цель
+1. **Дедупликация** — один активный сигнал на пару, пока не верифицирован
+2. **Cooldown с эскалацией** — после ошибочных прогнозов нарастающая пауза
+3. **Blacklist hours** — блокировка сигналов в часы с плохой accuracy
+4. **UI визуализация** — отображение статуса lifecycle в таблице истории
+
+### Решение: Signal Lifecycle Manager (подход A + C)
+
+**Архитектура:**
+- In-memory state manager, интегрированный в main loop (Phase 8 forecast tick)
+- Lifecycle: NEW → PENDING (30 мин верификация) → VERIFIED ✓/✗ → COOLDOWN (если ошибка)
+
+**Cooldown escalation (подход C):**
+- 1-я ошибка: 30 мин cooldown (пропуск 1 цикла M15)
+- 2-я подряд: 60 мин cooldown
+- 3+ подряд: блок до смены UTC часа (session reset)
+- Любой верный прогноз → сброс streak
+
+**Blacklist hours:** {06, 08, 13, 14, 18} UTC — session transitions где Alt2 показывает худшую accuracy (по бэктесту 27 фев).
+
+**Интеграция в main.py:**
+- Lifecycle filter вызывается ПЕРЕД `forecast_repo.insert_batch()` — blocked сигналы получают `alt2_direction=None`
+- Verification feedback: после `forecast_verifier.verify_pending()` результаты отправляются в lifecycle для обновления cooldown streak
+- Dashboard API `/api/signal-lifecycle` для мониторинга (в отдельном контейнере — пока не shared)
+
+**Frontend (history page):**
+- `HourBadge` — 🟢 OK / 🔴 BL для каждого UTC часа
+- `SignalStatusBadge` — ⏳ PENDING / ✅ VERIFIED ✓ / ❌ VERIFIED ✗ / ⌛ EXPIRED / ⏸ COOLDOWN
+- Blacklisted rows dimmed (opacity 0.75, red tint)
+- Summary stats: Active Hours accuracy vs Blacklist Hours accuracy
+- API route enrichment: `hour_utc`, `hour_status`, `signal_status` для каждой записи
+
+### Файлы
+
+**Backend (ibkr-trading-bot):**
+- `app/forecast/signal_lifecycle.py` — NEW: lifecycle manager (273 строки)
+- `app/main.py` — import + init + lifecycle filter в forecast tick + verification feedback
+- `app/dashboard.py` — `/api/signal-lifecycle` и `/api/signal-lifecycle/{symbol}` endpoints
+- `docs/LIFECYCLE_INTEGRATION.py` — NEW: integration guide
+
+**Frontend (ibkr-trading-fronend):**
+- `app/admin/forecasts/history/page.tsx` — HourBadge, SignalStatusBadge, Hour column, Active/Blacklist stats
+- `app/api/admin/forecasts/history/route.ts` — enrichment: hour_utc, hour_status, signal_status
+
+### Конфигурация (env vars)
+```
+SIGNAL_LIFECYCLE_ENABLED=1
+SIGNAL_COOLDOWN_1=30        # минуты, 1-я ошибка
+SIGNAL_COOLDOWN_2=60        # минуты, 2-я подряд
+SIGNAL_COOLDOWN_3=session   # блок до смены часа
+SIGNAL_BLACKLIST_HOURS=06,08,13,14,18
+```
+
+### Предполагаемые результаты
+- Устранение 80-90% дублирующих сигналов (с 17 до 1-2 на тренд)
+- Повышение effective accuracy за счёт блокировки blacklist hours (исторически ~40% vs ~55% в active hours)
+- Автоматическая адаптация к "плохим" периодам для отдельных пар через cooldown escalation
+- Визуальный контроль lifecycle в UI для ручного мониторинга и тюнинга параметров
+
+### Следующие шаги
+- Мониторинг 3-7 дней: оценить реальное снижение дубликатов и impact на accuracy
+- Тюнинг cooldown параметров при необходимости
+- Рассмотреть shared state (Redis/Supabase) для lifecycle endpoint в dashboard контейнере
