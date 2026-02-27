@@ -187,32 +187,42 @@ async def get_broker_data():
 @app.post("/api/broker/reconnect")
 async def reconnect_broker():
     """Force IB Gateway reconnect — account API check + trading bot restart."""
-    import subprocess
-
     # 1. Check IB Gateway via account API (clientId 160)
     broker_api = get_broker_api()
     data = broker_api.get_account_data(force_refresh=True)
     account_connected = bool(data.get("account", {}).get("connected"))
 
-    # 2. Restart trading bot container to force market data reconnect
+    # 2. Restart trading bot container via Docker socket API
     bot_restarted = False
     restart_error = None
     try:
-        result = subprocess.run(
-            ["docker", "restart", "ibkr-trading-bot"],
-            capture_output=True, text=True, timeout=60,
+        import urllib.request
+        req = urllib.request.Request(
+            "http+unix:///var/run/docker.sock/containers/ibkr-trading-bot/restart",
+            method="POST",
         )
-        bot_restarted = result.returncode == 0
-        if not bot_restarted:
-            restart_error = result.stderr.strip() or f"exit code {result.returncode}"
-            logger.error(f"Bot restart failed: {restart_error}")
+        # Use raw socket since urllib doesn't support unix sockets
+        import socket as _socket
+        import http.client
+
+        class DockerConnection(http.client.HTTPConnection):
+            def connect(self):
+                self.sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+                self.sock.connect("/var/run/docker.sock")
+                self.sock.settimeout(60)
+
+        conn = DockerConnection("localhost")
+        conn.request("POST", "/containers/ibkr-trading-bot/restart?t=10")
+        resp = conn.getresponse()
+        if resp.status == 204:
+            bot_restarted = True
+            logger.info("Trading bot restarted successfully via Docker API")
         else:
-            logger.info("Trading bot restarted successfully")
+            restart_error = f"Docker API returned {resp.status}: {resp.read().decode()}"
+            logger.error(f"Bot restart failed: {restart_error}")
+        conn.close()
     except FileNotFoundError:
-        restart_error = "docker CLI not available in container"
-        logger.error(restart_error)
-    except subprocess.TimeoutExpired:
-        restart_error = "restart timeout (60s)"
+        restart_error = "Docker socket not available"
         logger.error(restart_error)
     except Exception as e:
         restart_error = str(e)
