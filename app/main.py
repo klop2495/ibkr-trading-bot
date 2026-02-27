@@ -1724,6 +1724,14 @@ def main():
     else:
         print(f"Phase 8: Forecast engine DISABLED (forecast_enabled={forecast_enabled} signal_gen={signal_gen_enabled})")
 
+    # Signal Lifecycle Manager — dedup + cooldown for Alt2 signals
+    signal_lifecycle = SignalLifecycleManager()
+    if signal_lifecycle.enabled:
+        print(f"SignalLifecycleManager: enabled blacklist_hours={sorted(signal_lifecycle.blacklist_hours)}")
+        # Register with dashboard for /api/signal-lifecycle endpoint
+        from app.dashboard import set_signal_lifecycle_manager
+        set_signal_lifecycle_manager(signal_lifecycle)
+
     # Telegram notifications for binary signals
     tg_notifier = TelegramNotifier()
     tg_notify_lost = os.getenv("TG_NOTIFY_LOST_SIGNALS", "1") != "0"
@@ -1983,6 +1991,23 @@ def main():
                             market_data_service=market_data_service,
                             symbols=active_symbols,
                         )
+                        # Signal Lifecycle: filter alt2/alt3 signals (dedup + cooldown + blacklist)
+                        if forecasts and signal_lifecycle.enabled:
+                            _lc_now = datetime.now(timezone.utc)
+                            _lc_blocked = 0
+                            for fc in forecasts:
+                                for _attr in ("h30_alt2_direction", "h30_alt3_direction"):
+                                    _dir = getattr(fc, _attr, None)
+                                    if _dir:
+                                        _ok, _reason = signal_lifecycle.can_signal(fc.symbol, _dir, _lc_now)
+                                        if not _ok:
+                                            setattr(fc, _attr, None)
+                                            _lc_blocked += 1
+                                        else:
+                                            signal_lifecycle.record_signal(fc.symbol, _dir, _lc_now)
+                            if _lc_blocked > 0:
+                                print(f"lifecycle_filter blocked={_lc_blocked}")
+
                         if forecasts and forecast_repo:
                             fc_result = forecast_repo.insert_batch(forecasts)
                             fc_count = fc_result.get("count", 0)
@@ -2154,6 +2179,19 @@ def main():
                     )
                     if verified > 0:
                         print(f"forecast_verified count={verified}")
+                        # Feed verification results to lifecycle manager
+                        if signal_lifecycle.enabled and forecast_repo:
+                            try:
+                                for _sym in active_symbols:
+                                    _latest = forecast_repo.get_latest(_sym, limit=1)
+                                    if _latest:
+                                        _row = _latest[0] if isinstance(_latest, list) else _latest
+                                        _a2c = _row.get("h30_alt2_correct") if isinstance(_row, dict) else getattr(_row, "h30_alt2_correct", None)
+                                        _a2d = _row.get("h30_alt2_direction") if isinstance(_row, dict) else getattr(_row, "h30_alt2_direction", None)
+                                        if _a2d and _a2c is not None:
+                                            signal_lifecycle.record_verification(_sym, correct=bool(_a2c))
+                            except Exception as _lc_exc:
+                                print(f"lifecycle_verify_error: {_lc_exc}")
                 except Exception as vexc:
                     print(f"forecast_verify_error: {vexc}")
                 last_forecast_verify_tick = now_ts
