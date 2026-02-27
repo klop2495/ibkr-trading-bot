@@ -186,12 +186,44 @@ async def get_broker_data():
 
 @app.post("/api/broker/reconnect")
 async def reconnect_broker():
-    """Force IB Gateway reconnect attempt for the dashboard."""
+    """Force IB Gateway reconnect — account API check + trading bot restart."""
+    import subprocess
+
+    # 1. Check IB Gateway via account API (clientId 160)
     broker_api = get_broker_api()
     data = broker_api.get_account_data(force_refresh=True)
-    connected = bool(data.get("account", {}).get("connected"))
+    account_connected = bool(data.get("account", {}).get("connected"))
+
+    # 2. Restart trading bot container to force market data reconnect
+    bot_restarted = False
+    restart_error = None
+    try:
+        result = subprocess.run(
+            ["docker", "restart", "ibkr-trading-bot"],
+            capture_output=True, text=True, timeout=60,
+        )
+        bot_restarted = result.returncode == 0
+        if not bot_restarted:
+            restart_error = result.stderr.strip() or f"exit code {result.returncode}"
+            logger.error(f"Bot restart failed: {restart_error}")
+        else:
+            logger.info("Trading bot restarted successfully")
+    except FileNotFoundError:
+        restart_error = "docker CLI not available in container"
+        logger.error(restart_error)
+    except subprocess.TimeoutExpired:
+        restart_error = "restart timeout (60s)"
+        logger.error(restart_error)
+    except Exception as e:
+        restart_error = str(e)
+        logger.error(f"Bot restart error: {e}")
+
+    connected = account_connected
     return {
         "status": "connected" if connected else "disconnected",
+        "account_connected": account_connected,
+        "bot_restarted": bot_restarted,
+        "restart_error": restart_error,
         "data": data,
     }
 
@@ -1325,11 +1357,19 @@ async def optimizer_status():
 # ========== Adaptive Forecast Gate Status ==========
 
 _forecast_gate_instance = None
+_market_data_fetcher = None
+
 
 def set_forecast_gate(gate):
     """Set the forecast gate instance from main.py."""
     global _forecast_gate_instance
     _forecast_gate_instance = gate
+
+
+def set_market_data_fetcher(fetcher):
+    """Set the IBKRFetcher instance from main.py for reconnect support."""
+    global _market_data_fetcher
+    _market_data_fetcher = fetcher
 
 
 @app.get("/api/forecast-gate/status")

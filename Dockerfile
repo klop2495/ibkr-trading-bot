@@ -2,11 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies + Docker CLI (for dashboard reconnect)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
     procps \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for caching

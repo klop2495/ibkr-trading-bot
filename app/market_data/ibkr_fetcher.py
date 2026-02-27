@@ -75,6 +75,17 @@ class IBKRFetcher:
         self._last_bar_ts: dict[tuple[str, str], datetime] = {}
         self._bars_cache_ts: dict[tuple[str, str], float] = {}  # epoch seconds when cache was filled
 
+    def force_reconnect(self) -> bool:
+        """Force disconnect and reconnect. Returns True if connected."""
+        self._safe_disconnect()
+        self._ib = None
+        try:
+            self._ensure_connected()
+            return self._ib is not None and self._ib.isConnected()
+        except Exception as e:
+            print(f"force_reconnect failed: {e}")
+            return False
+
     def _safe_disconnect(self) -> None:
         if not self._ib:
             return
