@@ -113,6 +113,8 @@ def test_sync_closes_trade_with_sl_hit():
         "id": "trade1",
         "symbol": "EURUSD",
         "side": "BUY",
+        "quantity": 10000,
+        "entry_price": 1.1000,
         "stop_loss": 1.0950,
         "take_profit": 1.1100,
         "opened_at": (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),
@@ -140,7 +142,10 @@ def test_sync_closes_trade_with_sl_hit():
     result = service.sync_with_db()
     assert "EURUSD" in result.positions_closed
     trades_repo.close_trade.assert_called_once()
-    assert trades_repo.close_trade.call_args.kwargs["close_reason"] == "SL_HIT"
+    close_kwargs = trades_repo.close_trade.call_args.kwargs
+    assert close_kwargs["close_reason"] == "SL_HIT"
+    assert close_kwargs["pnl"] == pytest.approx(-50.0)
+    assert close_kwargs["pnl_pips"] == pytest.approx(-50.0)
 
 
 def test_orphan_orders_logged_without_cancel():

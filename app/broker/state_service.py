@@ -468,6 +468,32 @@ class BrokerStateService:
             return "TP_HIT"
         return None
 
+    def _calculate_trade_pnl(self, trade: dict, exit_price: float) -> Tuple[Optional[float], Optional[float]]:
+        side = str(trade.get("side") or "").upper()
+        if side.startswith("B"):
+            side_sign = 1.0
+        elif side.startswith("S"):
+            side_sign = -1.0
+        else:
+            return None, None
+
+        try:
+            entry_price = float(trade.get("entry_price"))
+            quantity = abs(float(trade.get("quantity")))
+        except Exception:
+            return None, None
+
+        if quantity <= 0:
+            return None, None
+
+        delta = (float(exit_price) - entry_price) * side_sign
+        pnl = delta * quantity
+        pip_value = 0.01 if "JPY" in str(trade.get("symbol") or "").upper() else 0.0001
+        if pip_value <= 0:
+            return pnl, None
+        pnl_pips = delta / pip_value
+        return pnl, pnl_pips
+
     def _determine_close_reason(
         self,
         trade: dict,
@@ -657,10 +683,14 @@ class BrokerStateService:
                 for trade in db_trades:
                     symbol = str(trade.get("symbol") or "").upper()
                     try:
+                        exit_px = float(trade.get("entry_price") or 0.0)
+                        pnl, pnl_pips = self._calculate_trade_pnl(trade, exit_px)
                         self._trades_history_repo.close_trade(
                             trade_id=str(trade.get("id")),
-                            exit_price=float(trade.get("entry_price") or 0.0),
+                            exit_price=exit_px,
                             close_reason="BROKER_FLAT",
+                            pnl=pnl,
+                            pnl_pips=pnl_pips,
                         )
                         if symbol:
                             result.positions_closed.append(symbol)
@@ -740,10 +770,13 @@ class BrokerStateService:
                         exit_price = float(trade.get("entry_price") or 0.0)
                     symbol = str(trade.get("symbol") or "").upper()
                     try:
+                        pnl, pnl_pips = self._calculate_trade_pnl(trade, float(exit_price))
                         self._trades_history_repo.close_trade(
                             trade_id=str(trade.get("id")),
                             exit_price=float(exit_price),
                             close_reason=reason,
+                            pnl=pnl,
+                            pnl_pips=pnl_pips,
                         )
                         if symbol:
                             result.positions_closed.append(symbol)
