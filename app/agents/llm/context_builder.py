@@ -312,11 +312,6 @@ class ContextBuilder:
             trend_short = "NEUTRAL"
         
         # Map confidence to momentum strength
-        confidence = preview.confidence
-        if isinstance(confidence, Confidence):
-            conf_val = confidence.value
-        else:
-            conf_val = str(confidence).lower()
         
         # Map setup_type to pattern
         setup = preview.setup_type

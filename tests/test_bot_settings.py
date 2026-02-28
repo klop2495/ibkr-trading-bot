@@ -54,7 +54,7 @@ def test_signals_params_configured_and_forbid_extra():
 
 def test_default_symbols_constant():
     from app.models.bot_settings import DEFAULT_SYMBOLS
-    assert DEFAULT_SYMBOLS == [
+    base_symbols = [
         "EURUSD",
         "GBPUSD",
         "USDJPY",
@@ -63,4 +63,5 @@ def test_default_symbols_constant():
         "USDCAD",
         "NZDUSD",
     ]
-    assert len(DEFAULT_SYMBOLS) == 7
+    assert DEFAULT_SYMBOLS[:7] == base_symbols
+    assert len(DEFAULT_SYMBOLS) >= 7

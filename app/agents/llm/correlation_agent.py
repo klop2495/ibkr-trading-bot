@@ -277,7 +277,7 @@ SIGNAL GUIDELINES:
                 agent_name=self.name,
                 signal="HOLD",
                 confidence=ConfidenceLevel.MEDIUM,
-                reasoning=f"Mock: Divergence detected in correlated pairs",
+                reasoning="Mock: Divergence detected in correlated pairs",
                 data_status=DataStatus.REAL,  # DXY is real
                 flags=["DIVERGENCE_WARNING", "MOCK_MODE"],
             )

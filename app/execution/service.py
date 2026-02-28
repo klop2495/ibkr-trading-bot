@@ -1087,6 +1087,21 @@ class ExecutionService:
             
             # NOTE: Symbol-level position check is now handled atomically below
             # via try_acquire_symbol_lock to prevent race conditions (AI_RULES 2.5)
+            # Keep explicit pre-check for fail-fast behavior across all modes, including DRY_RUN.
+            symbol_open = self._get_open_trades_for_symbol(decision.symbol)
+            if symbol_open > 0:
+                self._log_event(
+                    "EXECUTION_BLOCKED",
+                    "warn",
+                    f"Active trade already exists for {decision.symbol}",
+                    {"decision_id": str(decision.id), "symbol": decision.symbol, "active_symbol_trades": symbol_open},
+                )
+                return ExecutionResult(
+                    executed=False,
+                    mode=self._mode,
+                    symbol=decision.symbol,
+                    reason=f"active_trade_exists:{symbol_open}",
+                )
             
             # P0-C: Check broker positions FIRST - this is source of truth
             # Prevents opening duplicate positions even if DB is out of sync
@@ -1188,26 +1203,6 @@ class ExecutionService:
         # Determine side
         side = self._determine_side(decision, verdict, direction=direction)
         
-        # Forecast gate: check symbol accuracy and direction alignment
-        if self._forecast_gate and side:
-            fc_allowed, fc_reason = self._forecast_gate.check(
-                symbol=decision.symbol,
-                trade_direction=side.value,
-            )
-            if not fc_allowed:
-                self._log_event(
-                    "EXECUTION_BLOCKED",
-                    "info",
-                    f"Trade blocked by forecast gate for {decision.symbol}: {fc_reason}",
-                    {"decision_id": str(decision.id), "symbol": decision.symbol, "reason": fc_reason},
-                )
-                return ExecutionResult(
-                    executed=False,
-                    mode=self._mode,
-                    symbol=decision.symbol,
-                    side=side,
-                    reason=fc_reason,
-                )
         if side is None:
             self._log_event(
                 "EXECUTION_SKIPPED",
@@ -1240,6 +1235,28 @@ class ExecutionService:
                 symbol=decision.symbol,
                 reason="missing_sl_required",
             )
+
+        # Forecast gate: check symbol accuracy and direction alignment.
+        # Run after mandatory execution preconditions (side + SL requirement).
+        if self._forecast_gate and side:
+            fc_allowed, fc_reason = self._forecast_gate.check(
+                symbol=decision.symbol,
+                trade_direction=side.value,
+            )
+            if not fc_allowed:
+                self._log_event(
+                    "EXECUTION_BLOCKED",
+                    "info",
+                    f"Trade blocked by forecast gate for {decision.symbol}: {fc_reason}",
+                    {"decision_id": str(decision.id), "symbol": decision.symbol, "reason": fc_reason},
+                )
+                return ExecutionResult(
+                    executed=False,
+                    mode=self._mode,
+                    symbol=decision.symbol,
+                    side=side,
+                    reason=fc_reason,
+                )
         
         # Default SL for position sizing if not provided
         effective_sl_pips = sl_pips if sl_pips is not None else 20.0

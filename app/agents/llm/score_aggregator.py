@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from app.models.confidence import ConfidenceLevel
 from app.agents.llm.base_agent import AgentSignal
 from app.agents.llm.data_status import DataStatus
 
@@ -267,7 +266,7 @@ class ScoreAggregator:
         )
         
         if weights_from_tracker:
-            logger.debug(f"ScoreAggregator: Using dynamic weights from tracker")
+            logger.debug("ScoreAggregator: Using dynamic weights from tracker")
         
         # Separate participating vs abstaining agents
         participating = []

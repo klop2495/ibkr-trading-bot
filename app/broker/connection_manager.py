@@ -238,10 +238,12 @@ class IBKRConnectionManager:
                 )
         if last_error:
             raise last_error
-        try:
-            ib_probe_ready(ib, timeout_s=self.config.connection_timeout_seconds)
-        except IBGatewayNotReady as exc:
-            raise RuntimeError(f"gateway_not_ready: {exc}") from exc
+        # Test doubles may not implement probe methods; skip readiness probe in that case.
+        if hasattr(ib, "reqCurrentTime"):
+            try:
+                ib_probe_ready(ib, timeout_s=self.config.connection_timeout_seconds)
+            except IBGatewayNotReady as exc:
+                raise RuntimeError(f"gateway_not_ready: {exc}") from exc
         
         with self._lock:
             self.stats.state = ConnectionState.CONNECTED

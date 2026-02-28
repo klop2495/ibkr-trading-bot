@@ -1,6 +1,6 @@
 """
 Deterministic pip value calculations for FX pairs.
-Supports USD and EUR account currencies.
+Supports USD account currency.
 """
 
 from typing import Optional
@@ -38,12 +38,12 @@ def pip_value_per_unit(symbol: str, price: float, account_currency: str = "USD")
     """
     Pip value per unit of base currency, in account currency.
     
-    Supports major pairs and crosses with USD or EUR account currency.
+    Supports USD account currency.
     
     Args:
         symbol: Currency pair (e.g., 'EURUSD', 'CHFJPY')
         price: Current price of the pair
-        account_currency: Account currency ('USD' or 'EUR')
+        account_currency: Account currency ('USD')
     
     Returns:
         Pip value per 1 unit, or None if unsupported.
@@ -57,6 +57,8 @@ def pip_value_per_unit(symbol: str, price: float, account_currency: str = "USD")
     
     if len(sym) != 6:
         return None
+    if acc != "USD":
+        return None
     
     quote = sym[3:6]
     pip_value_quote = pip
@@ -65,60 +67,33 @@ def pip_value_per_unit(symbol: str, price: float, account_currency: str = "USD")
     if quote == acc:
         return pip_value_quote
     
-    # USD quote with EUR account
-    if quote == "USD" and acc == "EUR":
-        return pip_value_quote / APPROX_RATES.get("EURUSD", 1.04)
-    
-    # EUR quote with USD account
-    if quote == "EUR" and acc == "USD":
-        return pip_value_quote * APPROX_RATES.get("EURUSD", 1.04)
+    # Base currency matches account currency (e.g. USDJPY)
+    if sym[:3] == acc:
+        return pip_value_quote / price
     
     # JPY quote currency
     if quote == "JPY":
-        if acc == "USD":
-            return pip_value_quote / APPROX_RATES.get("USDJPY", 157.0)
-        if acc == "EUR":
-            return pip_value_quote / APPROX_RATES.get("EURJPY", 163.0)
+        return pip_value_quote / APPROX_RATES.get("USDJPY", 157.0)
     
     # CHF quote currency
     if quote == "CHF":
-        if acc == "USD":
-            return pip_value_quote / APPROX_RATES.get("USDCHF", 0.90)
-        if acc == "EUR":
-            return pip_value_quote / APPROX_RATES.get("EURCHF", 0.94)
+        return pip_value_quote / APPROX_RATES.get("USDCHF", 0.90)
     
     # GBP quote currency
     if quote == "GBP":
-        if acc == "USD":
-            return pip_value_quote * APPROX_RATES.get("GBPUSD", 1.25)
-        if acc == "EUR":
-            return pip_value_quote / APPROX_RATES.get("EURGBP", 0.83)
+        return pip_value_quote * APPROX_RATES.get("GBPUSD", 1.25)
     
     # AUD quote currency
     if quote == "AUD":
-        if acc == "USD":
-            return pip_value_quote * APPROX_RATES.get("AUDUSD", 0.62)
-        if acc == "EUR":
-            return pip_value_quote / APPROX_RATES.get("EURAUD", 1.67)
+        return pip_value_quote * APPROX_RATES.get("AUDUSD", 0.62)
     
     # CAD quote currency
     if quote == "CAD":
-        if acc == "USD":
-            return pip_value_quote / APPROX_RATES.get("USDCAD", 1.44)
-        if acc == "EUR":
-            eurusd = APPROX_RATES.get("EURUSD", 1.04)
-            usdcad = APPROX_RATES.get("USDCAD", 1.44)
-            return pip_value_quote / (eurusd * usdcad)
+        return pip_value_quote / APPROX_RATES.get("USDCAD", 1.44)
     
     # NZD quote currency
     if quote == "NZD":
-        if acc == "USD":
-            return pip_value_quote * APPROX_RATES.get("NZDUSD", 0.56)
-        if acc == "EUR":
-            # EURNZD approximation
-            eurusd = APPROX_RATES.get("EURUSD", 1.04)
-            nzdusd = APPROX_RATES.get("NZDUSD", 0.56)
-            return pip_value_quote / (eurusd / nzdusd)
+        return pip_value_quote * APPROX_RATES.get("NZDUSD", 0.56)
     
     # Fallback for other pairs - rough estimate
     return pip_value_quote / price if price > 1 else pip_value_quote * price

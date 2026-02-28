@@ -16,7 +16,7 @@ from app.models.confidence import ConfidenceLevel
 
 # Phase 7: Import volatility regime detector
 try:
-    from app.risk.volatility_regime import VolatilityRegimeDetector, VolatilityRegime
+    from app.risk.volatility_regime import VolatilityRegimeDetector
     VOLATILITY_REGIME_AVAILABLE = True
 except ImportError:
     VOLATILITY_REGIME_AVAILABLE = False
@@ -82,8 +82,6 @@ class RiskAgent(BaseLLMAgent):
         """
         risk = context.get("risk", {})
         session = context.get("session", {})
-        account = context.get("account", {})
-        
         # Must have at least session data (always computed)
         if not session.get("current"):
             return DataStatus.PARTIAL
@@ -96,7 +94,6 @@ class RiskAgent(BaseLLMAgent):
     
     def _has_real_calendar(self, context: Dict[str, Any]) -> bool:
         """Check if economic calendar is REAL (not mock)."""
-        macro = context.get("macro", {})
         source_health = context.get("source_health", {})
         calendar_health = source_health.get("economic_calendar", {})
         
@@ -114,8 +111,6 @@ class RiskAgent(BaseLLMAgent):
         
         atr_history = context.get("atr_history", [])
         close_prices = context.get("close_prices", [])
-        atr_current = context.get("atr_current")
-        
         # Need sufficient data
         if not atr_history or len(atr_history) < 10 or not close_prices or len(close_prices) < 10:
             return {}

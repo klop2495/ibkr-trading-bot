@@ -190,7 +190,7 @@ SIGNAL GUIDELINES:
                 agent_name=self.name,
                 signal="HOLD",
                 confidence=ConfidenceLevel.MEDIUM,
-                reasoning=f"Mock: High-impact event soon, avoid new positions",
+                reasoning="Mock: High-impact event soon, avoid new positions",
                 data_status=DataStatus.MISSING,  # Mark as mock
                 flags=["EVENT_RISK", "MOCK_MODE"],
             )

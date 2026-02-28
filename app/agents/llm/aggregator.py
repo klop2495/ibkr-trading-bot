@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from app.models.confidence import ConfidenceLevel, confidence_to_float
 from app.agents.llm.base_agent import AgentSignal

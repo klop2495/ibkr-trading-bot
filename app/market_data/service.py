@@ -94,8 +94,9 @@ class MarketDataService:
                     fetch_errors.append(f"{sym}/{tf}")
                     key = (sym, tf, error_code)
                     now_ts = time.monotonic()
-                    last_ts = self._error_log_ts.get(key, 0.0)
-                    if logged_this_cycle < self._max_error_logs_per_cycle and (now_ts - last_ts) >= self._error_window_s:
+                    last_ts = self._error_log_ts.get(key)
+                    should_log = last_ts is None or (now_ts - last_ts) >= self._error_window_s
+                    if logged_this_cycle < self._max_error_logs_per_cycle and should_log:
                         self._error_log_ts[key] = now_ts
                         logged_this_cycle += 1
                         print(f"market_data_fetch_error symbol={sym} tf={tf} code={error_code} error={exc}")
