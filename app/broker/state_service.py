@@ -69,6 +69,48 @@ class BrokerStateService:
         except Exception:
             return 0.0
 
+    def _pick_snapshot_exit_price(self, trade: dict, ticker: Any) -> Optional[float]:
+        side = str(trade.get("side") or "").upper()
+        bid = self._parse_float(getattr(ticker, "bid", None))
+        ask = self._parse_float(getattr(ticker, "ask", None))
+        last = self._parse_float(getattr(ticker, "last", None))
+        close = self._parse_float(getattr(ticker, "close", None))
+
+        # Closing BUY -> sell at bid. Closing SELL -> buy at ask.
+        if side.startswith("B") and bid > 0:
+            return bid
+        if side.startswith("S") and ask > 0:
+            return ask
+        if last > 0:
+            return last
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2.0
+        if close > 0:
+            return close
+        return None
+
+    def _market_snapshot_exit_price(self, trade: dict) -> Optional[float]:
+        symbol = str(trade.get("symbol") or "").upper()
+        if not symbol:
+            return None
+        try:
+            from app.broker.contracts import create_cfd_fx_contract
+
+            contract = create_cfd_fx_contract(self._ib, symbol)
+            ticker = self._ib.reqMktData(contract, snapshot=True)
+
+            attempts = 20
+            for _ in range(attempts):
+                # For ib_insync, sleep must run through IB event loop.
+                self._ib.sleep(0.1)
+                px = self._pick_snapshot_exit_price(trade, ticker)
+                if px is not None:
+                    return float(px)
+
+            return self._pick_snapshot_exit_price(trade, ticker)
+        except Exception:
+            return None
+
     def _fetch_positions(self) -> Dict[str, BrokerPosition]:
         positions: Dict[str, BrokerPosition] = {}
         for pos in self._ib.positions():
@@ -680,10 +722,21 @@ class BrokerStateService:
             )
 
             if broker_flat:
+                executions: List[Any] = []
+                try:
+                    executions = list(self._ib.reqExecutions())
+                except Exception:
+                    executions = []
+
                 for trade in db_trades:
                     symbol = str(trade.get("symbol") or "").upper()
                     try:
-                        exit_px = float(trade.get("entry_price") or 0.0)
+                        _, exit_from_exec = self._determine_close_reason(trade, executions)
+                        exit_px = exit_from_exec
+                        if exit_px is None:
+                            exit_px = self._market_snapshot_exit_price(trade)
+                        if exit_px is None:
+                            exit_px = float(trade.get("entry_price") or 0.0)
                         pnl, pnl_pips = self._calculate_trade_pnl(trade, exit_px)
                         self._trades_history_repo.close_trade(
                             trade_id=str(trade.get("id")),
@@ -766,6 +819,8 @@ class BrokerStateService:
                     continue
                 for trade in trades:
                     reason, exit_price = self._determine_close_reason(trade, executions)
+                    if exit_price is None:
+                        exit_price = self._market_snapshot_exit_price(trade)
                     if exit_price is None:
                         exit_price = float(trade.get("entry_price") or 0.0)
                     symbol = str(trade.get("symbol") or "").upper()

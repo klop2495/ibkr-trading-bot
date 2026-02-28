@@ -15,6 +15,7 @@ class MockIB:
         self._open_trades = []
         self._account_summary = []
         self._executions = []
+        self._ticker = SimpleNamespace(bid=None, ask=None, last=None, close=None)
 
     def isConnected(self):
         return self._connected
@@ -33,6 +34,17 @@ class MockIB:
 
     def reqExecutions(self):
         return self._executions
+
+    def qualifyContracts(self, contract):
+        contract.conId = getattr(contract, "conId", 0) or 101
+        contract.localSymbol = f"{contract.symbol}.{contract.currency}"
+        return [contract]
+
+    def reqMktData(self, contract, snapshot=True):
+        return self._ticker
+
+    def sleep(self, seconds):
+        return None
 
 
 class MockEvent:
@@ -260,3 +272,30 @@ def test_orphan_dedup_skips_recent_orphan():
     result = service.sync_with_db()
     assert "orphan_recent_exists:CFD:101" in result.mismatches
     trades_repo.create_trade.assert_not_called()
+
+
+def test_sync_broker_flat_uses_market_snapshot_for_pnl():
+    ib = MockIB()
+    ib._ticker = SimpleNamespace(bid=1.1005, ask=1.1010, last=None, close=None)
+    trade = {
+        "id": "trade-flat-1",
+        "symbol": "EURUSD",
+        "side": "SELL",
+        "quantity": 10000,
+        "entry_price": 1.1000,
+        "meta": {"instrument_key": "CFD:101"},
+    }
+    trades_repo = MagicMock()
+    trades_repo.get_active_trades_full.return_value = [trade]
+    trades_repo.close_trade.return_value = None
+
+    service = BrokerStateService(ib=ib, trades_history_repo=trades_repo)
+    result = service.sync_with_db()
+
+    assert "EURUSD" in result.positions_closed
+    trades_repo.close_trade.assert_called_once()
+    kwargs = trades_repo.close_trade.call_args.kwargs
+    assert kwargs["close_reason"] == "BROKER_FLAT"
+    assert kwargs["exit_price"] == pytest.approx(1.1010)
+    assert kwargs["pnl"] == pytest.approx(-10.0)
+    assert kwargs["pnl_pips"] == pytest.approx(-10.0)
