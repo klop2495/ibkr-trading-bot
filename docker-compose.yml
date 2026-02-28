@@ -5,10 +5,16 @@ services:
     build: .
     container_name: ibkr-trading-bot
     restart: unless-stopped
+    command: ["bash", "-lc", "python -m app.startup.wait_for_ib && python -m app.main"]
     env_file:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
+      - IB_STARTUP_WAIT_ENABLED=${IB_STARTUP_WAIT_ENABLED:-1}
+      - IB_STARTUP_WAIT_TIMEOUT_SECONDS=${IB_STARTUP_WAIT_TIMEOUT_SECONDS:-180}
+      - IB_STARTUP_WAIT_PROBE_INTERVAL_SECONDS=${IB_STARTUP_WAIT_PROBE_INTERVAL_SECONDS:-2}
+      - IB_STARTUP_WAIT_CONNECT_TIMEOUT_SECONDS=${IB_STARTUP_WAIT_CONNECT_TIMEOUT_SECONDS:-5}
+      - IB_STARTUP_WAIT_CLIENT_ID=${IB_STARTUP_WAIT_CLIENT_ID:-199}
     networks:
       - default
       - ib-gateway_default

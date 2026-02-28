@@ -29,11 +29,16 @@ services:
       - ib-gateway-ibc:/root/ibc
       - ib-gateway-tws:/root/Jts
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "4001"]
-      interval: 30s
+      # "healthy" only when TWS API socket accepts handshake (not just container Up)
+      test:
+        [
+          "CMD-SHELL",
+          "printf 'API\\0v100..151\\0' | timeout 5 nc 127.0.0.1 4002 | head -c 1 >/dev/null"
+        ]
+      interval: 20s
       timeout: 10s
-      retries: 3
-      start_period: 60s
+      retries: 6
+      start_period: 90s
     logging:
       driver: "json-file"
       options:
