@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,7 @@ from app.storage.bot_settings_repo import BotSettingsRepo
 logger = logging.getLogger(__name__)
 
 ORPHAN_DEDUP_WINDOW = timedelta(minutes=10)
+PENDING_KEY_GRACE_SECONDS = int(os.getenv("BROKER_PENDING_KEY_GRACE_SECONDS", "180"))
 
 
 class BrokerConnectionError(RuntimeError):
@@ -361,18 +363,78 @@ class BrokerStateService:
                 by_symbol.setdefault(symbol, set()).add(key)
         return by_symbol
 
+    def _candidate_keys_by_order_id(
+        self,
+        state: BrokerState,
+        open_trades: List[Any],
+    ) -> Dict[int, Set[str]]:
+        by_order_id: Dict[int, Set[str]] = {}
+        for order in state.open_orders:
+            key = str(order.instrument_key or "").upper()
+            order_id = getattr(order, "order_id", None)
+            if key and order_id is not None:
+                by_order_id.setdefault(int(order_id), set()).add(key)
+        for trade in open_trades:
+            contract = getattr(trade, "contract", None)
+            key = instrument_key(contract) if contract else None
+            order = getattr(trade, "order", None)
+            order_id = getattr(order, "orderId", None) if order else None
+            if key and order_id is not None:
+                by_order_id.setdefault(int(order_id), set()).add(key)
+        return by_order_id
+
+    def _is_recent_pending_without_order_id(self, trade: dict, now: datetime) -> bool:
+        status = str(trade.get("status") or "").upper()
+        if status != "PENDING":
+            return False
+        if trade.get("ib_order_id") is not None:
+            return False
+        opened_at = trade.get("opened_at") or trade.get("created_at")
+        opened_ts = self._parse_ib_time(opened_at) if opened_at else None
+        if not opened_ts:
+            return False
+        return (now - opened_ts).total_seconds() <= PENDING_KEY_GRACE_SECONDS
+
+    def _normalize_recovered_key(self, key: Optional[str]) -> Optional[str]:
+        if not key:
+            return None
+        key = str(key).upper()
+        if key.startswith("CFD:"):
+            suffix = key.split(":", 1)[1]
+            if suffix.isdigit():
+                return key
+        return None
+
     def _repair_missing_instrument_key(
         self,
         trade: dict,
         key_candidates: Dict[str, Set[str]],
+        order_key_candidates: Dict[int, Set[str]],
     ) -> Optional[str]:
+        ib_order_id = trade.get("ib_order_id")
+        if ib_order_id is not None:
+            try:
+                order_candidates = order_key_candidates.get(int(ib_order_id), set())
+            except Exception:
+                order_candidates = set()
+            if len(order_candidates) == 1:
+                recovered_key = self._normalize_recovered_key(next(iter(order_candidates)))
+                if recovered_key:
+                    return self._save_recovered_key(trade, recovered_key)
+
         symbol = str(trade.get("symbol") or "").upper()
         if not symbol:
             return None
         candidates = key_candidates.get(symbol) or set()
         if len(candidates) != 1:
             return None
-        recovered_key = next(iter(candidates))
+        recovered_key = self._normalize_recovered_key(next(iter(candidates)))
+        if not recovered_key:
+            return None
+        return self._save_recovered_key(trade, recovered_key)
+
+    def _save_recovered_key(self, trade: dict, recovered_key: str) -> Optional[str]:
+        symbol = str(trade.get("symbol") or "").upper()
         existing_meta = trade.get("meta")
         meta = existing_meta if isinstance(existing_meta, dict) else {}
         meta["instrument_key"] = recovered_key
@@ -549,12 +611,17 @@ class BrokerStateService:
                 return result
 
             key_candidates = self._candidate_keys_by_symbol(state, open_trades)
+            order_key_candidates = self._candidate_keys_by_order_id(state, open_trades)
+            now_ts = self._now()
             trades_by_key: Dict[str, List[dict]] = {}
             for trade in db_trades:
                 meta = trade.get("meta") or {}
                 trade_key = meta.get("instrument_key")
                 if not trade_key:
-                    repaired_key = self._repair_missing_instrument_key(trade, key_candidates)
+                    if self._is_recent_pending_without_order_id(trade, now_ts):
+                        result.mismatches.append(f"pending_missing_key_grace:{trade.get('id')}")
+                        continue
+                    repaired_key = self._repair_missing_instrument_key(trade, key_candidates, order_key_candidates)
                     if repaired_key:
                         trade_key = repaired_key
                     else:
@@ -567,7 +634,8 @@ class BrokerStateService:
                         )
                         self._enter_safe_mode("missing_instrument_key", {"trade_id": trade.get("id")})
                         return result
-                if not str(trade_key).startswith("CFD:"):
+                normalized_trade_key = self._normalize_recovered_key(str(trade_key))
+                if not normalized_trade_key:
                     result.errors.append("unexpected_trade_key")
                     self._log_event(
                         "UNEXPECTED_SECTYPE",
@@ -577,7 +645,7 @@ class BrokerStateService:
                     )
                     self._enter_safe_mode("unexpected_trade_key", {"trade_id": trade.get("id")})
                     return result
-                trades_by_key.setdefault(str(trade_key), []).append(trade)
+                trades_by_key.setdefault(normalized_trade_key, []).append(trade)
 
             broker_flat = (
                 len(state.positions) == 0

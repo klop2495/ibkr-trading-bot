@@ -146,6 +146,79 @@ def test_sync_blocks_on_missing_trade_instrument_key_when_unrecoverable():
     assert any(call.kwargs.get("event_type") == "MISSING_INSTRUMENT_KEY" for call in risk_repo.insert.call_args_list)
 
 
+def test_sync_recovers_missing_trade_instrument_key_from_ib_order_id():
+    ib = MockIB()
+    ib._open_orders = [
+        SimpleNamespace(orderId=77, action="BUY", totalQuantity=1, orderType="MKT", parentId=None),
+    ]
+    ib._open_trades = [
+        SimpleNamespace(
+            order=SimpleNamespace(orderId=77),
+            contract=SimpleNamespace(secType="CFD", conId=999, localSymbol="EUR.USD"),
+            orderStatus=SimpleNamespace(status="Submitted"),
+        )
+    ]
+    trades_repo = MagicMock()
+    trades_repo.get_active_trades_full.return_value = [
+        {"id": "t1", "symbol": "USDCHF", "status": "OPEN", "ib_order_id": 77, "meta": {}},
+    ]
+    risk_repo = MagicMock()
+    bot_settings_repo = MagicMock()
+    service = BrokerStateService(
+        ib=ib,
+        trades_history_repo=trades_repo,
+        risk_events_repo=risk_repo,
+        bot_settings_repo=bot_settings_repo,
+        owner_user_id="owner",
+    )
+    result = service.sync_with_db()
+    assert "missing_instrument_key" not in result.errors
+    bot_settings_repo.update.assert_not_called()
+    trades_repo.update_meta.assert_called_once()
+    saved_meta = trades_repo.update_meta.call_args.args[1]
+    assert saved_meta["instrument_key"] == "CFD:999"
+    assert any(
+        call.kwargs.get("event_type") == "MISSING_INSTRUMENT_KEY_REPAIRED"
+        for call in risk_repo.insert.call_args_list
+    )
+
+
+def test_sync_allows_recent_pending_without_key_during_grace_window():
+    ib = MockIB()
+    ib._open_trades = [
+        SimpleNamespace(
+            order=SimpleNamespace(orderId=12),
+            contract=SimpleNamespace(secType="CFD", conId=321, localSymbol="EUR.USD"),
+            orderStatus=SimpleNamespace(status="Submitted"),
+        )
+    ]
+    trades_repo = MagicMock()
+    trades_repo.get_active_trades_full.return_value = [
+        {
+            "id": "t1",
+            "symbol": "USDCHF",
+            "status": "PENDING",
+            "ib_order_id": None,
+            "opened_at": "2026-02-28T12:48:30+00:00",
+            "meta": {},
+        },
+    ]
+    risk_repo = MagicMock()
+    bot_settings_repo = MagicMock()
+    service = BrokerStateService(
+        ib=ib,
+        trades_history_repo=trades_repo,
+        risk_events_repo=risk_repo,
+        bot_settings_repo=bot_settings_repo,
+        owner_user_id="owner",
+    )
+    service._now = lambda: service._parse_ib_time("2026-02-28T12:49:00+00:00")
+    result = service.sync_with_db()
+    assert "missing_instrument_key" not in result.errors
+    assert "pending_missing_key_grace:t1" in result.mismatches
+    bot_settings_repo.update.assert_not_called()
+
+
 def test_open_orders_without_trades_do_not_trigger_safe_mode():
     ib = MockIB()
     ib._open_orders = [
