@@ -82,7 +82,7 @@ def test_sync_blocks_on_unexpected_sectype():
     trades_repo.get_active_trades_full.assert_not_called()
 
 
-def test_sync_blocks_on_missing_trade_instrument_key():
+def test_sync_recovers_missing_trade_instrument_key_when_symbol_maps_to_single_broker_key():
     ib = MockIB()
     ib._positions = [
         SimpleNamespace(
@@ -95,6 +95,41 @@ def test_sync_blocks_on_missing_trade_instrument_key():
     trades_repo = MagicMock()
     trades_repo.get_active_trades_full.return_value = [
         {"id": "t1", "symbol": "EURUSD", "status": "OPEN", "meta": {}},
+    ]
+    risk_repo = MagicMock()
+    bot_settings_repo = MagicMock()
+    service = BrokerStateService(
+        ib=ib,
+        trades_history_repo=trades_repo,
+        risk_events_repo=risk_repo,
+        bot_settings_repo=bot_settings_repo,
+        owner_user_id="owner",
+    )
+    result = service.sync_with_db()
+    assert "missing_instrument_key" not in result.errors
+    bot_settings_repo.update.assert_not_called()
+    trades_repo.update_meta.assert_called_once()
+    saved_meta = trades_repo.update_meta.call_args.args[1]
+    assert saved_meta["instrument_key"] == "CFD:321"
+    assert any(
+        call.kwargs.get("event_type") == "MISSING_INSTRUMENT_KEY_REPAIRED"
+        for call in risk_repo.insert.call_args_list
+    )
+
+
+def test_sync_blocks_on_missing_trade_instrument_key_when_unrecoverable():
+    ib = MockIB()
+    ib._positions = [
+        SimpleNamespace(
+            contract=SimpleNamespace(secType="CFD", conId=321, localSymbol="EUR.USD"),
+            position=10000,
+            avgCost=1.0,
+            unrealizedPNL=0.0,
+        )
+    ]
+    trades_repo = MagicMock()
+    trades_repo.get_active_trades_full.return_value = [
+        {"id": "t1", "symbol": "USDCHF", "status": "OPEN", "meta": {}},
     ]
     risk_repo = MagicMock()
     bot_settings_repo = MagicMock()

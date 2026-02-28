@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.broker.keys import fx_contract_snapshot, fx_display_symbol, instrument_key
 from app.models.broker_state import BrokerOrder, BrokerPosition, BrokerState, SyncResult
@@ -338,6 +338,59 @@ class BrokerStateService:
 
         return unexpected, missing
 
+    def _candidate_keys_by_symbol(
+        self,
+        state: BrokerState,
+        open_trades: List[Any],
+    ) -> Dict[str, Set[str]]:
+        by_symbol: Dict[str, Set[str]] = {}
+        for key, position in state.positions.items():
+            symbol = str(position.symbol or "").upper()
+            if symbol and key:
+                by_symbol.setdefault(symbol, set()).add(key)
+        for order in state.open_orders:
+            symbol = str(order.symbol or "").upper()
+            key = str(order.instrument_key or "").upper()
+            if symbol and key:
+                by_symbol.setdefault(symbol, set()).add(key)
+        for trade in open_trades:
+            contract = getattr(trade, "contract", None)
+            symbol = self._normalize_symbol(contract).upper()
+            key = instrument_key(contract) if contract else None
+            if symbol and key:
+                by_symbol.setdefault(symbol, set()).add(key)
+        return by_symbol
+
+    def _repair_missing_instrument_key(
+        self,
+        trade: dict,
+        key_candidates: Dict[str, Set[str]],
+    ) -> Optional[str]:
+        symbol = str(trade.get("symbol") or "").upper()
+        if not symbol:
+            return None
+        candidates = key_candidates.get(symbol) or set()
+        if len(candidates) != 1:
+            return None
+        recovered_key = next(iter(candidates))
+        existing_meta = trade.get("meta")
+        meta = existing_meta if isinstance(existing_meta, dict) else {}
+        meta["instrument_key"] = recovered_key
+        trade["meta"] = meta
+        trade_id = str(trade.get("id") or "")
+        if self._trades_history_repo and trade_id:
+            try:
+                self._trades_history_repo.update_meta(trade_id, meta)
+            except Exception:
+                pass
+        self._log_event(
+            "MISSING_INSTRUMENT_KEY_REPAIRED",
+            "warn",
+            "Recovered instrument_key for active trade",
+            {"trade_id": trade_id, "symbol": symbol, "instrument_key": recovered_key},
+        )
+        return recovered_key
+
     def _close_reason_from_price(
         self,
         symbol: str,
@@ -495,21 +548,26 @@ class BrokerStateService:
                 result.errors.append(f"db_fetch_failed:{exc}")
                 return result
 
+            key_candidates = self._candidate_keys_by_symbol(state, open_trades)
             trades_by_key: Dict[str, List[dict]] = {}
             for trade in db_trades:
                 meta = trade.get("meta") or {}
                 trade_key = meta.get("instrument_key")
                 if not trade_key:
-                    result.errors.append("missing_instrument_key")
-                    self._log_event(
-                        "MISSING_INSTRUMENT_KEY",
-                        "CRITICAL",
-                        "Active trade missing instrument_key",
-                        {"trade_id": trade.get("id"), "symbol": trade.get("symbol")},
-                    )
-                    self._enter_safe_mode("missing_instrument_key", {"trade_id": trade.get("id")})
-                    return result
-                if not trade_key.startswith("CFD:"):
+                    repaired_key = self._repair_missing_instrument_key(trade, key_candidates)
+                    if repaired_key:
+                        trade_key = repaired_key
+                    else:
+                        result.errors.append("missing_instrument_key")
+                        self._log_event(
+                            "MISSING_INSTRUMENT_KEY",
+                            "CRITICAL",
+                            "Active trade missing instrument_key",
+                            {"trade_id": trade.get("id"), "symbol": trade.get("symbol")},
+                        )
+                        self._enter_safe_mode("missing_instrument_key", {"trade_id": trade.get("id")})
+                        return result
+                if not str(trade_key).startswith("CFD:"):
                     result.errors.append("unexpected_trade_key")
                     self._log_event(
                         "UNEXPECTED_SECTYPE",
@@ -519,7 +577,7 @@ class BrokerStateService:
                     )
                     self._enter_safe_mode("unexpected_trade_key", {"trade_id": trade.get("id")})
                     return result
-                trades_by_key.setdefault(trade_key, []).append(trade)
+                trades_by_key.setdefault(str(trade_key), []).append(trade)
 
             broker_flat = (
                 len(state.positions) == 0
