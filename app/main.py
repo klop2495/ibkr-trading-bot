@@ -1731,6 +1731,8 @@ def main():
         # Register with dashboard for /api/signal-lifecycle endpoint
         from app.dashboard import set_signal_lifecycle_manager
         set_signal_lifecycle_manager(signal_lifecycle)
+        # Persist initial state so dashboard can read it immediately
+        signal_lifecycle.persist_to_supabase(force=True)
 
     # Telegram notifications for binary signals
     tg_notifier = TelegramNotifier()
