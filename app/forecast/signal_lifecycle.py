@@ -239,6 +239,7 @@ class SignalLifecycleManager:
             symbols_status[sym] = {
                 "status": status,
                 "pending_direction": state.pending_direction,
+                "pending_ts": state.pending_ts.isoformat() if state.pending_ts else None,
                 "pending_age_min": round((now - state.pending_ts).total_seconds() / 60, 1) if state.pending_ts else None,
                 "miss_streak": state.miss_streak,
                 "cooldown_until": state.cooldown_until.isoformat() if state.cooldown_until and now < state.cooldown_until else None,
@@ -265,6 +266,67 @@ class SignalLifecycleManager:
                 "ready": sum(1 for s in self._states.values() if not s.pending_direction and (not s.cooldown_until or now >= s.cooldown_until)),
             },
         }
+
+    def restore_from_supabase(self) -> int:
+        """Restore in-memory lifecycle states from persisted bot_kv JSON.
+        Returns number of symbols restored."""
+        data = self.load_from_supabase(self._supabase)
+        if not data or not isinstance(data, dict):
+            return 0
+        symbols = data.get("symbols")
+        if not isinstance(symbols, dict):
+            return 0
+
+        now = datetime.now(timezone.utc)
+        restored = 0
+        for sym, row in symbols.items():
+            if not isinstance(sym, str) or not isinstance(row, dict):
+                continue
+            state = self._get_state(sym.upper())
+
+            pending_dir = row.get("pending_direction")
+            if isinstance(pending_dir, str) and pending_dir in ("up", "down"):
+                state.pending_direction = pending_dir
+                pending_ts_raw = row.get("pending_ts")
+                pending_age = row.get("pending_age_min")
+                parsed_pending_ts = None
+                if isinstance(pending_ts_raw, str):
+                    try:
+                        parsed_pending_ts = datetime.fromisoformat(pending_ts_raw.replace("Z", "+00:00"))
+                    except Exception:
+                        parsed_pending_ts = None
+                if parsed_pending_ts is not None:
+                    state.pending_ts = parsed_pending_ts
+                elif isinstance(pending_age, (int, float)):
+                    state.pending_ts = now - timedelta(minutes=float(pending_age))
+
+            miss_streak = row.get("miss_streak")
+            if isinstance(miss_streak, int) and miss_streak >= 0:
+                state.miss_streak = miss_streak
+
+            cooldown_until = row.get("cooldown_until")
+            if isinstance(cooldown_until, str):
+                try:
+                    state.cooldown_until = datetime.fromisoformat(cooldown_until.replace("Z", "+00:00"))
+                except Exception:
+                    state.cooldown_until = None
+
+            last_verified = row.get("last_verified")
+            if isinstance(last_verified, str):
+                try:
+                    state.last_verified_ts = datetime.fromisoformat(last_verified.replace("Z", "+00:00"))
+                except Exception:
+                    state.last_verified_ts = None
+
+            last_result = row.get("last_result")
+            if isinstance(last_result, bool):
+                state.last_result = last_result
+
+            restored += 1
+
+        if restored:
+            logger.info(f"lifecycle_restore restored_symbols={restored}")
+        return restored
 
     # ── Supabase persistence ──────────────────────────────────────────
 

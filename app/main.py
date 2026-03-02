@@ -1727,7 +1727,10 @@ def main():
     # Signal Lifecycle Manager — dedup + cooldown for Alt2 signals
     signal_lifecycle = SignalLifecycleManager(supabase_client=db.client)
     if signal_lifecycle.enabled:
+        _restored = signal_lifecycle.restore_from_supabase()
         print(f"SignalLifecycleManager: enabled blacklist_hours={sorted(signal_lifecycle.blacklist_hours)}")
+        if _restored:
+            print(f"SignalLifecycleManager: restored symbols={_restored}")
         # Register with dashboard for /api/signal-lifecycle endpoint
         from app.dashboard import set_signal_lifecycle_manager
         set_signal_lifecycle_manager(signal_lifecycle)
