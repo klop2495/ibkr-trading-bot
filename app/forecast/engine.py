@@ -334,10 +334,12 @@ class ForecastEngine:
         "secondary_ma": 0.0,      # Not in H30
     }
 
-    # A/B alt2: top 8 symbols where signal is valid
+    # A/B alt2: top 16 symbols where signal is valid
     ALT2_SYMBOLS = {
-        "EURCHF", "CHFJPY", "EURJPY", "AUDJPY",
-        "CADJPY", "NZDJPY", "EURGBP", "USDJPY",
+        "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
+        "AUDUSD", "USDCAD", "NZDUSD", "EURJPY",
+        "GBPJPY", "AUDJPY", "CADJPY", "CHFJPY",
+        "NZDJPY", "EURGBP", "EURAUD", "EURCHF",
     }
 
     def _compute_alt2_signal(self, symbol: str, votes: Optional[Dict[str, int]], adx_value: Optional[float]) -> Optional[str]:

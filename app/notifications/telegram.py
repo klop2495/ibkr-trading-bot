@@ -204,7 +204,7 @@ class TelegramNotifier:
         price_str = f"{base_price:.3f}" if is_jpy else f"{base_price:.5f}"
 
         strat_label = "\U0001f52c ALT3" if strategy == "alt3" else "\U0001f3af ALT2"
-        strat_desc = "Alt2+momentum" if strategy == "alt3" else "ma\u2260pv + ADX\u226530 + top8"
+        strat_desc = "Alt2+momentum" if strategy == "alt3" else "ma\u2260pv + ADX\u226530 + top16"
 
         lines = [
             f"{dir_text}  <b>{symbol}</b>  [{strat_label}]",
