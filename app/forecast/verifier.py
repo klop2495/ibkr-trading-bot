@@ -6,8 +6,9 @@ horizon has elapsed, compares the predicted direction with actual price change.
 """
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.models.forecast import FORECAST_HORIZONS
 
@@ -15,6 +16,21 @@ logger = logging.getLogger(__name__)
 
 # Map horizon_minutes → column prefix
 HORIZON_PREFIXES = {30: "h30", 60: "h60", 240: "h240", 1440: "h1440"}
+
+
+@dataclass
+class AltVerified:
+    row_id: str
+    symbol: str
+    variant: str  # "alt2" | "alt3"
+    correct: bool
+    ts_utc: str
+
+
+@dataclass
+class VerifyResult:
+    count: int = 0
+    alt_results: List[AltVerified] = field(default_factory=list)
 
 
 class ForecastVerifier:
@@ -26,7 +42,8 @@ class ForecastVerifier:
 
     Usage:
         verifier = ForecastVerifier(db)
-        count = verifier.verify_pending(market_data_service, symbols)
+        result = verifier.verify_pending(market_data_service, symbols)
+        print(result.count, len(result.alt_results))
     """
 
     def __init__(self, db: Any) -> None:
@@ -94,11 +111,11 @@ class ForecastVerifier:
         market_data_service: Any,
         symbols: List[str],
         limit: int = 100,
-    ) -> int:
+    ) -> VerifyResult:
         """
         Find unverified forecasts whose horizons have elapsed and verify them.
 
-        Returns number of forecasts updated.
+        Returns structured verification result for lifecycle feedback.
         """
         now = datetime.now(timezone.utc)
         # Only check forecasts older than 30 minutes (shortest horizon)
@@ -120,35 +137,38 @@ class ForecastVerifier:
             rows = result.data or []
         except Exception as exc:
             logger.warning(f"forecast_verify_fetch_error: {exc}")
-            return 0
+            return VerifyResult()
 
         if not rows:
-            return 0
+            return VerifyResult()
 
-        updated = 0
+        verify_result = VerifyResult()
         for row in rows:
             try:
-                if self._verify_row(row, now, market_data_service):
-                    updated += 1
+                row_updated, alt_verified = self._verify_row(row, now, market_data_service)
+                if row_updated:
+                    verify_result.count += 1
+                if alt_verified:
+                    verify_result.alt_results.extend(alt_verified)
             except Exception as exc:
                 logger.warning(f"forecast_verify_row_error id={row.get('id')} error={exc}")
 
-        return updated
+        return verify_result
 
     def _verify_row(
         self,
         row: Dict[str, Any],
         now: datetime,
         mds: Any,
-    ) -> bool:
-        """Verify a single forecast row. Returns True if updated."""
+    ) -> Tuple[bool, List[AltVerified]]:
+        """Verify a single forecast row. Returns (updated, alt_verifications)."""
         row_id = row.get("id")
         ts_raw = row.get("ts_utc")
         symbol = row.get("symbol")
         base_price = row.get("base_price")
 
         if not row_id or not ts_raw or not symbol:
-            return False
+            return False, []
 
         if isinstance(ts_raw, str):
             forecast_ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
@@ -171,7 +191,7 @@ class ForecastVerifier:
                 }).eq("id", row_id).execute()
             except Exception:
                 pass
-            return True
+            return True, []
 
         # If base_price is missing, reconstruct from historical M15 bar at forecast time
         if base_price is None:
@@ -187,7 +207,7 @@ class ForecastVerifier:
                 # Fallback: use current price from cache (less accurate)
                 base_price = self._get_current_price(symbol, mds)
                 if base_price is None:
-                    return False
+                    return False, []
 
         update_data: Dict[str, Any] = {}
         all_verified = True
@@ -281,7 +301,7 @@ class ForecastVerifier:
             if age_hours > 4:
                 update_data["verified_at"] = now.isoformat()
             else:
-                return False
+                return False, []
 
         # Mark as fully verified if all horizons checked OR forecast old enough
         if all_verified:
@@ -290,12 +310,37 @@ class ForecastVerifier:
             # >4h old — force verified with partial results to prevent queue blocking
             update_data["verified_at"] = now.isoformat()
 
+        alt_verified: List[AltVerified] = []
+        ts_out = forecast_ts.isoformat()
+        alt2_correct = update_data.get("h30_alt2_correct")
+        alt3_correct = update_data.get("h30_alt3_correct")
+        if isinstance(alt2_correct, bool) and row.get("h30_alt2_direction") not in (None, "neutral"):
+            alt_verified.append(
+                AltVerified(
+                    row_id=str(row_id),
+                    symbol=str(symbol),
+                    variant="alt2",
+                    correct=alt2_correct,
+                    ts_utc=ts_out,
+                )
+            )
+        if isinstance(alt3_correct, bool) and row.get("h30_alt3_direction") not in (None, "neutral"):
+            alt_verified.append(
+                AltVerified(
+                    row_id=str(row_id),
+                    symbol=str(symbol),
+                    variant="alt3",
+                    correct=alt3_correct,
+                    ts_utc=ts_out,
+                )
+            )
+
         try:
             self.db.client.table("price_forecasts").update(update_data).eq("id", row_id).execute()
-            return True
+            return True, alt_verified
         except Exception as exc:
             logger.warning(f"forecast_verify_update_error id={row_id} error={exc}")
-            return False
+            return False, []
 
     def _get_historical_price(self, symbol: str, target_ts: datetime) -> Optional[float]:
         """

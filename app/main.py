@@ -2193,28 +2193,25 @@ def main():
             if now_ts - last_forecast_verify_tick >= forecast_verify_interval:
                 try:
                     active_symbols = getattr(settings, "symbols", None) or []
-                    verified = forecast_verifier.verify_pending(
+                    verify_result = forecast_verifier.verify_pending(
                         market_data_service=market_data_service,
                         symbols=active_symbols,
                         limit=forecast_verify_batch,
                     )
-                    if verified > 0:
-                        print(f"forecast_verified count={verified}")
+                    if verify_result.count > 0:
+                        print(f"forecast_verified count={verify_result.count}")
                         # Feed verification results to lifecycle manager
-                        if signal_lifecycle.enabled and forecast_repo:
+                        if signal_lifecycle.enabled:
                             try:
-                                for _sym in active_symbols:
-                                    _latest = forecast_repo.get_latest(_sym, limit=1)
-                                    if _latest:
-                                        _row = _latest[0] if isinstance(_latest, list) else _latest
-                                        _a2d = _row.get("h30_alt2_direction") if isinstance(_row, dict) else getattr(_row, "h30_alt2_direction", None)
-                                        _a2c = _row.get("h30_alt2_correct") if isinstance(_row, dict) else getattr(_row, "h30_alt2_correct", None)
-                                        _a3d = _row.get("h30_alt3_direction") if isinstance(_row, dict) else getattr(_row, "h30_alt3_direction", None)
-                                        _a3c = _row.get("h30_alt3_correct") if isinstance(_row, dict) else getattr(_row, "h30_alt3_correct", None)
-                                        if _a2d and _a2c is not None:
-                                            signal_lifecycle.record_verification(f"{_sym}#alt2", correct=bool(_a2c))
-                                        if _a3d and _a3c is not None:
-                                            signal_lifecycle.record_verification(f"{_sym}#alt3", correct=bool(_a3c))
+                                for _av in verify_result.alt_results:
+                                    _variant = str(getattr(_av, "variant", "") or "").lower()
+                                    if _variant not in ("alt2", "alt3"):
+                                        continue
+                                    _sym = str(getattr(_av, "symbol", "") or "").upper()
+                                    if not _sym:
+                                        continue
+                                    _correct = bool(getattr(_av, "correct", False))
+                                    signal_lifecycle.record_verification(f"{_sym}#{_variant}", correct=_correct)
                             except Exception as _lc_exc:
                                 print(f"lifecycle_verify_error: {_lc_exc}")
                 except Exception as vexc:
