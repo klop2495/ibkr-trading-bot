@@ -2000,35 +2000,31 @@ def main():
                         )
                         # Signal Lifecycle: filter alt2/alt3 signals (dedup + cooldown + blacklist)
                         # Variant policy:
-                        # - Alt3 has higher priority and replaces Alt2 in the same cycle.
-                        # - Only one variant per symbol is lifecycle-eligible at a time.
+                        # - Alt2 and Alt3 are tracked independently for A/B comparison.
+                        # - Lifecycle keys are variant-aware: "SYMBOL#alt2" / "SYMBOL#alt3".
                         if forecasts and signal_lifecycle.enabled:
                             _lc_now = datetime.now(timezone.utc)
                             _lc_blocked = 0
                             for fc in forecasts:
                                 _alt2_dir = getattr(fc, "h30_alt2_direction", None)
                                 _alt3_dir = getattr(fc, "h30_alt3_direction", None)
-
-                                # Alt3 upgrade path: when strict confirmation exists, suppress alt2
-                                # to keep variant statistics non-overlapping.
-                                _chosen_attr = None
-                                _chosen_dir = None
-                                if _alt3_dir:
-                                    if _alt2_dir:
+                                if _alt2_dir:
+                                    _key2 = f"{fc.symbol}#alt2"
+                                    _ok2, _reason2 = signal_lifecycle.can_signal(_key2, _alt2_dir, _lc_now)
+                                    if not _ok2:
                                         setattr(fc, "h30_alt2_direction", None)
-                                    _chosen_attr = "h30_alt3_direction"
-                                    _chosen_dir = _alt3_dir
-                                elif _alt2_dir:
-                                    _chosen_attr = "h30_alt2_direction"
-                                    _chosen_dir = _alt2_dir
-
-                                if _chosen_attr and _chosen_dir:
-                                    _ok, _reason = signal_lifecycle.can_signal(fc.symbol, _chosen_dir, _lc_now)
-                                    if not _ok:
-                                        setattr(fc, _chosen_attr, None)
                                         _lc_blocked += 1
                                     else:
-                                        signal_lifecycle.record_signal(fc.symbol, _chosen_dir, _lc_now)
+                                        signal_lifecycle.record_signal(_key2, _alt2_dir, _lc_now)
+
+                                if _alt3_dir:
+                                    _key3 = f"{fc.symbol}#alt3"
+                                    _ok3, _reason3 = signal_lifecycle.can_signal(_key3, _alt3_dir, _lc_now)
+                                    if not _ok3:
+                                        setattr(fc, "h30_alt3_direction", None)
+                                        _lc_blocked += 1
+                                    else:
+                                        signal_lifecycle.record_signal(_key3, _alt3_dir, _lc_now)
                             if _lc_blocked > 0:
                                 print(f"lifecycle_filter blocked={_lc_blocked}")
 
@@ -2215,11 +2211,10 @@ def main():
                                         _a2c = _row.get("h30_alt2_correct") if isinstance(_row, dict) else getattr(_row, "h30_alt2_correct", None)
                                         _a3d = _row.get("h30_alt3_direction") if isinstance(_row, dict) else getattr(_row, "h30_alt3_direction", None)
                                         _a3c = _row.get("h30_alt3_correct") if isinstance(_row, dict) else getattr(_row, "h30_alt3_correct", None)
-                                        # Variant priority on verification: alt3 > alt2
+                                        if _a2d and _a2c is not None:
+                                            signal_lifecycle.record_verification(f"{_sym}#alt2", correct=bool(_a2c))
                                         if _a3d and _a3c is not None:
-                                            signal_lifecycle.record_verification(_sym, correct=bool(_a3c))
-                                        elif _a2d and _a2c is not None:
-                                            signal_lifecycle.record_verification(_sym, correct=bool(_a2c))
+                                            signal_lifecycle.record_verification(f"{_sym}#alt3", correct=bool(_a3c))
                             except Exception as _lc_exc:
                                 print(f"lifecycle_verify_error: {_lc_exc}")
                 except Exception as vexc:
