@@ -84,6 +84,7 @@ class SignalLifecycleManager:
         self._cooldown_1 = int(os.getenv("SIGNAL_COOLDOWN_1", "30"))  # minutes
         self._cooldown_2 = int(os.getenv("SIGNAL_COOLDOWN_2", "60"))
         self._cooldown_3_mode = os.getenv("SIGNAL_COOLDOWN_3", "session")  # "session" = until next hour
+        self._blacklist_blocking = os.getenv("SIGNAL_BLACKLIST_BLOCKING", "0") == "1"
         self._blacklist_hours = _parse_hours(
             os.getenv("SIGNAL_BLACKLIST_HOURS", ",".join(str(h) for h in sorted(BLACKLIST_HOURS_DEFAULT)))
         )
@@ -97,6 +98,7 @@ class SignalLifecycleManager:
         logger.info(
             f"SignalLifecycleManager init: enabled={self._enabled} "
             f"cooldowns={self._cooldown_1}/{self._cooldown_2}/{self._cooldown_3_mode}min "
+            f"blacklist_blocking={self._blacklist_blocking} "
             f"blacklist_hours={sorted(self._blacklist_hours)} "
             f"supabase={'yes' if self._supabase else 'no'}"
         )
@@ -138,7 +140,7 @@ class SignalLifecycleManager:
 
         # Check 1: Blacklist hours
         is_bl, hour = self.is_blacklisted_hour(now)
-        if is_bl:
+        if is_bl and self._blacklist_blocking:
             return False, f"blacklist_hour:{hour:02d}"
 
         state = self._get_state(symbol)
@@ -253,6 +255,7 @@ class SignalLifecycleManager:
             "current_hour_utc": current_hour,
             "is_blacklisted_hour": is_bl,
             "blacklist_hours": sorted(self._blacklist_hours),
+            "blacklist_blocking": self._blacklist_blocking,
             "cooldown_config": {
                 "streak_1": self._cooldown_1,
                 "streak_2": self._cooldown_2,
@@ -377,7 +380,7 @@ class SignalLifecycleManager:
         """Get simple status string for a symbol: ready/pending/cooldown/blacklisted."""
         now = datetime.now(timezone.utc)
         is_bl, _ = self.is_blacklisted_hour(now)
-        if is_bl:
+        if is_bl and self._blacklist_blocking:
             return "blacklisted"
         state = self._get_state(symbol)
         if state.pending_direction:
