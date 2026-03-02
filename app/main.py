@@ -1736,7 +1736,9 @@ def main():
 
     # Telegram notifications for binary signals
     tg_notifier = TelegramNotifier()
-    tg_notify_lost = os.getenv("TG_NOTIFY_LOST_SIGNALS", "1") != "0"
+    # If TG_ALT_ONLY=1 (default), send only Alt2/Alt3 alerts.
+    tg_alt_only = os.getenv("TG_ALT_ONLY", "1") != "0"
+    tg_notify_lost = (os.getenv("TG_NOTIFY_LOST_SIGNALS", "1") != "0") and not tg_alt_only
     # Track trading hours transitions
     _prev_in_trading_hours: Optional[bool] = None
     # Trading hours for notifications (same as quality filter)
@@ -2147,23 +2149,24 @@ def main():
                                 _prev_passed_set = current_passed_set
 
                                 # Trading hours transition notifications
-                                in_hours_now = current_hour in _tg_trading_hours
-                                if _prev_in_trading_hours is not None and in_hours_now != _prev_in_trading_hours:
-                                    try:
-                                        if in_hours_now:
-                                            tg_notifier.notify_trading_hours_start(current_hour)
-                                        else:
-                                            tg_notifier.notify_trading_hours_end(current_hour)
-                                            # Send daily report when session ends
-                                            # hour=12 = after morning session, hour=20 = after evening session
-                                            if current_hour == 20 or current_hour == 12:
-                                                try:
-                                                    tg_notifier.notify_daily_report(db.client)
-                                                except Exception as dr_exc:
-                                                    print(f"tg_daily_report_error: {dr_exc}")
-                                    except Exception as tg_exc:
-                                        print(f"tg_hours_notify_error: {tg_exc}")
-                                _prev_in_trading_hours = in_hours_now
+                                if not tg_alt_only:
+                                    in_hours_now = current_hour in _tg_trading_hours
+                                    if _prev_in_trading_hours is not None and in_hours_now != _prev_in_trading_hours:
+                                        try:
+                                            if in_hours_now:
+                                                tg_notifier.notify_trading_hours_start(current_hour)
+                                            else:
+                                                tg_notifier.notify_trading_hours_end(current_hour)
+                                                # Send daily report when session ends
+                                                # hour=12 = after morning session, hour=20 = after evening session
+                                                if current_hour == 20 or current_hour == 12:
+                                                    try:
+                                                        tg_notifier.notify_daily_report(db.client)
+                                                    except Exception as dr_exc:
+                                                        print(f"tg_daily_report_error: {dr_exc}")
+                                        except Exception as tg_exc:
+                                            print(f"tg_hours_notify_error: {tg_exc}")
+                                    _prev_in_trading_hours = in_hours_now
                 except Exception as exc:
                     print(f"forecast_error: {exc}")
                 last_forecast_tick = now_ts
