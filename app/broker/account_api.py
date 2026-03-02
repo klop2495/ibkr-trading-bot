@@ -6,11 +6,9 @@ Provides real-time account data from IB Gateway for the frontend dashboard.
 
 import os
 import logging
-import asyncio
 from datetime import datetime, timezone
-from threading import Lock, Thread
+from threading import Lock
 from typing import Optional, Dict, Any, List
-from queue import Queue
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +23,8 @@ class BrokerAccountAPI:
         self._cached_data: Optional[Dict[str, Any]] = None
         self._cache_ttl_seconds = 5
         self._lock = Lock()
+        self._ib = None
+        self._idle_disconnect_seconds = int(os.getenv("IB_ACCOUNT_API_IDLE_DISCONNECT_SECONDS", "180"))
     
     def get_account_data(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Get comprehensive account data from IB Gateway."""
@@ -61,106 +61,98 @@ class BrokerAccountAPI:
                 self._last_fetch = None
             
             return result
+
+    def _disconnect_ib(self) -> None:
+        """Disconnect persistent IB client safely."""
+        try:
+            if self._ib and self._ib.isConnected():
+                self._ib.disconnect()
+        except Exception:
+            pass
+
+    def _ensure_connected(self):
+        """
+        Keep a persistent readonly client for dashboard polling.
+        This avoids connect/disconnect on every request and reduces gateway flapping.
+        """
+        from ib_insync import IB
+
+        now = datetime.now(timezone.utc)
+        if (
+            self._ib
+            and self._ib.isConnected()
+            and self._last_fetch
+            and (now - self._last_fetch).total_seconds() > self._idle_disconnect_seconds
+        ):
+            self._disconnect_ib()
+            self._ib = None
+
+        if self._ib and self._ib.isConnected():
+            return self._ib
+
+        host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
+        port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
+        client_id = int(os.getenv("IB_CLIENT_ID_BROKER_API", "160"))
+
+        ib = IB()
+        ib.connect(host, port, clientId=client_id, timeout=10, readonly=True)
+        if not ib.isConnected():
+            raise RuntimeError("ib_not_connected")
+
+        logger.info(f"BrokerAccountAPI: Connected to {host}:{port} clientId={client_id}")
+        self._ib = ib
+        return ib
     
     def _fetch_sync(self) -> Dict[str, Any]:
-        """Fetch from IB using a separate thread with its own event loop."""
-        result_queue: Queue = Queue()
-        
-        def worker():
-            # Create fresh event loop for this thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            try:
-                from ib_insync import IB
-                
-                host = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
-                port = int(os.getenv("IB_GATEWAY_PORT", "4004"))
-                client_id = int(os.getenv("IB_CLIENT_ID_BROKER_API", "160"))
-                
-                ib = IB()
-                
-                try:
-                    # Run connect in the thread's event loop
-                    loop.run_until_complete(
-                        ib.connectAsync(host, port, clientId=client_id, timeout=10, readonly=True)
-                    )
-                    
-                    if not ib.isConnected():
-                        result_queue.put(self._get_disconnected_response())
-                        return
-                    
-                    logger.info(f"BrokerAccountAPI: Connected to {host}:{port}")
-                    
-                    # Fetch data - these are sync when event loop is running
-                    account_summary = ib.accountSummary()
-                    positions = ib.positions()
-                    orders = ib.openOrders()
-                    
-                    # Parse
-                    account_values = self._parse_account_summary(account_summary)
-                    parsed_positions = self._parse_positions(positions)
-                    parsed_orders = self._parse_orders(orders)
-                    
-                    now = datetime.now(timezone.utc)
-                    
-                    result_queue.put({
-                        "account": {
-                            "accountId": account_values.get("account_id", "Unknown"),
-                            "accountType": account_values.get("account_type", "MARGIN"),
-                            "currency": account_values.get("currency", "USD"),
-                            "equity": account_values.get("net_liquidation", 0),
-                            "availableFunds": account_values.get("available_funds", 0),
-                            "buyingPower": account_values.get("buying_power", 0),
-                            "marginUsed": account_values.get("margin_used", 0),
-                            "marginAvailable": account_values.get("margin_available", 0),
-                            "unrealizedPnl": account_values.get("unrealized_pnl", 0),
-                            "dailyPnl": account_values.get("daily_pnl", 0),
-                            "leverage": account_values.get("leverage", 0),
-                            "connected": True,
-                            "lastUpdate": now.isoformat(),
-                        },
-                        "connection": {
-                            "ibGateway": "connected",
-                            "dataFeed": "live",
-                            "tradingEnabled": True,
-                            "mode": "paper" if "DU" in account_values.get("account_id", "") else "live",
-                            "lastHeartbeat": now.isoformat(),
-                        },
-                        "positions": parsed_positions,
-                        "orders": parsed_orders,
-                        "openPositions": len(parsed_positions),
-                        "pendingOrders": len(parsed_orders),
-                    })
-                    
-                except Exception as e:
-                    logger.error(f"BrokerAccountAPI IB error: {e}")
-                    result_queue.put(self._get_disconnected_response())
-                finally:
-                    try:
-                        if ib.isConnected():
-                            ib.disconnect()
-                    except:
-                        pass
-            except Exception as e:
-                logger.error(f"BrokerAccountAPI worker error: {e}")
-                result_queue.put(self._get_disconnected_response())
-            finally:
-                try:
-                    loop.close()
-                except:
-                    pass
-        
-        # Run in separate thread
-        thread = Thread(target=worker, daemon=True)
-        thread.start()
-        thread.join(timeout=15)
-        
-        if result_queue.empty():
-            logger.error("BrokerAccountAPI: Timeout waiting for IB data")
+        """Fetch from persistent IB client."""
+        try:
+            ib = self._ensure_connected()
+
+            account_summary = ib.accountSummary()
+            positions = ib.positions()
+            orders = ib.openOrders()
+            executions = ib.reqExecutions()
+
+            account_values = self._parse_account_summary(account_summary)
+            parsed_positions = self._parse_positions(positions)
+            parsed_orders = self._parse_orders(orders)
+            parsed_executions = self._parse_executions(executions)
+
+            now = datetime.now(timezone.utc)
+            return {
+                "account": {
+                    "accountId": account_values.get("account_id", "Unknown"),
+                    "accountType": account_values.get("account_type", "MARGIN"),
+                    "currency": account_values.get("currency", "USD"),
+                    "equity": account_values.get("net_liquidation", 0),
+                    "availableFunds": account_values.get("available_funds", 0),
+                    "buyingPower": account_values.get("buying_power", 0),
+                    "marginUsed": account_values.get("margin_used", 0),
+                    "marginAvailable": account_values.get("margin_available", 0),
+                    "unrealizedPnl": account_values.get("unrealized_pnl", 0),
+                    "dailyPnl": account_values.get("daily_pnl", 0),
+                    "leverage": account_values.get("leverage", 0),
+                    "connected": True,
+                    "lastUpdate": now.isoformat(),
+                },
+                "connection": {
+                    "ibGateway": "connected",
+                    "dataFeed": "live",
+                    "tradingEnabled": True,
+                    "mode": "paper" if "DU" in account_values.get("account_id", "") else "live",
+                    "lastHeartbeat": now.isoformat(),
+                },
+                "positions": parsed_positions,
+                "orders": parsed_orders,
+                "executions": parsed_executions,
+                "openPositions": len(parsed_positions),
+                "pendingOrders": len(parsed_orders),
+            }
+        except Exception as e:
+            logger.error(f"BrokerAccountAPI IB error: {e}")
+            self._disconnect_ib()
+            self._ib = None
             return self._get_disconnected_response()
-        
-        return result_queue.get()
     
     def _parse_positions(self, positions) -> List[Dict[str, Any]]:
         result = []
@@ -278,9 +270,45 @@ class BrokerAccountAPI:
             },
             "positions": [],
             "orders": [],
+            "executions": [],
             "openPositions": 0,
             "pendingOrders": 0,
         }
+
+    def _parse_executions(self, executions: List[Any]) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        for fill in executions or []:
+            contract = getattr(fill, "contract", None)
+            exec_obj = getattr(fill, "execution", None) or fill
+            if contract and getattr(contract, "secType", "") == "CASH":
+                symbol = f"{getattr(contract, 'symbol', '')}{getattr(contract, 'currency', '')}".upper()
+            else:
+                symbol = getattr(contract, "symbol", "") if contract else ""
+
+            exec_time = getattr(exec_obj, "time", None)
+            if isinstance(exec_time, datetime):
+                if exec_time.tzinfo is None:
+                    exec_time = exec_time.replace(tzinfo=timezone.utc)
+                exec_time_iso = exec_time.astimezone(timezone.utc).isoformat()
+            else:
+                exec_time_iso = str(exec_time) if exec_time is not None else None
+
+            result.append({
+                "execId": str(getattr(exec_obj, "execId", "") or ""),
+                "orderId": getattr(exec_obj, "orderId", None),
+                "permId": getattr(exec_obj, "permId", None),
+                "symbol": symbol or "UNKNOWN",
+                "secType": getattr(contract, "secType", "") if contract else "",
+                "side": str(getattr(exec_obj, "side", "") or ""),
+                "shares": float(getattr(exec_obj, "shares", 0) or 0),
+                "price": float(getattr(exec_obj, "price", 0) or 0),
+                "avgPrice": float(getattr(exec_obj, "avgPrice", 0) or 0),
+                "currency": getattr(contract, "currency", "") if contract else "",
+                "time": exec_time_iso,
+            })
+
+        result.sort(key=lambda x: x.get("time") or "", reverse=True)
+        return result[:20]
 
 
 _broker_api: Optional[BrokerAccountAPI] = None
