@@ -27,6 +27,7 @@ class TelegramNotifier:
         raw_ids = chat_ids or (os.getenv("TG_ALLOWED_CHAT_IDS", "")).split(",")
         self.chat_ids = [cid.strip() for cid in raw_ids if cid.strip()]
         self.web_base_url = (web_base_url or os.getenv("WEB_PUBLIC_BASE_URL", "")).rstrip("/")
+        self.alt_only = os.getenv("TG_ALT_ONLY", "1") != "0"
         self.enabled = enabled and bool(self.bot_token) and bool(self.chat_ids)
         self._last_error: Optional[str] = None
 
@@ -98,6 +99,8 @@ class TelegramNotifier:
         horizon details, and advanced filter indicators.
         Only quality-confirmed signals are sent.
         """
+        if self.alt_only:
+            return 0
         if not self.enabled or not new_signals:
             return 0
 
@@ -238,6 +241,8 @@ class TelegramNotifier:
 
     def notify_lost_signals(self, lost_signals: Set[str]) -> int:
         """Send notification when signals are lost (optional, less urgent)."""
+        if self.alt_only:
+            return 0
         if not self.enabled or not lost_signals:
             return 0
 
@@ -255,6 +260,8 @@ class TelegramNotifier:
 
     def notify_trading_hours_start(self, hour: int) -> int:
         """Notify when trading hours window opens."""
+        if self.alt_only:
+            return 0
         if not self.enabled:
             return 0
 
@@ -270,6 +277,8 @@ class TelegramNotifier:
 
     def notify_trading_hours_end(self, hour: int) -> int:
         """Notify when trading hours window closes."""
+        if self.alt_only:
+            return 0
         if not self.enabled:
             return 0
 
@@ -292,6 +301,8 @@ class TelegramNotifier:
         - Squeeze correlation
         - Top/worst performing pairs
         """
+        if self.alt_only:
+            return 0
         if not self.enabled or not db_client:
             return 0
 
