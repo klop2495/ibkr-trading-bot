@@ -47,7 +47,7 @@ def _parse_hours(env_val: str) -> Set[int]:
 class SignalState:
     """State for a single symbol's signal lifecycle."""
     __slots__ = (
-        "symbol", "pending_direction", "pending_ts",
+        "symbol", "pending_direction", "pending_ts", "pending_row_id",
         "miss_streak", "cooldown_until", "last_verified_ts",
         "last_result",
     )
@@ -56,6 +56,7 @@ class SignalState:
         self.symbol = symbol
         self.pending_direction: Optional[str] = None  # "up" / "down" / None
         self.pending_ts: Optional[datetime] = None     # when signal was created
+        self.pending_row_id: Optional[str] = None      # forecast row id this pending belongs to
         self.miss_streak: int = 0                       # consecutive misses
         self.cooldown_until: Optional[datetime] = None  # blocked until this time
         self.last_verified_ts: Optional[datetime] = None
@@ -84,6 +85,7 @@ class SignalLifecycleManager:
         self._cooldown_1 = int(os.getenv("SIGNAL_COOLDOWN_1", "30"))  # minutes
         self._cooldown_2 = int(os.getenv("SIGNAL_COOLDOWN_2", "60"))
         self._cooldown_3_mode = os.getenv("SIGNAL_COOLDOWN_3", "session")  # "session" = until next hour
+        self._pending_min_verify_min = int(os.getenv("SIGNAL_PENDING_MIN_VERIFY_MIN", "30"))
         self._blacklist_blocking = os.getenv("SIGNAL_BLACKLIST_BLOCKING", "0") == "1"
         self._blacklist_hours = _parse_hours(
             os.getenv("SIGNAL_BLACKLIST_HOURS", ",".join(str(h) for h in sorted(BLACKLIST_HOURS_DEFAULT)))
@@ -167,28 +169,60 @@ class SignalLifecycleManager:
 
         return True, None
 
-    def record_signal(self, symbol: str, direction: str, now: Optional[datetime] = None) -> None:
+    def record_signal(
+        self,
+        symbol: str,
+        direction: str,
+        now: Optional[datetime] = None,
+        row_id: Optional[str] = None,
+    ) -> None:
         """Record that a new signal has been emitted for this symbol."""
         if now is None:
             now = datetime.now(timezone.utc)
         state = self._get_state(symbol)
         state.pending_direction = direction
         state.pending_ts = now
-        logger.info(f"lifecycle_signal_recorded {symbol} dir={direction}")
+        state.pending_row_id = str(row_id) if row_id is not None else None
+        logger.info(
+            f"lifecycle_signal_recorded {symbol} dir={direction} row_id={state.pending_row_id or '-'}"
+        )
         self.persist_to_supabase()
 
     def record_verification(
-        self, symbol: str, correct: bool, now: Optional[datetime] = None,
+        self,
+        symbol: str,
+        correct: bool,
+        now: Optional[datetime] = None,
+        row_id: Optional[str] = None,
     ) -> None:
         """Record verification result and apply cooldown if needed."""
         if now is None:
             now = datetime.now(timezone.utc)
         state = self._get_state(symbol)
+        if state.pending_direction is None or state.pending_ts is None:
+            return
+
+        # Ignore mismatched row feedback: only the exact pending row can close pending.
+        if row_id is not None and state.pending_row_id and str(row_id) != state.pending_row_id:
+            logger.info(
+                f"lifecycle_verify_ignored_row_mismatch {symbol} pending_row={state.pending_row_id} got={row_id}"
+            )
+            return
+
+        # Guard against too-early verification feedback.
+        pending_age_min = (now - state.pending_ts).total_seconds() / 60
+        if pending_age_min < self._pending_min_verify_min:
+            logger.info(
+                f"lifecycle_verify_ignored_too_early {symbol} age={pending_age_min:.1f}m "
+                f"min={self._pending_min_verify_min}m row_id={row_id or '-'}"
+            )
+            return
 
         state.last_verified_ts = now
         state.last_result = correct
         state.pending_direction = None
         state.pending_ts = None
+        state.pending_row_id = None
 
         if correct:
             # Reset streak on success
@@ -241,6 +275,7 @@ class SignalLifecycleManager:
             symbols_status[sym] = {
                 "status": status,
                 "pending_direction": state.pending_direction,
+                "pending_row_id": state.pending_row_id,
                 "pending_ts": state.pending_ts.isoformat() if state.pending_ts else None,
                 "pending_age_min": round((now - state.pending_ts).total_seconds() / 60, 1) if state.pending_ts else None,
                 "miss_streak": state.miss_streak,
@@ -260,6 +295,7 @@ class SignalLifecycleManager:
                 "streak_1": self._cooldown_1,
                 "streak_2": self._cooldown_2,
                 "streak_3": self._cooldown_3_mode,
+                "pending_min_verify_min": self._pending_min_verify_min,
             },
             "symbols": symbols_status,
             "summary": {
@@ -302,6 +338,9 @@ class SignalLifecycleManager:
                     state.pending_ts = parsed_pending_ts
                 elif isinstance(pending_age, (int, float)):
                     state.pending_ts = now - timedelta(minutes=float(pending_age))
+                pending_row_id = row.get("pending_row_id")
+                if pending_row_id is not None:
+                    state.pending_row_id = str(pending_row_id)
 
             miss_streak = row.get("miss_streak")
             if isinstance(miss_streak, int) and miss_streak >= 0:

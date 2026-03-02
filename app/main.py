@@ -2014,8 +2014,6 @@ def main():
                                     if not _ok2:
                                         setattr(fc, "h30_alt2_direction", None)
                                         _lc_blocked += 1
-                                    else:
-                                        signal_lifecycle.record_signal(_key2, _alt2_dir, _lc_now)
 
                                 if _alt3_dir:
                                     _key3 = f"{fc.symbol}#alt3"
@@ -2023,8 +2021,6 @@ def main():
                                     if not _ok3:
                                         setattr(fc, "h30_alt3_direction", None)
                                         _lc_blocked += 1
-                                    else:
-                                        signal_lifecycle.record_signal(_key3, _alt3_dir, _lc_now)
                             if _lc_blocked > 0:
                                 print(f"lifecycle_filter blocked={_lc_blocked}")
 
@@ -2035,6 +2031,37 @@ def main():
                             trigger_type = "bar" if new_bar_detected else "timer"
                             if fc_count > 0:
                                 print(f"forecast generated={fc_count} aligned={aligned}/{len(forecasts)} trigger={trigger_type}")
+                                # Mark pending only for rows that were actually inserted.
+                                if signal_lifecycle.enabled:
+                                    _fc_data = fc_result.get("data") or []
+                                    for _row in _fc_data:
+                                        if not isinstance(_row, dict):
+                                            continue
+                                        _sym = str(_row.get("symbol") or "").upper()
+                                        _rid = _row.get("id")
+                                        _ts_raw = _row.get("ts_utc")
+                                        _ts = datetime.now(timezone.utc)
+                                        if isinstance(_ts_raw, str):
+                                            try:
+                                                _ts = datetime.fromisoformat(_ts_raw.replace("Z", "+00:00"))
+                                            except Exception:
+                                                pass
+                                        _d2 = _row.get("h30_alt2_direction")
+                                        _d3 = _row.get("h30_alt3_direction")
+                                        if _sym and _d2:
+                                            signal_lifecycle.record_signal(
+                                                f"{_sym}#alt2",
+                                                _d2,
+                                                now=_ts,
+                                                row_id=str(_rid) if _rid is not None else None,
+                                            )
+                                        if _sym and _d3:
+                                            signal_lifecycle.record_signal(
+                                                f"{_sym}#alt3",
+                                                _d3,
+                                                now=_ts,
+                                                row_id=str(_rid) if _rid is not None else None,
+                                            )
                             # Update forecast gate cache
                             if execution_service and execution_service.forecast_gate:
                                 execution_service.forecast_gate.update_forecasts_batch(forecasts)
@@ -2211,7 +2238,12 @@ def main():
                                     if not _sym:
                                         continue
                                     _correct = bool(getattr(_av, "correct", False))
-                                    signal_lifecycle.record_verification(f"{_sym}#{_variant}", correct=_correct)
+                                    _row_id = getattr(_av, "row_id", None)
+                                    signal_lifecycle.record_verification(
+                                        f"{_sym}#{_variant}",
+                                        correct=_correct,
+                                        row_id=str(_row_id) if _row_id is not None else None,
+                                    )
                             except Exception as _lc_exc:
                                 print(f"lifecycle_verify_error: {_lc_exc}")
                 except Exception as vexc:
