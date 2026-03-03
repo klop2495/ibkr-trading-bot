@@ -2070,9 +2070,15 @@ def main():
                             if execution_service and execution_service.forecast_gate:
                                 execution_service.forecast_gate.update_forecasts_batch(forecasts)
 
-                            # Alt2/Alt3 Telegram notifications — only when forecasts actually written to DB
+                            # Alt2/Alt3 Telegram notifications — only for RECOMMENDED signals.
+                            # Recommended policy:
+                            # - timestamp is inside FORECAST_RECOMMENDED_WINDOWS_UTC
+                            # - Alt2: h30_alt2_trade_eligible == True
+                            # - Alt3: strategy already strict; lifecycle block already removed above
+                            # Fail-closed: if windows are missing/invalid, nothing is sent.
                             if fc_count > 0:
                                 try:
+                                    from app.forecast.recommended_windows import classify_utc_timestamp
                                     # Get symbols that were actually inserted (not deduped)
                                     _inserted_syms = set()
                                     _fc_data = fc_result.get("data")
@@ -2085,9 +2091,14 @@ def main():
                                         # Only notify for freshly inserted forecasts
                                         if _inserted_syms and fc.symbol not in _inserted_syms:
                                             continue
+                                        _in_window, _window_label, _, _ = classify_utc_timestamp(fc.ts_utc.isoformat())
+                                        if not _in_window:
+                                            continue
                                         for strat, attr in [("alt2", "h30_alt2_direction"), ("alt3", "h30_alt3_direction")]:
                                             alt_dir = getattr(fc, attr, None)
                                             if alt_dir:
+                                                if strat == "alt2" and not bool(getattr(fc, "h30_alt2_trade_eligible", False)):
+                                                    continue
                                                 import json as _json
                                                 _votes = None
                                                 if fc.h30_votes_json:
