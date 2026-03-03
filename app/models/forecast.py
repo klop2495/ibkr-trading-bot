@@ -93,6 +93,11 @@ class ForecastResult(BaseModel):
     h30_alt3v2_score: Optional[float] = None
     h30_alt3v2_meta_json: Optional[dict] = None
 
+    # Alt4: hybrid strategy (hour-based original/inverted mode)
+    h30_alt4_direction: Optional[str] = None
+    h30_alt4_correct: Optional[bool] = None
+    h30_alt4_trade_eligible: Optional[bool] = None
+
     # Volatility regime filter (Phase 3 — BBW toxic band detection)
     vol_regime_blocked: Optional[bool] = None   # True if BBW in toxic band
     vol_regime_reason: Optional[str] = None     # e.g. "TOXIC_BBW_BAND"
@@ -190,4 +195,8 @@ class ForecastResult(BaseModel):
                 row["h30_alt3v2_score"] = round(self.h30_alt3v2_score, 4)
             if self.h30_alt3v2_meta_json is not None:
                 row["h30_alt3v2_meta_json"] = self.h30_alt3v2_meta_json
+        # Alt4: hour-based original/inverted strategy
+        if self.h30_alt4_direction is not None:
+            row["h30_alt4_direction"] = self.h30_alt4_direction
+            row["h30_alt4_trade_eligible"] = bool(self.h30_alt4_trade_eligible)
         return row

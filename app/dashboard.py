@@ -861,12 +861,26 @@ async def get_forecasts_history(
         enriched_rows = []
         for row in rows:
             in_window, matched_window, hour_utc, minute_utc = classify_utc_timestamp(str(row.get("ts_utc") or ""))
-            lifecycle = lifecycle_symbols.get(f"{row.get('symbol')}#alt2") or lifecycle_symbols.get(row.get("symbol"))
-            lifecycle_status = str((lifecycle or {}).get("status") or "").lower()
-            lifecycle_blocked = lifecycle_status in {"pending", "cooldown", "blacklisted"}
             has_alt2 = row.get("h30_alt2_direction") is not None
-            trade_eligible = bool(row.get("h30_alt2_trade_eligible"))
-            recommended = bool(in_window and has_alt2 and trade_eligible and not lifecycle_blocked)
+            has_alt3 = row.get("h30_alt3v2_direction") is not None or row.get("h30_alt3_direction") is not None
+            has_alt4 = row.get("h30_alt4_direction") is not None
+
+            lifecycle_alt2 = lifecycle_symbols.get(f"{row.get('symbol')}#alt2") or lifecycle_symbols.get(row.get("symbol"))
+            lifecycle_alt3 = lifecycle_symbols.get(f"{row.get('symbol')}#alt3v2") or lifecycle_symbols.get(f"{row.get('symbol')}#alt3")
+            lifecycle_alt4 = lifecycle_symbols.get(f"{row.get('symbol')}#alt4")
+            lifecycle_status_alt2 = str((lifecycle_alt2 or {}).get("status") or "").lower()
+            lifecycle_status_alt3 = str((lifecycle_alt3 or {}).get("status") or "").lower()
+            lifecycle_status_alt4 = str((lifecycle_alt4 or {}).get("status") or "").lower()
+            lifecycle_blocked_alt2 = lifecycle_status_alt2 in {"pending", "cooldown", "blacklisted"}
+            lifecycle_blocked_alt3 = lifecycle_status_alt3 in {"pending", "cooldown", "blacklisted"}
+            lifecycle_blocked_alt4 = lifecycle_status_alt4 in {"pending", "cooldown", "blacklisted"}
+
+            alt2_trade_eligible = bool(row.get("h30_alt2_trade_eligible"))
+            alt4_trade_eligible = bool(row.get("h30_alt4_trade_eligible"))
+            recommended_alt2 = bool(in_window and has_alt2 and alt2_trade_eligible and not lifecycle_blocked_alt2)
+            recommended_alt3 = bool(in_window and has_alt3 and not lifecycle_blocked_alt3)
+            recommended_alt4 = bool(in_window and has_alt4 and alt4_trade_eligible and not lifecycle_blocked_alt4)
+            recommended = bool(recommended_alt2 or recommended_alt3 or recommended_alt4)
             orig_badge, orig_effective = classify_with_effective(row.get("h30_direction"), hour_utc)
             row2 = {
                 **row,
@@ -874,6 +888,9 @@ async def get_forecasts_history(
                 "hour_minute_utc": minute_utc,
                 "matched_window_utc": matched_window,
                 "recommended_window": recommended,
+                "recommended_alt2": recommended_alt2,
+                "recommended_alt3": recommended_alt3,
+                "recommended_alt4": recommended_alt4,
                 "window_status": "recommended" if recommended else "info_only",
                 "h30_original_mode": orig_badge,
                 "h30_original_effective_direction": orig_effective,
@@ -921,6 +938,26 @@ async def get_forecasts_history(
                 "verified": len(alt3_all_verified),
                 "correct": alt3_all_correct,
                 "accuracy": _acc(alt3_all_correct, len(alt3_all_verified)),
+            },
+        }
+        alt4_all = [r for r in enriched_rows if r.get("h30_alt4_direction") is not None]
+        alt4_all_verified = [r for r in alt4_all if r.get("h30_alt4_correct") is not None]
+        alt4_all_correct = sum(1 for r in alt4_all_verified if bool(r.get("h30_alt4_correct")))
+        alt4_eligible = [r for r in alt4_all if bool(r.get("h30_alt4_trade_eligible"))]
+        alt4_eligible_verified = [r for r in alt4_eligible if r.get("h30_alt4_correct") is not None]
+        alt4_eligible_correct = sum(1 for r in alt4_eligible_verified if bool(r.get("h30_alt4_correct")))
+        result["alt4_stats"] = {
+            "all": {
+                "total": len(alt4_all),
+                "verified": len(alt4_all_verified),
+                "correct": alt4_all_correct,
+                "accuracy": _acc(alt4_all_correct, len(alt4_all_verified)),
+            },
+            "trade_eligible": {
+                "total": len(alt4_eligible),
+                "verified": len(alt4_eligible_verified),
+                "correct": alt4_eligible_correct,
+                "accuracy": _acc(alt4_eligible_correct, len(alt4_eligible_verified)),
             },
         }
         result["rows"] = enriched_rows

@@ -10,6 +10,7 @@ Gate-based pair filtering is more effective than weight tuning.
 """
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -78,6 +79,22 @@ class ForecastEngine:
 
     def __init__(self):
         self._warn_logged: Dict[str, bool] = {}
+        self._alt4_original_hours = self._parse_hour_set(
+            os.getenv("ALT4_ORIGINAL_HOURS", "9,10,19"),
+            default={9, 10, 19},
+        )
+        self._alt4_inverted_hours = self._parse_hour_set(
+            os.getenv("ALT4_INVERTED_HOURS", "15,20,21,22"),
+            default={15, 20, 21, 22},
+        )
+        self._alt4_exclude_symbols = self._parse_csv_set(
+            os.getenv("ALT4_EXCLUDE_SYMBOLS", "CADJPY,EURJPY,CHFJPY,GBPJPY,EURGBP,EURCHF"),
+            upper=True,
+        )
+        self._alt4_eligible_confidence = self._parse_csv_set(
+            os.getenv("ALT4_ELIGIBLE_CONFIDENCE", "medium,high"),
+            lower=True,
+        )
 
     def compute_all(
         self,
@@ -204,6 +221,14 @@ class ForecastEngine:
         _alt3v2_dir, _alt3v2_eligible, _alt3v2_score, _alt3v2_meta = self._compute_alt3v2_signal(
             symbol, h30_votes_json, adx_value
         )
+        _h30_direction = h30_horizon.direction.value if h30_horizon else None
+        _h30_confidence = h30_horizon.confidence.value if h30_horizon else None
+        _alt4_dir, _alt4_eligible = self._compute_alt4_signal(
+            symbol=symbol,
+            h30_direction=_h30_direction,
+            h30_confidence=_h30_confidence,
+            ts_utc=ts,
+        )
         return ForecastResult(
             ts_utc=ts,
             symbol=symbol,
@@ -227,6 +252,8 @@ class ForecastEngine:
             h30_alt3v2_trade_eligible=_alt3v2_eligible,
             h30_alt3v2_score=_alt3v2_score,
             h30_alt3v2_meta_json=_alt3v2_meta,
+            h30_alt4_direction=_alt4_dir,
+            h30_alt4_trade_eligible=_alt4_eligible,
         )
 
     def _compute_horizon(
@@ -444,6 +471,30 @@ class ForecastEngine:
         }
         return direction, trade_eligible, score, meta
 
+    def _compute_alt4_signal(
+        self,
+        symbol: str,
+        h30_direction: Optional[str],
+        h30_confidence: Optional[str],
+        ts_utc: datetime,
+    ) -> Tuple[Optional[str], Optional[bool]]:
+        """Alt4 hybrid signal: hour-based original/inverted direction + eligibility."""
+        if h30_direction is None or h30_direction == "neutral":
+            return None, None
+        hour = ts_utc.hour
+        if hour in self._alt4_original_hours:
+            alt4_direction = h30_direction
+        elif hour in self._alt4_inverted_hours:
+            alt4_direction = "down" if h30_direction == "up" else "up"
+        else:
+            return None, None
+        eligible = True
+        if symbol.upper() in self._alt4_exclude_symbols:
+            eligible = False
+        if (h30_confidence or "").lower() not in self._alt4_eligible_confidence:
+            eligible = False
+        return alt4_direction, eligible
+
     @staticmethod
     def _compute_alt2_trade_eligible(votes: Optional[Dict[str, int]], alt2_direction: Optional[str]) -> Optional[bool]:
         """Soft execution filter for Alt2.
@@ -459,6 +510,35 @@ class ForecastEngine:
         if ma == 0 or mom == 0:
             return False
         return bool(mom == ma)
+
+    @staticmethod
+    def _parse_hour_set(raw: str, default: set[int]) -> set[int]:
+        vals: set[int] = set()
+        for part in (raw or "").split(","):
+            p = part.strip()
+            if not p:
+                continue
+            try:
+                h = int(p)
+                if 0 <= h <= 23:
+                    vals.add(h)
+            except Exception:
+                continue
+        return vals or set(default)
+
+    @staticmethod
+    def _parse_csv_set(raw: str, *, upper: bool = False, lower: bool = False) -> set[str]:
+        vals: set[str] = set()
+        for part in (raw or "").split(","):
+            p = part.strip()
+            if not p:
+                continue
+            if upper:
+                p = p.upper()
+            if lower:
+                p = p.lower()
+            vals.add(p)
+        return vals
 
     def _compute_alt_scoring(self, votes: Dict[str, int]) -> Tuple[Optional[str], Optional[float]]:
         """Compute alternative direction using inverted contrarian weights (A/B test)."""

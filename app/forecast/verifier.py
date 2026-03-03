@@ -22,7 +22,7 @@ HORIZON_PREFIXES = {30: "h30", 60: "h60", 240: "h240", 1440: "h1440"}
 class AltVerified:
     row_id: str
     symbol: str
-    variant: str  # "alt2" | "alt3" | "alt3v2"
+    variant: str  # "alt2" | "alt3" | "alt3v2" | "alt4"
     correct: bool
     ts_utc: str
 
@@ -127,7 +127,7 @@ class ForecastVerifier:
                 .select("id, ts_utc, symbol, base_price, "
                         "h30_direction, h60_direction, h240_direction, h1440_direction, "
                         "h30_correct, h60_correct, h240_correct, h1440_correct, "
-                        "h30_alt_direction, h30_alt2_direction, h30_alt3_direction, h30_alt3v2_direction")
+                        "h30_alt_direction, h30_alt2_direction, h30_alt3_direction, h30_alt3v2_direction, h30_alt4_direction")
                 .is_("verified_at", "null")
                 .lte("ts_utc", cutoff.isoformat())
                 .order("ts_utc", desc=False)
@@ -233,7 +233,8 @@ class ForecastVerifier:
                     alt2_dir = row.get("h30_alt2_direction")
                     alt3_dir = row.get("h30_alt3_direction")
                     alt3v2_dir = row.get("h30_alt3v2_direction")
-                    if alt2_dir or alt3_dir or alt3v2_dir:
+                    alt4_dir = row.get("h30_alt4_direction")
+                    if alt2_dir or alt3_dir or alt3v2_dir or alt4_dir:
                         # Need actual price to determine actual_dir
                         _actual_price = self._get_historical_price(symbol, horizon_end)
                         if _actual_price is None:
@@ -252,6 +253,8 @@ class ForecastVerifier:
                                 update_data["h30_alt3_correct"] = (alt3_dir == _adir)
                             if alt3v2_dir and alt3v2_dir != "neutral":
                                 update_data["h30_alt3v2_correct"] = (alt3v2_dir == _adir)
+                            if alt4_dir and alt4_dir != "neutral":
+                                update_data["h30_alt4_correct"] = (alt4_dir == _adir)
                 continue
 
             # Get actual price at horizon end from historical data
@@ -296,6 +299,10 @@ class ForecastVerifier:
                 alt3v2_dir = row.get("h30_alt3v2_direction")
                 if alt3v2_dir and alt3v2_dir != "neutral":
                     update_data["h30_alt3v2_correct"] = (alt3v2_dir == actual_dir)
+                # Alt4: verify independent variant
+                alt4_dir = row.get("h30_alt4_direction")
+                if alt4_dir and alt4_dir != "neutral":
+                    update_data["h30_alt4_correct"] = (alt4_dir == actual_dir)
 
         # Determine if we should force-verify to prevent queue blocking
         age_hours = (now - forecast_ts).total_seconds() / 3600
@@ -322,6 +329,7 @@ class ForecastVerifier:
         alt2_correct = update_data.get("h30_alt2_correct")
         alt3_correct = update_data.get("h30_alt3_correct")
         alt3v2_correct = update_data.get("h30_alt3v2_correct")
+        alt4_correct = update_data.get("h30_alt4_correct")
         if isinstance(alt2_correct, bool) and row.get("h30_alt2_direction") not in (None, "neutral"):
             alt_verified.append(
                 AltVerified(
@@ -349,6 +357,16 @@ class ForecastVerifier:
                     symbol=str(symbol),
                     variant="alt3v2",
                     correct=alt3v2_correct,
+                    ts_utc=ts_out,
+                )
+            )
+        if isinstance(alt4_correct, bool) and row.get("h30_alt4_direction") not in (None, "neutral"):
+            alt_verified.append(
+                AltVerified(
+                    row_id=str(row_id),
+                    symbol=str(symbol),
+                    variant="alt4",
+                    correct=alt4_correct,
                     ts_utc=ts_out,
                 )
             )
