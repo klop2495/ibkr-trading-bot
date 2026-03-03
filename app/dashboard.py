@@ -845,6 +845,7 @@ async def get_forecasts_history(
         )
         rows = result.get("rows") or []
         from app.forecast.recommended_windows import classify_utc_timestamp, get_recommended_window_labels
+        from app.forecast.original_mode import classify_with_effective
 
         lifecycle_symbols = {}
         try:
@@ -866,6 +867,7 @@ async def get_forecasts_history(
             has_alt2 = row.get("h30_alt2_direction") is not None
             trade_eligible = bool(row.get("h30_alt2_trade_eligible"))
             recommended = bool(in_window and has_alt2 and trade_eligible and not lifecycle_blocked)
+            orig_badge, orig_effective = classify_with_effective(row.get("h30_direction"), hour_utc)
             row2 = {
                 **row,
                 "hour_utc": hour_utc,
@@ -873,6 +875,8 @@ async def get_forecasts_history(
                 "matched_window_utc": matched_window,
                 "recommended_window": recommended,
                 "window_status": "recommended" if recommended else "info_only",
+                "h30_original_mode": orig_badge,
+                "h30_original_effective_direction": orig_effective,
             }
             enriched_rows.append(row2)
 
