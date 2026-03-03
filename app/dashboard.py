@@ -829,6 +829,7 @@ async def get_forecasts_history(
     until: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    recommended_only: bool = Query(False, alias="recommendedOnly"),
 ):
     """Get paginated forecast history with filters."""
     db = get_db()
@@ -843,11 +844,45 @@ async def get_forecasts_history(
             offset=offset,
         )
         rows = result.get("rows") or []
+        from app.forecast.recommended_windows import classify_utc_timestamp, get_recommended_window_labels
+
+        lifecycle_symbols = {}
+        try:
+            if _signal_lifecycle_manager is not None:
+                lifecycle_symbols = _signal_lifecycle_manager.get_status().get("symbols", {}) or {}
+            else:
+                from app.forecast.signal_lifecycle import SignalLifecycleManager
+                data = SignalLifecycleManager.load_from_supabase(_get_supabase_client()) or {}
+                lifecycle_symbols = data.get("symbols", {}) or {}
+        except Exception:
+            lifecycle_symbols = {}
+
+        enriched_rows = []
+        for row in rows:
+            in_window, matched_window, hour_utc, minute_utc = classify_utc_timestamp(str(row.get("ts_utc") or ""))
+            lifecycle = lifecycle_symbols.get(f"{row.get('symbol')}#alt2") or lifecycle_symbols.get(row.get("symbol"))
+            lifecycle_status = str((lifecycle or {}).get("status") or "").lower()
+            lifecycle_blocked = lifecycle_status in {"pending", "cooldown", "blacklisted"}
+            has_alt2 = row.get("h30_alt2_direction") is not None
+            trade_eligible = bool(row.get("h30_alt2_trade_eligible"))
+            recommended = bool(in_window and has_alt2 and trade_eligible and not lifecycle_blocked)
+            row2 = {
+                **row,
+                "hour_utc": hour_utc,
+                "hour_minute_utc": minute_utc,
+                "matched_window_utc": matched_window,
+                "recommended_window": recommended,
+                "window_status": "recommended" if recommended else "info_only",
+            }
+            enriched_rows.append(row2)
+
+        if recommended_only:
+            enriched_rows = [r for r in enriched_rows if r.get("recommended_window")]
 
         def _acc(correct: int, total: int):
             return (correct / total) if total > 0 else None
 
-        alt2_all = [r for r in rows if r.get("h30_alt2_direction") is not None]
+        alt2_all = [r for r in enriched_rows if r.get("h30_alt2_direction") is not None]
         alt2_all_verified = [r for r in alt2_all if r.get("h30_alt2_correct") is not None]
         alt2_all_correct = sum(1 for r in alt2_all_verified if bool(r.get("h30_alt2_correct")))
 
@@ -869,6 +904,9 @@ async def get_forecasts_history(
                 "accuracy": _acc(alt2_eligible_correct, len(alt2_eligible_verified)),
             },
         }
+        result["rows"] = enriched_rows
+        result["total"] = len(enriched_rows) if recommended_only else result.get("total", len(enriched_rows))
+        result["recommended_windows_utc"] = get_recommended_window_labels()
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1649,13 +1687,17 @@ def set_signal_lifecycle_manager(manager):
 def signal_lifecycle_status():
     """Get signal lifecycle status — dedup, cooldown, blacklist hours.
     Reads from in-memory manager if available, otherwise from Supabase."""
+    from app.forecast.recommended_windows import get_recommended_window_labels
     if _signal_lifecycle_manager is not None:
-        return _signal_lifecycle_manager.get_status()
+        data = _signal_lifecycle_manager.get_status()
+        data["recommended_windows_utc"] = get_recommended_window_labels()
+        return data
     # Fallback: read persisted state from Supabase (dashboard runs in separate container)
     try:
         from app.forecast.signal_lifecycle import SignalLifecycleManager
         data = SignalLifecycleManager.load_from_supabase(_get_supabase_client())
         if data:
+            data["recommended_windows_utc"] = get_recommended_window_labels()
             return data
     except Exception as exc:
         pass
