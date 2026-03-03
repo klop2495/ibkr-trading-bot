@@ -379,12 +379,7 @@ class ForecastEngine:
     def _compute_alt2_trade_eligible(votes: Optional[Dict[str, int]], alt2_direction: Optional[str]) -> Optional[bool]:
         """Soft execution filter for Alt2.
         Keep all Alt2 rows in DB, but mark execution eligibility.
-        Eligible when momentum DISAGREES with ma_cross_inv.
-        Rationale:
-        - Alt2 already requires ma!=pv and ADX>=30.
-        - Weak sub-patterns observed in production are ma=1,pv=-1,mom=1 and
-          ma=-1,pv=1,mom=-1 (i.e. mom == ma).
-        - Therefore execution-eligible Alt2 is mom != ma.
+        Eligible when momentum AGREES with ma_cross_inv (ma * mom > 0).
         """
         if alt2_direction is None:
             return None
@@ -394,7 +389,7 @@ class ForecastEngine:
         mom = votes.get("momentum", 0)
         if ma == 0 or mom == 0:
             return False
-        return bool(mom != ma)
+        return bool(mom == ma)
 
     def _compute_alt_scoring(self, votes: Dict[str, int]) -> Tuple[Optional[str], Optional[float]]:
         """Compute alternative direction using inverted contrarian weights (A/B test)."""
