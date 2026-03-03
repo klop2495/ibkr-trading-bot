@@ -49,7 +49,7 @@ class SignalState:
     __slots__ = (
         "symbol", "pending_direction", "pending_ts", "pending_row_id",
         "miss_streak", "cooldown_until", "last_verified_ts",
-        "last_result",
+        "last_result", "last_signal_direction", "last_signal_ts",
     )
 
     def __init__(self, symbol: str):
@@ -61,6 +61,8 @@ class SignalState:
         self.cooldown_until: Optional[datetime] = None  # blocked until this time
         self.last_verified_ts: Optional[datetime] = None
         self.last_result: Optional[bool] = None         # True=correct, False=wrong
+        self.last_signal_direction: Optional[str] = None
+        self.last_signal_ts: Optional[datetime] = None
 
 
 class SignalLifecycleManager:
@@ -86,6 +88,7 @@ class SignalLifecycleManager:
         self._cooldown_2 = int(os.getenv("SIGNAL_COOLDOWN_2", "60"))
         self._cooldown_3_mode = os.getenv("SIGNAL_COOLDOWN_3", "session")  # "session" = until next hour
         self._pending_min_verify_min = int(os.getenv("SIGNAL_PENDING_MIN_VERIFY_MIN", "30"))
+        self._min_repeat_min = int(os.getenv("SIGNAL_MIN_REPEAT_MIN", "45"))
         self._blacklist_blocking = os.getenv("SIGNAL_BLACKLIST_BLOCKING", "0") == "1"
         self._blacklist_hours = _parse_hours(
             os.getenv("SIGNAL_BLACKLIST_HOURS", ",".join(str(h) for h in sorted(BLACKLIST_HOURS_DEFAULT)))
@@ -100,6 +103,7 @@ class SignalLifecycleManager:
         logger.info(
             f"SignalLifecycleManager init: enabled={self._enabled} "
             f"cooldowns={self._cooldown_1}/{self._cooldown_2}/{self._cooldown_3_mode}min "
+            f"min_repeat={self._min_repeat_min}min "
             f"blacklist_blocking={self._blacklist_blocking} "
             f"blacklist_hours={sorted(self._blacklist_hours)} "
             f"supabase={'yes' if self._supabase else 'no'}"
@@ -167,6 +171,16 @@ class SignalLifecycleManager:
             remaining = (state.cooldown_until - now).total_seconds() / 60
             return False, f"cooldown:streak={state.miss_streak} remaining={remaining:.0f}m"
 
+        # Check 4: Hard anti-repeat guard for same symbol+direction
+        if (
+            state.last_signal_direction == direction
+            and state.last_signal_ts is not None
+            and self._min_repeat_min > 0
+        ):
+            age_min = (now - state.last_signal_ts).total_seconds() / 60
+            if age_min < self._min_repeat_min:
+                return False, f"repeat_guard:{direction} age={age_min:.0f}m<{self._min_repeat_min}m"
+
         return True, None
 
     def record_signal(
@@ -183,6 +197,8 @@ class SignalLifecycleManager:
         state.pending_direction = direction
         state.pending_ts = now
         state.pending_row_id = str(row_id) if row_id is not None else None
+        state.last_signal_direction = direction
+        state.last_signal_ts = now
         logger.info(
             f"lifecycle_signal_recorded {symbol} dir={direction} row_id={state.pending_row_id or '-'}"
         )
@@ -283,6 +299,8 @@ class SignalLifecycleManager:
                 "cooldown_remaining_min": round((state.cooldown_until - now).total_seconds() / 60, 1) if state.cooldown_until and now < state.cooldown_until else None,
                 "last_result": state.last_result,
                 "last_verified": state.last_verified_ts.isoformat() if state.last_verified_ts else None,
+                "last_signal_direction": state.last_signal_direction,
+                "last_signal_ts": state.last_signal_ts.isoformat() if state.last_signal_ts else None,
             }
 
         return {
@@ -296,6 +314,7 @@ class SignalLifecycleManager:
                 "streak_2": self._cooldown_2,
                 "streak_3": self._cooldown_3_mode,
                 "pending_min_verify_min": self._pending_min_verify_min,
+                "min_repeat_min": self._min_repeat_min,
             },
             "symbols": symbols_status,
             "summary": {
@@ -363,6 +382,17 @@ class SignalLifecycleManager:
             last_result = row.get("last_result")
             if isinstance(last_result, bool):
                 state.last_result = last_result
+
+            last_signal_direction = row.get("last_signal_direction")
+            if isinstance(last_signal_direction, str) and last_signal_direction in ("up", "down"):
+                state.last_signal_direction = last_signal_direction
+
+            last_signal_ts = row.get("last_signal_ts")
+            if isinstance(last_signal_ts, str):
+                try:
+                    state.last_signal_ts = datetime.fromisoformat(last_signal_ts.replace("Z", "+00:00"))
+                except Exception:
+                    state.last_signal_ts = None
 
             restored += 1
 
