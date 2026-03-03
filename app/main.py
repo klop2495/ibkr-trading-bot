@@ -2007,12 +2007,15 @@ def main():
                             _lc_blocked = 0
                             for fc in forecasts:
                                 _alt2_dir = getattr(fc, "h30_alt2_direction", None)
+                                _alt2_eligible = bool(getattr(fc, "h30_alt2_trade_eligible", False))
                                 _alt3_dir = getattr(fc, "h30_alt3_direction", None)
-                                if _alt2_dir:
+                                # Alt2 lifecycle applies only to execution-eligible signals.
+                                if _alt2_dir and _alt2_eligible:
                                     _key2 = f"{fc.symbol}#alt2"
                                     _ok2, _reason2 = signal_lifecycle.can_signal(_key2, _alt2_dir, _lc_now)
                                     if not _ok2:
-                                        setattr(fc, "h30_alt2_direction", None)
+                                        # Keep row for analysis, but mark as non-eligible for execution/lifecycle.
+                                        setattr(fc, "h30_alt2_trade_eligible", False)
                                         _lc_blocked += 1
 
                                 if _alt3_dir:
@@ -2047,8 +2050,9 @@ def main():
                                             except Exception:
                                                 pass
                                         _d2 = _row.get("h30_alt2_direction")
+                                        _e2 = bool(_row.get("h30_alt2_trade_eligible"))
                                         _d3 = _row.get("h30_alt3_direction")
-                                        if _sym and _d2:
+                                        if _sym and _d2 and _e2:
                                             signal_lifecycle.record_signal(
                                                 f"{_sym}#alt2",
                                                 _d2,

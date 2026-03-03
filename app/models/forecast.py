@@ -82,6 +82,7 @@ class ForecastResult(BaseModel):
 
     # A/B test 2: ma_cross_inv direction when ma!=pv + ADX>=30 + top8 symbols
     h30_alt2_direction: Optional[str] = None  # direction by ma_cross_inv only (None if filter not passed)
+    h30_alt2_trade_eligible: Optional[bool] = None  # execution eligibility (soft filter, does not suppress logging)
 
     # A/B test 3: ma!=pv + ADX>=30 + momentum=ma + top8 (stricter filter)
     h30_alt3_direction: Optional[str] = None  # direction by ma_cross_inv (None if filter not passed)
@@ -171,6 +172,7 @@ class ForecastResult(BaseModel):
         # A/B alt2: selective signal (ma!=pv + ADX>=30 + top8)
         if self.h30_alt2_direction is not None:
             row["h30_alt2_direction"] = self.h30_alt2_direction
+            row["h30_alt2_trade_eligible"] = bool(self.h30_alt2_trade_eligible)
         # A/B alt3: stricter filter (ma!=pv + ADX>=30 + momentum=ma + top8)
         if self.h30_alt3_direction is not None:
             row["h30_alt3_direction"] = self.h30_alt3_direction

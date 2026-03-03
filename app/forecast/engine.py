@@ -200,6 +200,7 @@ class ForecastEngine:
             else:
                 mtf_conflict = False
 
+        _alt2_dir = self._compute_alt2_signal(symbol, h30_votes_json, adx_value)
         return ForecastResult(
             ts_utc=ts,
             symbol=symbol,
@@ -216,7 +217,8 @@ class ForecastEngine:
             # Alt1 DISABLED — unprofitable strategy
             # h30_alt_direction=h30_alt_direction,
             # h30_alt_strength=h30_alt_strength,
-            h30_alt2_direction=self._compute_alt2_signal(symbol, h30_votes_json, adx_value),
+            h30_alt2_direction=_alt2_dir,
+            h30_alt2_trade_eligible=self._compute_alt2_trade_eligible(h30_votes_json, _alt2_dir),
             h30_alt3_direction=self._compute_alt3_signal(symbol, h30_votes_json, adx_value),
         )
 
@@ -372,6 +374,22 @@ class ForecastEngine:
         if mom != ma:
             return None
         return "up" if ma == 1 else "down"
+
+    @staticmethod
+    def _compute_alt2_trade_eligible(votes: Optional[Dict[str, int]], alt2_direction: Optional[str]) -> Optional[bool]:
+        """Soft execution filter for Alt2.
+        Keep all Alt2 rows in DB, but mark execution eligibility.
+        Eligible when momentum agrees with ma_cross_inv.
+        """
+        if alt2_direction is None:
+            return None
+        if not votes:
+            return False
+        ma = votes.get("ma_cross_inv", 0)
+        mom = votes.get("momentum", 0)
+        if ma == 0 or mom == 0:
+            return False
+        return bool(mom == ma)
 
     def _compute_alt_scoring(self, votes: Dict[str, int]) -> Tuple[Optional[str], Optional[float]]:
         """Compute alternative direction using inverted contrarian weights (A/B test)."""

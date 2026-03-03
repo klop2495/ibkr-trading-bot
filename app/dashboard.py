@@ -842,6 +842,33 @@ async def get_forecasts_history(
             limit=limit,
             offset=offset,
         )
+        rows = result.get("rows") or []
+
+        def _acc(correct: int, total: int):
+            return (correct / total) if total > 0 else None
+
+        alt2_all = [r for r in rows if r.get("h30_alt2_direction") is not None]
+        alt2_all_verified = [r for r in alt2_all if r.get("h30_alt2_correct") is not None]
+        alt2_all_correct = sum(1 for r in alt2_all_verified if bool(r.get("h30_alt2_correct")))
+
+        alt2_eligible = [r for r in alt2_all if bool(r.get("h30_alt2_trade_eligible"))]
+        alt2_eligible_verified = [r for r in alt2_eligible if r.get("h30_alt2_correct") is not None]
+        alt2_eligible_correct = sum(1 for r in alt2_eligible_verified if bool(r.get("h30_alt2_correct")))
+
+        result["alt2_stats"] = {
+            "all": {
+                "total": len(alt2_all),
+                "verified": len(alt2_all_verified),
+                "correct": alt2_all_correct,
+                "accuracy": _acc(alt2_all_correct, len(alt2_all_verified)),
+            },
+            "trade_eligible": {
+                "total": len(alt2_eligible),
+                "verified": len(alt2_eligible_verified),
+                "correct": alt2_eligible_correct,
+                "accuracy": _acc(alt2_eligible_correct, len(alt2_eligible_verified)),
+            },
+        }
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

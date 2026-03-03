@@ -36,7 +36,10 @@ class ForecastRepo:
         try:
             res = (
                 self.db.client.table(self.table)
-                .select("symbol, h30_direction, h60_direction, h240_direction, h1440_direction, h30_alt2_direction, h30_alt3_direction")
+                .select(
+                    "symbol, h30_direction, h60_direction, h240_direction, h1440_direction, "
+                    "h30_alt2_direction, h30_alt2_trade_eligible, h30_alt3_direction"
+                )
                 .in_("symbol", symbols)
                 .order("ts_utc", desc=True)
                 .limit(len(symbols) * 2)
@@ -51,6 +54,7 @@ class ForecastRepo:
                         row.get("h240_direction"),
                         row.get("h1440_direction"),
                         row.get("h30_alt2_direction"),
+                        row.get("h30_alt2_trade_eligible"),
                         row.get("h30_alt3_direction"),
                     )
         except Exception:
@@ -64,7 +68,7 @@ class ForecastRepo:
                     (h.direction.value if h else None)
                     for h_min in [30, 60, 240, 1440]
                     for h in [f.horizon(h_min)]
-                ) + (f.h30_alt2_direction, f.h30_alt3_direction)
+                ) + (f.h30_alt2_direction, f.h30_alt2_trade_eligible, f.h30_alt3_direction)
                 if current == prev:
                     continue  # Skip — identical directions + alt signals
             filtered.append(f)
