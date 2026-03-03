@@ -1741,8 +1741,8 @@ def main():
     tg_notifier = TelegramNotifier()
     # If TG_ALT_ONLY=1 (default), send only Alt2/Alt3 alerts.
     tg_alt_only = os.getenv("TG_ALT_ONLY", "1") != "0"
-    # Alt4 telegram is disabled by default. Enable explicitly with TG_ALT4_ENABLED=1.
-    tg_alt4_enabled = os.getenv("TG_ALT4_ENABLED", "0") == "1"
+    # Alt4 telegram is enabled by default. Set TG_ALT4_ENABLED=0 to disable.
+    tg_alt4_enabled = os.getenv("TG_ALT4_ENABLED", "1") != "0"
     tg_notify_lost = (os.getenv("TG_NOTIFY_LOST_SIGNALS", "1") != "0") and not tg_alt_only
     # Track trading hours transitions
     _prev_in_trading_hours: Optional[bool] = None
