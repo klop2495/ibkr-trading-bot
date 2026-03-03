@@ -84,8 +84,14 @@ class ForecastResult(BaseModel):
     h30_alt2_direction: Optional[str] = None  # direction by ma_cross_inv only (None if filter not passed)
     h30_alt2_trade_eligible: Optional[bool] = None  # execution eligibility (soft filter, does not suppress logging)
 
-    # A/B test 3: ma!=pv + ADX>=30 + momentum=ma + top8 (stricter filter)
-    h30_alt3_direction: Optional[str] = None  # direction by ma_cross_inv (None if filter not passed)
+    # A/B test 3 (legacy): ma!=pv + ADX>=30 + momentum=ma + top8 (stricter filter)
+    h30_alt3_direction: Optional[str] = None  # kept for backward compatibility
+
+    # Alt3-v2: independent strict variant (not a direct Alt2 subset)
+    h30_alt3v2_direction: Optional[str] = None
+    h30_alt3v2_trade_eligible: Optional[bool] = None
+    h30_alt3v2_score: Optional[float] = None
+    h30_alt3v2_meta_json: Optional[dict] = None
 
     # Volatility regime filter (Phase 3 — BBW toxic band detection)
     vol_regime_blocked: Optional[bool] = None   # True if BBW in toxic band
@@ -176,4 +182,12 @@ class ForecastResult(BaseModel):
         # A/B alt3: stricter filter (ma!=pv + ADX>=30 + momentum=ma + top8)
         if self.h30_alt3_direction is not None:
             row["h30_alt3_direction"] = self.h30_alt3_direction
+        # Alt3-v2: independent strict variant
+        if self.h30_alt3v2_direction is not None:
+            row["h30_alt3v2_direction"] = self.h30_alt3v2_direction
+            row["h30_alt3v2_trade_eligible"] = bool(self.h30_alt3v2_trade_eligible)
+            if self.h30_alt3v2_score is not None:
+                row["h30_alt3v2_score"] = round(self.h30_alt3v2_score, 4)
+            if self.h30_alt3v2_meta_json is not None:
+                row["h30_alt3v2_meta_json"] = self.h30_alt3v2_meta_json
         return row

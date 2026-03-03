@@ -1998,17 +1998,17 @@ def main():
                             market_data_service=market_data_service,
                             symbols=active_symbols,
                         )
-                        # Signal Lifecycle: filter alt2/alt3 signals (dedup + cooldown + blacklist)
+                        # Signal Lifecycle: filter alt2/alt3-v2 signals (dedup + cooldown + blacklist)
                         # Variant policy:
-                        # - Alt2 and Alt3 are tracked independently for A/B comparison.
-                        # - Lifecycle keys are variant-aware: "SYMBOL#alt2" / "SYMBOL#alt3".
+                        # - Alt2 and Alt3-v2 are tracked independently for A/B comparison.
+                        # - Lifecycle keys are variant-aware: "SYMBOL#alt2" / "SYMBOL#alt3v2".
                         if forecasts and signal_lifecycle.enabled:
                             _lc_now = datetime.now(timezone.utc)
                             _lc_blocked = 0
                             for fc in forecasts:
                                 _alt2_dir = getattr(fc, "h30_alt2_direction", None)
                                 _alt2_eligible = bool(getattr(fc, "h30_alt2_trade_eligible", False))
-                                _alt3_dir = getattr(fc, "h30_alt3_direction", None)
+                                _alt3v2_dir = getattr(fc, "h30_alt3v2_direction", None)
                                 # Alt2 lifecycle must track ALL Alt2 signals for dedup/cooldown,
                                 # not only execution-eligible subset.
                                 if _alt2_dir:
@@ -2020,11 +2020,11 @@ def main():
                                         setattr(fc, "h30_alt2_trade_eligible", None)
                                         _lc_blocked += 1
 
-                                if _alt3_dir:
-                                    _key3 = f"{fc.symbol}#alt3"
-                                    _ok3, _reason3 = signal_lifecycle.can_signal(_key3, _alt3_dir, _lc_now)
+                                if _alt3v2_dir:
+                                    _key3 = f"{fc.symbol}#alt3v2"
+                                    _ok3, _reason3 = signal_lifecycle.can_signal(_key3, _alt3v2_dir, _lc_now)
                                     if not _ok3:
-                                        setattr(fc, "h30_alt3_direction", None)
+                                        setattr(fc, "h30_alt3v2_direction", None)
                                         _lc_blocked += 1
                             if _lc_blocked > 0:
                                 print(f"lifecycle_filter blocked={_lc_blocked}")
@@ -2052,8 +2052,7 @@ def main():
                                             except Exception:
                                                 pass
                                         _d2 = _row.get("h30_alt2_direction")
-                                        _e2 = bool(_row.get("h30_alt2_trade_eligible"))
-                                        _d3 = _row.get("h30_alt3_direction")
+                                        _d3 = _row.get("h30_alt3v2_direction")
                                         if _sym and _d2:
                                             signal_lifecycle.record_signal(
                                                 f"{_sym}#alt2",
@@ -2063,7 +2062,7 @@ def main():
                                             )
                                         if _sym and _d3:
                                             signal_lifecycle.record_signal(
-                                                f"{_sym}#alt3",
+                                                f"{_sym}#alt3v2",
                                                 _d3,
                                                 now=_ts,
                                                 row_id=str(_rid) if _rid is not None else None,
@@ -2096,7 +2095,7 @@ def main():
                                         _in_window, _window_label, _, _ = classify_utc_timestamp(fc.ts_utc.isoformat())
                                         if not _in_window:
                                             continue
-                                        for strat, attr in [("alt2", "h30_alt2_direction"), ("alt3", "h30_alt3_direction")]:
+                                        for strat, attr in [("alt2", "h30_alt2_direction"), ("alt3", "h30_alt3v2_direction")]:
                                             alt_dir = getattr(fc, attr, None)
                                             if alt_dir:
                                                 if strat == "alt2" and not bool(getattr(fc, "h30_alt2_trade_eligible", False)):
@@ -2249,7 +2248,7 @@ def main():
                             try:
                                 for _av in verify_result.alt_results:
                                     _variant = str(getattr(_av, "variant", "") or "").lower()
-                                    if _variant not in ("alt2", "alt3"):
+                                    if _variant not in ("alt2", "alt3", "alt3v2"):
                                         continue
                                     _sym = str(getattr(_av, "symbol", "") or "").upper()
                                     if not _sym:
@@ -2257,7 +2256,7 @@ def main():
                                     _correct = bool(getattr(_av, "correct", False))
                                     _row_id = getattr(_av, "row_id", None)
                                     signal_lifecycle.record_verification(
-                                        f"{_sym}#{_variant}",
+                                        f"{_sym}#{'alt3v2' if _variant == 'alt3' else _variant}",
                                         correct=_correct,
                                         row_id=str(_row_id) if _row_id is not None else None,
                                     )

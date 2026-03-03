@@ -889,6 +889,13 @@ async def get_forecasts_history(
         alt2_eligible = [r for r in alt2_all if bool(r.get("h30_alt2_trade_eligible"))]
         alt2_eligible_verified = [r for r in alt2_eligible if r.get("h30_alt2_correct") is not None]
         alt2_eligible_correct = sum(1 for r in alt2_eligible_verified if bool(r.get("h30_alt2_correct")))
+        alt3_all = [r for r in enriched_rows if (r.get("h30_alt3v2_direction") is not None or r.get("h30_alt3_direction") is not None)]
+        alt3_all_verified = [r for r in alt3_all if (r.get("h30_alt3v2_correct") is not None or r.get("h30_alt3_correct") is not None)]
+        alt3_all_correct = sum(
+            1
+            for r in alt3_all_verified
+            if bool(r.get("h30_alt3v2_correct")) or bool(r.get("h30_alt3_correct"))
+        )
 
         result["alt2_stats"] = {
             "all": {
@@ -902,6 +909,14 @@ async def get_forecasts_history(
                 "verified": len(alt2_eligible_verified),
                 "correct": alt2_eligible_correct,
                 "accuracy": _acc(alt2_eligible_correct, len(alt2_eligible_verified)),
+            },
+        }
+        result["alt3_stats"] = {
+            "all": {
+                "total": len(alt3_all),
+                "verified": len(alt3_all_verified),
+                "correct": alt3_all_correct,
+                "accuracy": _acc(alt3_all_correct, len(alt3_all_verified)),
             },
         }
         result["rows"] = enriched_rows

@@ -201,6 +201,9 @@ class ForecastEngine:
                 mtf_conflict = False
 
         _alt2_dir = self._compute_alt2_signal(symbol, h30_votes_json, adx_value)
+        _alt3v2_dir, _alt3v2_eligible, _alt3v2_score, _alt3v2_meta = self._compute_alt3v2_signal(
+            symbol, h30_votes_json, adx_value
+        )
         return ForecastResult(
             ts_utc=ts,
             symbol=symbol,
@@ -220,6 +223,10 @@ class ForecastEngine:
             h30_alt2_direction=_alt2_dir,
             h30_alt2_trade_eligible=self._compute_alt2_trade_eligible(h30_votes_json, _alt2_dir),
             h30_alt3_direction=self._compute_alt3_signal(symbol, h30_votes_json, adx_value),
+            h30_alt3v2_direction=_alt3v2_dir,
+            h30_alt3v2_trade_eligible=_alt3v2_eligible,
+            h30_alt3v2_score=_alt3v2_score,
+            h30_alt3v2_meta_json=_alt3v2_meta,
         )
 
     def _compute_horizon(
@@ -374,6 +381,68 @@ class ForecastEngine:
         if mom != ma:
             return None
         return "up" if ma == 1 else "down"
+
+    def _compute_alt3v2_signal(
+        self,
+        symbol: str,
+        votes: Optional[Dict[str, int]],
+        adx_value: Optional[float],
+    ) -> Tuple[Optional[str], Optional[bool], Optional[float], Optional[Dict[str, float]]]:
+        """Independent Alt3-v2 signal.
+
+        Unlike legacy Alt3, this variant does not inherit Alt2 direction directly.
+        Direction is based on a strict weighted blend of core signals:
+        - ma_cross_inv
+        - momentum
+        - inverted price_vs_ma
+        Plus small stabilizers from rsi_trend / atr_trend.
+        """
+        if not votes or symbol not in self.ALT2_SYMBOLS:
+            return None, None, None, None
+        if adx_value is None or adx_value < 30:
+            return None, None, None, None
+
+        ma = int(votes.get("ma_cross_inv", 0) or 0)
+        pv = int(votes.get("price_vs_ma", 0) or 0)
+        mom = int(votes.get("momentum", 0) or 0)
+        rsi = int(votes.get("rsi_trend", 0) or 0)
+        atr = int(votes.get("atr_trend", 0) or 0)
+        if ma == 0 or pv == 0 or mom == 0:
+            return None, None, None, None
+
+        pv_inv = -pv
+        score = (
+            1.0 * ma +
+            0.9 * mom +
+            0.8 * pv_inv +
+            0.35 * rsi +
+            0.25 * atr
+        )
+        # Keep Alt3-v2 sparse and stronger than Alt2.
+        if abs(score) < 1.2:
+            return None, None, score, {
+                "ma": float(ma),
+                "momentum": float(mom),
+                "pv_inv": float(pv_inv),
+                "rsi_trend": float(rsi),
+                "atr_trend": float(atr),
+                "score": round(score, 4),
+            }
+
+        direction = "up" if score > 0 else "down"
+        dir_sign = 1 if direction == "up" else -1
+        core_match = sum(1 for x in (ma, mom, pv_inv) if x == dir_sign)
+        trade_eligible = bool(core_match >= 2 and abs(score) >= 2.1)
+        meta = {
+            "ma": float(ma),
+            "momentum": float(mom),
+            "pv_inv": float(pv_inv),
+            "rsi_trend": float(rsi),
+            "atr_trend": float(atr),
+            "score": round(score, 4),
+            "core_match": float(core_match),
+        }
+        return direction, trade_eligible, score, meta
 
     @staticmethod
     def _compute_alt2_trade_eligible(votes: Optional[Dict[str, int]], alt2_direction: Optional[str]) -> Optional[bool]:
