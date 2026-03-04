@@ -223,7 +223,7 @@ class ForecastEngine:
         )
         _h30_direction = h30_horizon.direction.value if h30_horizon else None
         _h30_confidence = h30_horizon.confidence.value if h30_horizon else None
-        _alt4_dir, _alt4_eligible = self._compute_alt4_signal(
+        _alt4_dir, _alt4_mode, _alt4_eligible = self._compute_alt4_signal(
             symbol=symbol,
             h30_direction=_h30_direction,
             h30_confidence=_h30_confidence,
@@ -253,6 +253,7 @@ class ForecastEngine:
             h30_alt3v2_score=_alt3v2_score,
             h30_alt3v2_meta_json=_alt3v2_meta,
             h30_alt4_direction=_alt4_dir,
+            h30_alt4_mode=_alt4_mode,
             h30_alt4_trade_eligible=_alt4_eligible,
         )
 
@@ -477,23 +478,29 @@ class ForecastEngine:
         h30_direction: Optional[str],
         h30_confidence: Optional[str],
         ts_utc: datetime,
-    ) -> Tuple[Optional[str], Optional[bool]]:
-        """Alt4 hybrid signal: hour-based original/inverted direction + eligibility."""
+    ) -> Tuple[Optional[str], Optional[str], Optional[bool]]:
+        """Alt4 hybrid signal: hour-based original/inverted direction + eligibility.
+
+        Returns (direction, mode, eligible):
+        - mode: "original" | "inverted" | None
+        """
         if h30_direction is None or h30_direction == "neutral":
-            return None, None
+            return None, None, None
         hour = ts_utc.hour
         if hour in self._alt4_original_hours:
             alt4_direction = h30_direction
+            mode = "original"
         elif hour in self._alt4_inverted_hours:
             alt4_direction = "down" if h30_direction == "up" else "up"
+            mode = "inverted"
         else:
-            return None, None
+            return None, None, None
         eligible = True
         if symbol.upper() in self._alt4_exclude_symbols:
             eligible = False
         if (h30_confidence or "").lower() not in self._alt4_eligible_confidence:
             eligible = False
-        return alt4_direction, eligible
+        return alt4_direction, mode, eligible
 
     @staticmethod
     def _compute_alt2_trade_eligible(votes: Optional[Dict[str, int]], alt2_direction: Optional[str]) -> Optional[bool]:

@@ -188,6 +188,8 @@ class TelegramNotifier:
         adx_value: float | None = None,
         votes: dict | None = None,
         h4_direction: str | None = None,
+        mode: str | None = None,
+        hour_utc: int | None = None,
     ) -> int:
         """Send Alt2/Alt3 signal notification to Telegram."""
         if not self.enabled:
@@ -206,14 +208,27 @@ class TelegramNotifier:
         is_jpy = "JPY" in symbol
         price_str = f"{base_price:.3f}" if is_jpy else f"{base_price:.5f}"
 
-        strat_label = "\U0001f52c ALT3" if strategy == "alt3" else "\U0001f3af ALT2"
-        strat_desc = "Alt2+momentum" if strategy == "alt3" else "ma\u2260pv + ADX\u226530 + top16"
+        if strategy == "alt3":
+            strat_label = "\U0001f52c ALT3"
+            strat_desc = "Alt2+momentum"
+        elif strategy == "alt4":
+            strat_label = "\U0001f9ea ALT4"
+            strat_desc = "hybrid original/inverted"
+        else:
+            strat_label = "\U0001f3af ALT2"
+            strat_desc = "ma\u2260pv + ADX\u226530 + top16"
 
         lines = [
             f"{dir_text}  <b>{symbol}</b>  [{strat_label}]",
             f"\U0001f4b0 {price_str}  \u2022  {now_str}",
             f"Strategy: {strat_desc}",
         ]
+        if strategy == "alt4" and mode:
+            mode_label = str(mode).upper()
+            if isinstance(hour_utc, int) and 0 <= hour_utc <= 23:
+                lines.append(f"Mode: {mode_label} (h{hour_utc:02d})")
+            else:
+                lines.append(f"Mode: {mode_label}")
 
         # ADX
         if adx_value is not None:

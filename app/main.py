@@ -1743,6 +1743,7 @@ def main():
     tg_alt_only = os.getenv("TG_ALT_ONLY", "1") != "0"
     # Alt4 telegram is enabled by default. Set TG_ALT4_ENABLED=0 to disable.
     tg_alt4_enabled = os.getenv("TG_ALT4_ENABLED", "1") != "0"
+    alt4_min_repeat_min = max(0, int(os.getenv("ALT4_MIN_REPEAT_MIN", "120")))
     tg_notify_lost = (os.getenv("TG_NOTIFY_LOST_SIGNALS", "1") != "0") and not tg_alt_only
     # Track trading hours transitions
     _prev_in_trading_hours: Optional[bool] = None
@@ -2032,9 +2033,25 @@ def main():
 
                                 if _alt4_dir:
                                     _key4 = f"{fc.symbol}#alt4"
+                                    # Alt4 strategy-level cooldown (separate from lifecycle min_repeat).
+                                    # We keep lifecycle untouched and apply a stricter guard here.
+                                    _st4 = signal_lifecycle._states.get(_key4)  # noqa: SLF001
+                                    if (
+                                        alt4_min_repeat_min > 0
+                                        and _st4
+                                        and _st4.last_signal_ts is not None
+                                    ):
+                                        _age4 = (_lc_now - _st4.last_signal_ts).total_seconds() / 60
+                                        if _age4 < alt4_min_repeat_min:
+                                            setattr(fc, "h30_alt4_direction", None)
+                                            setattr(fc, "h30_alt4_mode", None)
+                                            setattr(fc, "h30_alt4_trade_eligible", None)
+                                            _lc_blocked += 1
+                                            continue
                                     _ok4, _reason4 = signal_lifecycle.can_signal(_key4, _alt4_dir, _lc_now)
                                     if not _ok4:
                                         setattr(fc, "h30_alt4_direction", None)
+                                        setattr(fc, "h30_alt4_mode", None)
                                         setattr(fc, "h30_alt4_trade_eligible", None)
                                         _lc_blocked += 1
                             if _lc_blocked > 0:
@@ -2138,6 +2155,8 @@ def main():
                                                     adx_value=fc.adx_value,
                                                     votes=_votes,
                                                     h4_direction=fc.mtf_h4_direction,
+                                                    mode=(getattr(fc, "h30_alt4_mode", None) if strat == "alt4" else None),
+                                                    hour_utc=(fc.ts_utc.hour if strat == "alt4" else None),
                                                 )
                                 except Exception as alt_tg_exc:
                                     print(f"tg_alt_notify_error: {alt_tg_exc}")
