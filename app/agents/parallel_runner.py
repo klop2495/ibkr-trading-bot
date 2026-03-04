@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 HYBRID_THRESHOLD = float(os.getenv("HYBRID_THRESHOLD", "0.15"))
 RULES_WEIGHT = float(os.getenv("HYBRID_RULES_WEIGHT", "0.6"))
 LLM_WEIGHT = float(os.getenv("HYBRID_LLM_WEIGHT", "0.4"))
+RULES_INVERT_SIGNAL = os.getenv("RULES_INVERT_SIGNAL", "1") == "1"
 
 
 class ParallelDecisionRunner:
@@ -108,8 +109,9 @@ class ParallelDecisionRunner:
         # 1. Extract rules_score from signal_preview
         rules_signal, rules_score, rules_confidence, rules_flags = self._extract_rules_score(preview, decision)
 
-        # 2. Run LLM контур
-        if self.llm_enabled and self.agents:
+        # 2. Run LLM контур (skip entirely when disabled)
+        llm_contour_enabled = bool(self.llm_enabled and self.agents)
+        if llm_contour_enabled:
             llm_result = self._run_llm_contour(preview, symbol, account_state)
         else:
             llm_result = self._empty_llm_result()
@@ -120,9 +122,11 @@ class ParallelDecisionRunner:
         risk_veto = llm_result.get("risk_veto", False)
         gpt_details = llm_result.get("agent_details", [])
 
-        # 3. Compute hybrid_score (60% rules + 40% llm)
+        # 3. Compute hybrid score:
+        # - LLM enabled: blended 60/40
+        # - LLM disabled: hybrid follows rules score directly
         hybrid_score, hybrid_signal = self._compute_hybrid_score(
-            rules_score, llm_score, risk_veto
+            rules_score, llm_score, risk_veto, blend_with_llm=llm_contour_enabled
         )
 
         # 4. Determine executed strategy
@@ -184,11 +188,11 @@ class ParallelDecisionRunner:
         Score calculation:
         - direction: LONG -> +1, SHORT -> -1, FLAT -> 0
         - confidence multiplier: HIGH -> 0.9, NORMAL -> 0.6, LOW -> 0.3
-        - setup_present=False -> score = 0 (no setup, no signal)
+        - entry_triggered=False -> score = 0 (no actionable signal)
         
-        Note: We use setup_present instead of entry_triggered to allow
-        signals when setup is ready but entry hasn't triggered yet.
-        The hybrid threshold (0.7) provides the safety gate.
+        RULES_INVERT_SIGNAL:
+        - 1 (default): invert original rules direction (long->SHORT, short->LONG)
+        - 0: keep original direction
         """
         direction = getattr(preview, "direction", Direction.FLAT)
         if isinstance(direction, Direction):
@@ -196,13 +200,14 @@ class ParallelDecisionRunner:
         else:
             direction_val = str(direction) if direction else "flat"
 
-        # Direction to base score
+        # Direction to base score (optionally inverted by env)
+        invert = RULES_INVERT_SIGNAL
         if direction_val == "long":
-            signal = "LONG"
-            base_score = 1.0
+            signal = "SHORT" if invert else "LONG"
+            base_score = -1.0 if invert else 1.0
         elif direction_val == "short":
-            signal = "SHORT"
-            base_score = -1.0
+            signal = "LONG" if invert else "SHORT"
+            base_score = 1.0 if invert else -1.0
         else:
             signal = "HOLD"
             base_score = 0.0
@@ -223,11 +228,9 @@ class ParallelDecisionRunner:
         # Calculate rules_score
         rules_score = base_score * confidence_multiplier
 
-        # Check setup_present instead of trade_allowed
-        # This allows signals when setup is ready but entry hasn't triggered
-        setup_present = getattr(preview, "setup_present", False)
-        
-        if signal == "HOLD" or not setup_present:
+        # Only actionable when entry is triggered
+        entry_triggered = getattr(preview, "entry_triggered", False)
+        if signal == "HOLD" or not entry_triggered:
             rules_score = 0.0
             signal = "HOLD"
 
@@ -377,19 +380,25 @@ class ParallelDecisionRunner:
         rules_score: float,
         llm_score: float,
         risk_veto: bool,
+        blend_with_llm: bool = True,
     ) -> tuple[float, str]:
         """
-        Compute hybrid_score using 60/40 blend.
+        Compute hybrid score.
         
-        Formula: hybrid_score = 0.6 * rules_score + 0.4 * llm_score
+        When blend_with_llm=True:
+        - hybrid_score = 0.6 * rules_score + 0.4 * llm_score
+        When blend_with_llm=False:
+        - hybrid_score = rules_score
         
         If risk_veto: hybrid_signal = HOLD regardless of score.
         
         Returns:
             (hybrid_score, hybrid_signal)
         """
-        # Weighted combination
-        hybrid_score = (RULES_WEIGHT * rules_score) + (LLM_WEIGHT * llm_score)
+        if blend_with_llm:
+            hybrid_score = (RULES_WEIGHT * rules_score) + (LLM_WEIGHT * llm_score)
+        else:
+            hybrid_score = rules_score
         
         # Clamp to [-1, 1]
         hybrid_score = max(-1.0, min(1.0, hybrid_score))

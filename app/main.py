@@ -21,6 +21,7 @@ from app.storage.bot_settings_repo import BotSettingsRepo
 from app.storage.db import SupabaseDB
 from app.storage.repositories import DecisionsRepo, RiskEventsRepo, RiskVerdictsRepo, SignalPreviewsRepo, TradesHistoryRepo
 from app.execution.service import ExecutionService, ExecutionMode, ExecutionResult
+from app.execution.outcome_verifier import ExecutionOutcomeVerifier, evaluate_execution_accuracy
 
 # Phase 0: Shadow mode parallel decisions
 from app.models.parallel_decision import ParallelDecisionV1
@@ -1886,8 +1887,19 @@ def main():
     idle_backoff_base = float(os.getenv("CONTROL_PLANE_IDLE_BACKOFF_BASE", str(DEFAULT_IDLE_BACKOFF_BASE)))
     execution_enabled = os.getenv("EXECUTION_ENABLED") == "1"
     execution_tick_limit = int(os.getenv("EXECUTION_TICK_LIMIT", "10"))
+    execution_verify_interval_s = int(os.getenv("EXECUTION_VERIFY_INTERVAL_S", "300"))
+    execution_verify_horizon_m = int(os.getenv("EXECUTION_VERIFY_HORIZON_MIN", "240"))
+    execution_verify_batch = int(os.getenv("EXECUTION_VERIFY_BATCH", "200"))
+    execution_accuracy_guard_enabled = os.getenv("EXECUTION_ACCURACY_GUARD_ENABLED", "1") != "0"
+    execution_min_accuracy = float(os.getenv("EXECUTION_MIN_ACCURACY", "0.55"))
+    execution_min_samples = int(os.getenv("EXECUTION_MIN_SAMPLES", "20"))
+    execution_accuracy_window_h = int(os.getenv("EXECUTION_ACCURACY_WINDOW_H", "24"))
+    execution_outcome_verifier = ExecutionOutcomeVerifier(db)
     last_stop_reason = None
     last_execution_log: Optional[str] = None
+    last_execution_verify_tick = 0.0
+    last_execution_verify_blocked: Optional[bool] = None
+    last_execution_guard_blocked: Optional[bool] = None
     historical_cursor_ts: Optional[str] = None
 
     last_logged_symbols = None
@@ -2368,8 +2380,75 @@ def main():
                 f"control_plane_backfill fetched={fetched_total} scanned={scanned_total} processed={processed_total} batch_cap={batch_size} next_batch={next_batch_size} "
                 f"fetch_ms={int(fetch_ms_total)} persist_ms={int(persist_ms_total)} total_ms={int(elapsed_ms)} stop_reason={stop_reason} early_break={early_break}{slow_suffix}{symbols_suffix}"
             )
+        now_ts = time.time()
+
+        if execution_verify_interval_s > 0 and now_ts - last_execution_verify_tick >= execution_verify_interval_s:
+            verify_result = execution_outcome_verifier.verify_pending(
+                horizon_minutes=execution_verify_horizon_m,
+                limit=execution_verify_batch,
+            )
+            if verify_result.scanned > 0 or verify_result.errors > 0:
+                print(
+                    f"execution_outcome_verify scanned={verify_result.scanned} "
+                    f"updated={verify_result.updated} skipped={verify_result.skipped} "
+                    f"errors={verify_result.errors} append_only={int(verify_result.blocked_append_only)}"
+                )
+            if (
+                verify_result.blocked_append_only
+                and last_execution_verify_blocked is not True
+                and risk_events_repo
+            ):
+                risk_events_repo.insert(
+                    event_type="EXECUTION_OUTCOME_VERIFY_BLOCKED",
+                    severity="warning",
+                    message="parallel_decisions is append-only; skipping outcome updates",
+                    data={},
+                )
+            last_execution_verify_blocked = verify_result.blocked_append_only
+            last_execution_verify_tick = now_ts
+
+        execution_guard_blocked = False
+        if execution_accuracy_guard_enabled:
+            try:
+                guard_snapshot = evaluate_execution_accuracy(
+                    db,
+                    window_hours=execution_accuracy_window_h,
+                    min_samples=execution_min_samples,
+                    min_accuracy=execution_min_accuracy,
+                )
+                execution_guard_blocked = bool(guard_snapshot.get("blocked"))
+                guard_accuracy = guard_snapshot.get("accuracy")
+                if execution_guard_blocked != last_execution_guard_blocked:
+                    if guard_accuracy is None:
+                        acc_value = "n/a"
+                    else:
+                        acc_value = f"{float(guard_accuracy):.3f}"
+                    print(
+                        f"execution_guard blocked={int(execution_guard_blocked)} "
+                        f"samples={guard_snapshot.get('samples', 0)} "
+                        f"accuracy={acc_value} "
+                        f"min_samples={execution_min_samples} min_accuracy={execution_min_accuracy}"
+                    )
+                    if execution_guard_blocked and risk_events_repo:
+                        risk_events_repo.insert(
+                            event_type="EXECUTION_ACCURACY_BLOCK",
+                            severity="warning",
+                            message="Execution blocked by rolling accuracy guard",
+                            data=guard_snapshot,
+                        )
+                last_execution_guard_blocked = execution_guard_blocked
+            except Exception as exc:
+                execution_guard_blocked = False
+                if risk_events_repo:
+                    risk_events_repo.insert(
+                        event_type="EXECUTION_ACCURACY_GUARD_ERROR",
+                        severity="error",
+                        message=f"Execution accuracy guard failed: {exc}",
+                        data={"error": str(exc)},
+                    )
+
         # Run execution tick if enabled
-        if execution_enabled and not execution_service.is_fail_safe_blocked():
+        if execution_enabled and not execution_service.is_fail_safe_blocked() and not execution_guard_blocked:
             exec_result = run_execution_tick(
                 client=db.client,
                 settings=settings,
