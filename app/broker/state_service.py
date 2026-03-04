@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.broker.keys import fx_contract_snapshot, fx_display_symbol, instrument_key
@@ -15,7 +15,6 @@ from app.storage.bot_settings_repo import BotSettingsRepo
 
 logger = logging.getLogger(__name__)
 
-ORPHAN_DEDUP_WINDOW = timedelta(minutes=10)
 PENDING_KEY_GRACE_SECONDS = int(os.getenv("BROKER_PENDING_KEY_GRACE_SECONDS", "180"))
 
 
@@ -325,13 +324,6 @@ class BrokerStateService:
             return self._trades_history_repo.get_latest_orphan_by_instrument_key(instrument_key_value)
         except Exception:
             return None
-
-    def _is_recent_orphan(self, orphan: dict, now: datetime) -> bool:
-        opened_at = orphan.get("opened_at") or orphan.get("created_at")
-        ts = self._parse_ib_time(opened_at) if opened_at else None
-        if not ts:
-            return False
-        return (now - ts) <= ORPHAN_DEDUP_WINDOW
 
     def _validate_cfd_snapshot(
         self,
@@ -673,6 +665,19 @@ class BrokerStateService:
                 return result
 
             try:
+                healed = self._trades_history_repo.heal_inconsistent_open_trades()
+                if healed > 0:
+                    result.mismatches.append(f"healed_open_closed_inconsistent:{healed}")
+                    self._log_event(
+                        "BROKER_SYNC_HEAL",
+                        "warn",
+                        "Healed inconsistent OPEN trades with close markers",
+                        {"fixed_rows": healed},
+                    )
+            except Exception as exc:
+                result.errors.append(f"heal_inconsistent_failed:{exc}")
+
+            try:
                 db_trades = self._trades_history_repo.get_active_trades_full()
             except Exception as exc:
                 result.errors.append(f"db_fetch_failed:{exc}")
@@ -775,10 +780,12 @@ class BrokerStateService:
                     continue
 
                 # CASE B: broker has position, DB missing -> create orphan record
-                now_ts = self._now()
                 orphan = self._get_recent_orphan(key)
-                if orphan and self._is_recent_orphan(orphan, now_ts):
-                    result.mismatches.append(f"orphan_recent_exists:{key}")
+                if orphan:
+                    result.mismatches.append(f"orphan_exists:{key}")
+                    continue
+                if self._trades_history_repo.has_orphan_by_instrument_key(key):
+                    result.mismatches.append(f"orphan_exists:{key}")
                     continue
                 side = "BUY" if position.quantity > 0 else "SELL"
                 try:

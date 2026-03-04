@@ -547,6 +547,53 @@ class TradesHistoryRepo(BaseRepo):
         )
         return res.data[0] if res.data else None
 
+    def has_orphan_by_instrument_key(self, instrument_key: str) -> bool:
+        """Return True if ORPHAN_POSITION already exists for instrument_key."""
+        if not instrument_key:
+            return False
+        res = (
+            self.db.client.table(self.table)
+            .select("id", count="exact")
+            .eq("status", "ORPHAN_POSITION")
+            .contains("meta", {"instrument_key": instrument_key})
+            .limit(1)
+            .execute()
+        )
+        if hasattr(res, "count") and res.count is not None:
+            return int(res.count) > 0
+        return bool(getattr(res, "data", None))
+
+    def heal_inconsistent_open_trades(self, batch_limit: int = 500) -> int:
+        """
+        Fix OPEN rows that already have close fields set.
+
+        This addresses zombie rows where reconciliation populated closed_at/close_reason
+        but status stayed OPEN.
+        """
+        rows = (
+            self.db.client.table(self.table)
+            .select("id")
+            .eq("status", "OPEN")
+            .not_.is_("closed_at", "null")
+            .not_.is_("close_reason", "null")
+            .limit(batch_limit)
+            .execute()
+        )
+        data = getattr(rows, "data", None) or []
+        if not data:
+            return 0
+        now_iso = datetime.utcnow().isoformat()
+        fixed = 0
+        for row in data:
+            trade_id = row.get("id")
+            if not trade_id:
+                continue
+            self.db.client.table(self.table).update(
+                {"status": "CLOSED", "updated_at": now_iso}
+            ).eq("id", trade_id).execute()
+            fixed += 1
+        return fixed
+
     def count_active_trades(self, symbol: Optional[str] = None) -> int:
         """Count active trades (PENDING/SUBMITTED/OPEN), optionally by symbol."""
         active = self.get_active_trades(symbol=symbol)
