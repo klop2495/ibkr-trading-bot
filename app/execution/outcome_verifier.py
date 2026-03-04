@@ -85,6 +85,7 @@ class ExecutionOutcomeVerifier:
             self.db.client.table("parallel_decisions")
             .select("id, ts_utc, symbol, executed_signal, hybrid_signal, rules_signal")
             .is_("outcome_result", "null")
+            .in_("executed_signal", ["LONG", "SHORT"])
             .lte("ts_utc", cutoff.isoformat())
             .order("ts_utc", desc=False)
             .limit(limit)
@@ -176,4 +177,3 @@ def evaluate_execution_accuracy(
         "min_samples": min_samples,
         "min_accuracy": min_accuracy,
     }
-
