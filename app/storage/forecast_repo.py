@@ -95,7 +95,13 @@ class ForecastRepo:
         payloads = [f.to_db_row() for f in filtered]
         try:
             res = self.db.client.table(self.table).insert(payloads).execute()
-            return {"count": len(res.data or []), "skipped": len(forecasts) - len(filtered)}
+            return {
+                "count": len(res.data or []),
+                "skipped": len(forecasts) - len(filtered),
+                "data": res.data or [],
+                # Fallback for callers when PostgREST doesn't return inserted rows.
+                "inserted_payloads": payloads,
+            }
         except Exception as exc:
             return {"count": 0, "error": str(exc)}
 

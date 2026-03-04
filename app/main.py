@@ -2067,7 +2067,11 @@ def main():
                                 # Mark pending only for rows that were actually inserted.
                                 if signal_lifecycle.enabled:
                                     _fc_data = fc_result.get("data") or []
-                                    for _row in _fc_data:
+                                    _fc_payloads = fc_result.get("inserted_payloads") or []
+
+                                    # Prefer DB-returned rows (contain row_id); fallback to payloads when DB returns no data.
+                                    _rows_for_lifecycle = _fc_data if _fc_data else _fc_payloads
+                                    for _row in _rows_for_lifecycle:
                                         if not isinstance(_row, dict):
                                             continue
                                         _sym = str(_row.get("symbol") or "").upper()
@@ -2119,8 +2123,14 @@ def main():
                                     # Get symbols that were actually inserted (not deduped)
                                     _inserted_syms = set()
                                     _fc_data = fc_result.get("data")
+                                    _fc_payloads = fc_result.get("inserted_payloads")
                                     if _fc_data:
                                         for _row in _fc_data:
+                                            _s = _row.get("symbol") if isinstance(_row, dict) else None
+                                            if _s:
+                                                _inserted_syms.add(_s)
+                                    elif _fc_payloads:
+                                        for _row in _fc_payloads:
                                             _s = _row.get("symbol") if isinstance(_row, dict) else None
                                             if _s:
                                                 _inserted_syms.add(_s)
