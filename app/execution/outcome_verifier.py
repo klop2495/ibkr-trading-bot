@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -20,6 +21,13 @@ def _parse_ts(value: Any) -> Optional[datetime]:
 
 def _pip_size(symbol: str) -> float:
     return 0.01 if "JPY" in (symbol or "").upper() else 0.0001
+
+
+def _price_sane(symbol: str, price: float) -> bool:
+    s = (symbol or "").upper()
+    if "JPY" in s:
+        return 50.0 <= price <= 300.0
+    return 0.3 <= price <= 3.0
 
 
 def _contains_append_only_error(exc: Exception) -> bool:
@@ -81,12 +89,16 @@ class ExecutionOutcomeVerifier:
     def verify_pending(self, horizon_minutes: int = 240, limit: int = 200) -> OutcomeVerifyResult:
         result = OutcomeVerifyResult()
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=horizon_minutes)
+        max_lookback_days = max(1, int(os.getenv("EXECUTION_VERIFY_MAX_LOOKBACK_DAYS", "14")))
+        lower_bound = datetime.now(timezone.utc) - timedelta(days=max_lookback_days)
+        max_abs_pips = float(os.getenv("EXECUTION_VERIFY_MAX_ABS_PIPS", "2000"))
         rows_res = (
             self.db.client.table("parallel_decisions")
             .select("id, ts_utc, symbol, executed_signal, hybrid_signal, rules_signal")
             .is_("outcome_result", "null")
             .in_("executed_signal", ["LONG", "SHORT"])
             .lte("ts_utc", cutoff.isoformat())
+            .gte("ts_utc", lower_bound.isoformat())
             .order("ts_utc", desc=False)
             .limit(limit)
             .execute()
@@ -115,6 +127,9 @@ class ExecutionOutcomeVerifier:
                 if entry_price is None or exit_price is None:
                     result.skipped += 1
                     continue
+                if not _price_sane(symbol, entry_price) or not _price_sane(symbol, exit_price):
+                    result.skipped += 1
+                    continue
 
                 delta = exit_price - entry_price
                 if signal == "LONG":
@@ -123,6 +138,9 @@ class ExecutionOutcomeVerifier:
                     directional_delta = -delta
 
                 pips = directional_delta / _pip_size(symbol)
+                if abs(pips) > max_abs_pips:
+                    result.skipped += 1
+                    continue
                 if directional_delta > 0:
                     outcome = "win"
                 elif directional_delta < 0:
