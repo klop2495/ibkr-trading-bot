@@ -16,6 +16,7 @@ from app.storage.bot_settings_repo import BotSettingsRepo
 logger = logging.getLogger(__name__)
 
 PENDING_KEY_GRACE_SECONDS = int(os.getenv("BROKER_PENDING_KEY_GRACE_SECONDS", "180"))
+ORPHAN_RECENT_GRACE_SECONDS = int(os.getenv("BROKER_ORPHAN_RECENT_GRACE_SECONDS", "1800"))
 
 
 class BrokerConnectionError(RuntimeError):
@@ -324,6 +325,15 @@ class BrokerStateService:
             return self._trades_history_repo.get_latest_orphan_by_instrument_key(instrument_key_value)
         except Exception:
             return None
+
+    def _is_recent_orphan(self, orphan: Optional[dict], now: datetime) -> bool:
+        if not orphan:
+            return False
+        opened_at = orphan.get("opened_at") or orphan.get("created_at")
+        opened_ts = self._parse_ib_time(opened_at) if opened_at else None
+        if not opened_ts:
+            return False
+        return (now - opened_ts).total_seconds() <= ORPHAN_RECENT_GRACE_SECONDS
 
     def _validate_cfd_snapshot(
         self,
@@ -665,7 +675,11 @@ class BrokerStateService:
                 return result
 
             try:
-                healed = self._trades_history_repo.heal_inconsistent_open_trades()
+                healed_raw = self._trades_history_repo.heal_inconsistent_open_trades()
+                try:
+                    healed = int(healed_raw or 0)
+                except Exception:
+                    healed = 0
                 if healed > 0:
                     result.mismatches.append(f"healed_open_closed_inconsistent:{healed}")
                     self._log_event(
@@ -782,7 +796,10 @@ class BrokerStateService:
                 # CASE B: broker has position, DB missing -> create orphan record
                 orphan = self._get_recent_orphan(key)
                 if orphan:
-                    result.mismatches.append(f"orphan_exists:{key}")
+                    if self._is_recent_orphan(orphan, now_ts):
+                        result.mismatches.append(f"orphan_recent_exists:{key}")
+                    else:
+                        result.mismatches.append(f"orphan_exists:{key}")
                     continue
                 if self._trades_history_repo.has_orphan_by_instrument_key(key):
                     result.mismatches.append(f"orphan_exists:{key}")

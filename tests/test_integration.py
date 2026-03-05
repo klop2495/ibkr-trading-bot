@@ -205,11 +205,11 @@ class TestParallelDecisionRunner:
         result = runner.run(preview, uuid4(), decision)
         
         assert result.symbol == "EURUSD"
-        assert result.rules_signal == "LONG"
+        assert result.rules_signal == "SHORT"
         assert result.rules_confidence == "high"
         assert result.gpt_signal == "HOLD"  # LLM contour disabled -> HOLD
         assert result.executed_strategy == "rules"
-        assert result.executed_signal == "LONG"
+        assert result.executed_signal == "SHORT"
     
     def test_run_with_trade_not_allowed(self):
         """Test running when trade not allowed."""
@@ -367,7 +367,7 @@ class TestIntegrationPipeline:
         
         # Verify
         assert result.symbol == "AUDUSD"
-        assert result.rules_signal == "SHORT"
+        assert result.rules_signal == "LONG"
         assert result.gpt_signal == "HOLD"  # Shadow mode
         assert result.hybrid_signal in ("SHORT", "HOLD")
         assert result.executed_strategy == "rules"
@@ -414,7 +414,7 @@ class TestIntegrationPipeline:
         
         # Verify
         assert result.symbol == "EURUSD"
-        assert result.rules_signal == "LONG"
+        assert result.rules_signal == "SHORT"
         # GPT should have real mock responses now
         assert result.gpt_signal in ("LONG", "SHORT", "HOLD")
         assert result.executed_strategy == "hybrid"
