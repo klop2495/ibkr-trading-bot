@@ -8,7 +8,7 @@ Uses time-bucketed keys for natural expiration.
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional
 
 
 logger = logging.getLogger(__name__)

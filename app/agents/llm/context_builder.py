@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from app.models.signal_preview import SignalPreviewV1, Direction, Confidence, SetupType
+from app.models.signal_preview import SignalPreviewV1, Direction, SetupType
 
 
 logger = logging.getLogger(__name__)

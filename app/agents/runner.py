@@ -4,8 +4,9 @@ from typing import Dict, List, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agents.config import RISK_MOD_CAP_NO_ENTRY, RISK_MOD_MIN, RISK_MOD_MAX
 from app.models.agent_report import AgentReport
-from app.models.signal_preview import SignalPreviewV1
+from app.models.signal_preview import SignalPreviewV1, SetupType
 from app.models.signals_params import SignalsParams
 from app.storage.agent_reports_repo import AgentReportsRepo
 from app.signals.engine_v1 import (
@@ -153,11 +154,6 @@ class AgentsAggregator:
         result = agent.run(payload)
         _ = time.perf_counter() - start
         return result
-
-
-from app.models.signal_preview import SetupType
-from app.agents.config import RISK_MOD_CAP_NO_ENTRY, RISK_MOD_MIN, RISK_MOD_MAX
-
 
 def is_candidate_valid(preview: SignalPreviewV1) -> bool:
     """

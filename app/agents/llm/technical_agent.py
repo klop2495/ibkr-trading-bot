@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 from app.agents.llm.base_agent import BaseLLMAgent, AgentSignal
 from app.agents.llm.data_status import DataStatus
-from app.models.confidence import ConfidenceLevel, confidence_to_float
+from app.models.confidence import ConfidenceLevel
 
 # Phase 7: Import candlestick pattern detector
 try:
