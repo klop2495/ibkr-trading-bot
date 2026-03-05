@@ -1,5 +1,30 @@
 # Dev Changelog (append-only)
 
+## 2026-03-05 — Execution diagnostics: TRADING_DISABLED vs Forecast Gate blocks
+
+### Context
+- Runtime showed `parallel_decisions` with `executed_signal=LONG/SHORT`, but no `orders` / `trades_history` inserts.
+- Broker UI showed trading enabled, while older verdicts still contained `TRADING_DISABLED`.
+
+### Findings
+- `TRADING_DISABLED` in `risk_verdicts` was historical (before settings update timestamp).
+- After enabling trading in latest `bot_settings` row, fresh records no longer had `TRADING_DISABLED`.
+- Main execution blocker moved to:
+  - `EXECUTION_ACCURACY_GUARD` (rolling guard), and then
+  - `ForecastGate` (`EXECUTION_BLOCKED`, reason `adaptive_gate_blocked:<symbol> rolling_acc=<...>%`).
+- `run_execution_tick` was active, but `ExecutionService.execute()` returned `executed=False` due forecast gate checks.
+
+### Operational changes applied (runtime config)
+- `EXECUTION_STRATEGY=rules`
+- `ACTIVE_STRATEGY=rules`
+- `EXECUTION_ACCURACY_GUARD_ENABLED=0` (temporary diagnostics mode)
+- `FORECAST_GATE_ENABLED=0` (temporary diagnostics mode)
+
+### Notes
+- This update is operational/documentation only; no forecast-layer algorithm change recorded here.
+- Root-cause workflow and ready-to-run diagnostics are documented in:
+  - `docs/EXECUTION_BLOCKERS_2026-03-05.md`
+
 ## 2025-12-26 — Role-based ClientIds + Paper/Live UI + REJECTED Fix
 
 ### Role-based ClientIds (Error 326 Fix)
