@@ -12,10 +12,9 @@ Or via docker:
 
 import os
 import sys
-import time
 import argparse
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 # Add app to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -137,7 +136,7 @@ class IBDiagnostics:
             print(f"    OrderId: {order.orderId}")
             print(f"    Action: {order.action} {order.totalQuantity}")
             print(f"    WhyHeld: {status.whyHeld if hasattr(status, 'whyHeld') else 'N/A'}")
-            print(f"    Check ERROR events above for reason!\n")
+            print("    Check ERROR events above for reason!\n")
     
     def _on_exec_details(self, trade: Any, fill: Any) -> None:
         """Handle fill event."""
@@ -247,7 +246,7 @@ class IBDiagnostics:
                       f"currency={c.currency}, exchange={c.exchange}")
                 return True
             else:
-                print(f"  FAILED: Contract could not be qualified!")
+                print("  FAILED: Contract could not be qualified!")
                 return False
         except Exception as e:
             print(f"  ERROR: {e}")
@@ -266,7 +265,7 @@ class IBDiagnostics:
         Returns dict with results and all captured events/errors.
         """
         print(f"\n{'='*60}")
-        print(f"TESTING SIMPLE MARKET ORDER")
+        print("TESTING SIMPLE MARKET ORDER")
         print(f"  Symbol: {symbol}")
         print(f"  Side: {side}")
         print(f"  Quantity: {quantity}")
@@ -295,7 +294,7 @@ class IBDiagnostics:
         
         order = MarketOrder(side, quantity)
         
-        print(f"\n=== PLACING ORDER ===")
+        print("\n=== PLACING ORDER ===")
         print(f"  Contract: {contract}")
         print(f"  Order: {order}")
         
@@ -315,19 +314,19 @@ class IBDiagnostics:
                 break
         
         # Final status
-        print(f"\n=== FINAL STATUS ===")
+        print("\n=== FINAL STATUS ===")
         print(f"  Status: {trade.orderStatus.status}")
         print(f"  Filled: {trade.orderStatus.filled}")
         print(f"  Remaining: {trade.orderStatus.remaining}")
         print(f"  AvgFillPrice: {trade.orderStatus.avgFillPrice}")
         
         # Summary
-        print(f"\n=== EVENT SUMMARY ===")
+        print("\n=== EVENT SUMMARY ===")
         print(f"  Total events: {len(self.events)}")
         print(f"  Errors: {len(self.errors)}")
         
         if self.errors:
-            print(f"\n=== ERRORS CAPTURED ===")
+            print("\n=== ERRORS CAPTURED ===")
             for err in self.errors:
                 print(f"  Code {err['errorCode']}: {err['errorString']}")
         
@@ -354,7 +353,7 @@ class IBDiagnostics:
         Test a bracket order (parent + SL + TP).
         """
         print(f"\n{'='*60}")
-        print(f"TESTING BRACKET ORDER")
+        print("TESTING BRACKET ORDER")
         print(f"  Symbol: {symbol}")
         print(f"  Side: {side}")
         print(f"  Quantity: {quantity}")
@@ -415,7 +414,7 @@ class IBDiagnostics:
         tp_id = self.ib.client.getReqId()
         sl_id = self.ib.client.getReqId()
         
-        print(f"\n=== ORDER IDs ===")
+        print("\n=== ORDER IDs ===")
         print(f"  Parent: {parent_id}")
         print(f"  TP: {tp_id}")
         print(f"  SL: {sl_id}")
@@ -454,7 +453,7 @@ class IBDiagnostics:
             transmit=True,  # This sends the entire bracket
         )
         
-        print(f"\n=== PLACING BRACKET ===")
+        print("\n=== PLACING BRACKET ===")
         
         # Place in sequence
         parent_trade = self.ib.placeOrder(contract, parent_order)
@@ -477,13 +476,13 @@ class IBDiagnostics:
                 break
         
         # Final
-        print(f"\n=== FINAL STATUS ===")
+        print("\n=== FINAL STATUS ===")
         print(f"  Parent: {parent_trade.orderStatus.status} (filled: {parent_trade.orderStatus.filled})")
         print(f"  TP: {tp_trade.orderStatus.status}")
         print(f"  SL: {sl_trade.orderStatus.status}")
         
         if self.errors:
-            print(f"\n=== ERRORS ===")
+            print("\n=== ERRORS ===")
             for err in self.errors:
                 print(f"  [{err['reqId']}] Code {err['errorCode']}: {err['errorString']}")
         
@@ -546,7 +545,7 @@ def main():
                 side=args.side,
                 wait_seconds=args.wait,
             )
-            print(f"\n=== RESULT ===")
+            print("\n=== RESULT ===")
             print(f"  Success: {result['success']}")
             print(f"  Status: {result.get('final_status', 'N/A')}")
             
@@ -557,7 +556,7 @@ def main():
                 side=args.side,
                 wait_seconds=args.wait,
             )
-            print(f"\n=== RESULT ===")
+            print("\n=== RESULT ===")
             print(f"  Success: {result['success']}")
             
     finally:
