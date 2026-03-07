@@ -19,14 +19,13 @@ import threading
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.order_intent import OrderIntentV1
 from app.broker.contracts import create_cfd_fx_contract
 from app.broker.keys import instrument_key
 from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
 
 # FX Funds Guard for pre-checking available currency
 try:
-    from app.broker.fx_funds_guard import FXFundsGuard, FundsCheckResult
+    from app.broker.fx_funds_guard import FXFundsGuard
     FX_FUNDS_GUARD_AVAILABLE = True
 except ImportError:
     FX_FUNDS_GUARD_AVAILABLE = False
@@ -634,8 +633,8 @@ class IBKROMS:
             # Place orders in sequence - IBKR requires this order
             # Parent first, then children. Last order with transmit=True sends all.
             parent_trade = self.ib.placeOrder(contract, parent_order)
-            tp_trade = self.ib.placeOrder(contract, tp_order)
-            sl_trade = self.ib.placeOrder(contract, sl_order)
+            self.ib.placeOrder(contract, tp_order)
+            self.ib.placeOrder(contract, sl_order)
             
             # Store IDs
             state.ib_order_id = parent_id

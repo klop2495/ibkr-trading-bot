@@ -623,7 +623,6 @@ class BrokerStateService:
             try:
                 state = self.get_state(force_refresh=True)
                 raw_positions = list(self._ib.positions())
-                raw_open_orders = list(self._ib.openOrders())
                 open_trades = list(self._ib.openTrades())
             except Exception as exc:
                 result.errors.append(str(exc))

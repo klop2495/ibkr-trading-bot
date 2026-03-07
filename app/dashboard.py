@@ -8,7 +8,6 @@ import logging
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -197,7 +196,7 @@ async def reconnect_broker():
     restart_error = None
     try:
         import urllib.request
-        req = urllib.request.Request(
+        urllib.request.Request(
             "http+unix:///var/run/docker.sock/containers/ibkr-trading-bot/restart",
             method="POST",
         )
@@ -327,7 +326,7 @@ def _close_trade_sync(trade: dict) -> dict:
                             if broker_qty > 100:  # Significant position
                                 position_exists = True
                                 logger.info(f"[ClosePosition] Found {base_ccy} balance: {v.value}")
-                        except:
+                        except Exception:
                             pass
                         break
                 
@@ -413,7 +412,7 @@ def _close_trade_sync(trade: dict) -> dict:
                 try:
                     if ib.isConnected():
                         ib.disconnect()
-                except:
+                except Exception:
                     pass
         except Exception as e:
             logger.error(f"[ClosePosition] Worker error: {e}")
