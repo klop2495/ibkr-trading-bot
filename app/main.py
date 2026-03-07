@@ -64,6 +64,23 @@ def _safe_uuid(value: Any) -> Optional[UUID]:
         return None
 
 
+def _is_fx_market_open_utc(ts: datetime) -> bool:
+    """
+    Forex weekend close window (UTC):
+    - closed from Friday 22:00 UTC
+    - reopens Sunday 22:00 UTC
+    """
+    wd = ts.weekday()  # 0=Mon .. 6=Sun
+    hour = ts.hour
+    if wd == 5:
+        return False
+    if wd == 6 and hour < 22:
+        return False
+    if wd == 4 and hour >= 22:
+        return False
+    return True
+
+
 def persist_control_decision_and_verdict(
     *,
     preview: SignalPreviewV1,
@@ -1904,6 +1921,7 @@ def main():
 
     last_logged_symbols = None
     last_logged_found = None
+    last_fx_market_open: Optional[bool] = None
     
     # Stats logging interval
     stats_log_interval = int(os.getenv("STATS_LOG_INTERVAL_TICKS", "10"))
@@ -1917,6 +1935,12 @@ def main():
     while True:
         tick_count += 1
         settings = bot_settings_repo.get(owner_uuid_str)
+        now_utc = datetime.now(timezone.utc)
+        fx_market_open = _is_fx_market_open_utc(now_utc)
+        if fx_market_open != last_fx_market_open:
+            market_state = "OPEN" if fx_market_open else "CLOSED_WEEKEND"
+            print(f"fx_market state={market_state} ts={now_utc.isoformat()}")
+            last_fx_market_open = fx_market_open
         symbols_empty_flag = False
         symbols_list = getattr(settings, "symbols", None)
         if isinstance(symbols_list, list) and len(symbols_list) == 0:
@@ -1932,7 +1956,11 @@ def main():
         # Phase 6: Signal generation tick (generates signal_previews)
         if signal_gen_enabled:
             now_ts = time.time()
-            if now_ts - last_signal_gen_tick >= signal_gen_interval:
+            if not fx_market_open:
+                if now_ts - last_signal_gen_tick >= signal_gen_interval:
+                    print("signal_gen skipped=market_closed_weekend")
+                    last_signal_gen_tick = now_ts
+            elif now_ts - last_signal_gen_tick >= signal_gen_interval:
                 signal_result = run_signal_generation_tick(
                     market_data_service=market_data_service,
                     signal_engine=signal_engine_instance,
@@ -1988,7 +2016,7 @@ def main():
         # Instead of a fixed timer, detect when M15 bars cache gets a new bar.
         # This eliminates 0-14 min random latency between bar close and forecast.
         # Fallback: still run on timer if bar detection fails.
-        if signal_gen_enabled and forecast_enabled and market_data_service:
+        if signal_gen_enabled and forecast_enabled and market_data_service and fx_market_open:
             now_ts = time.time()
             # Detect new M15 bar by checking latest bar timestamp for any symbol
             new_bar_detected = False
@@ -2292,6 +2320,11 @@ def main():
                                     _prev_in_trading_hours = in_hours_now
                 except Exception as exc:
                     print(f"forecast_error: {exc}")
+                last_forecast_tick = now_ts
+        elif signal_gen_enabled and forecast_enabled and market_data_service:
+            now_ts = time.time()
+            if now_ts - last_forecast_tick >= forecast_interval:
+                print("forecast skipped=market_closed_weekend")
                 last_forecast_tick = now_ts
 
         # Forecast verification — runs independently, more frequently than forecast generation
