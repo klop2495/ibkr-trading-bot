@@ -17,6 +17,17 @@ The system is intentionally decoupled from trade execution. It serves two functi
 
 The forecast is not a price target. It answers one question: *"Will the price be higher or lower than now after N minutes?"*
 
+### Alt Strategies (H30)
+
+- `Alt2`: ma!=pv + ADX>=30 (+ eligibility marker)
+- `Alt3`: stricter legacy variant (momentum confirms ma)
+- `Alt3-v2`: independent strict weighted variant
+- `Alt4`: hour-based original/inverted mode
+- `Alt5`: **ANTI_ALT3** (inverse of Alt3) with env filters:
+  - `ALT5_ENABLED`
+  - `ALT5_ALLOWED_HOURS` (UTC CSV)
+  - `ALT5_MIN_ADX`
+
 
 ## 2. Architecture Overview
 
