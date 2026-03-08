@@ -2345,7 +2345,7 @@ def main():
                             try:
                                 for _av in verify_result.alt_results:
                                     _variant = str(getattr(_av, "variant", "") or "").lower()
-                                    if _variant not in ("alt2", "alt3", "alt3v2", "alt4"):
+                                    if _variant not in ("alt2", "alt3", "alt3v2", "alt4", "alt5"):
                                         continue
                                     _sym = str(getattr(_av, "symbol", "") or "").upper()
                                     if not _sym:

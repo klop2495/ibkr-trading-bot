@@ -863,23 +863,28 @@ async def get_forecasts_history(
             has_alt2 = row.get("h30_alt2_direction") is not None
             has_alt3 = row.get("h30_alt3v2_direction") is not None or row.get("h30_alt3_direction") is not None
             has_alt4 = row.get("h30_alt4_direction") is not None
+            has_alt5 = row.get("h30_alt5_direction") is not None
 
             lifecycle_alt2 = lifecycle_symbols.get(f"{row.get('symbol')}#alt2") or lifecycle_symbols.get(row.get("symbol"))
             lifecycle_alt3 = lifecycle_symbols.get(f"{row.get('symbol')}#alt3v2") or lifecycle_symbols.get(f"{row.get('symbol')}#alt3")
             lifecycle_alt4 = lifecycle_symbols.get(f"{row.get('symbol')}#alt4")
+            lifecycle_alt5 = lifecycle_symbols.get(f"{row.get('symbol')}#alt5")
             lifecycle_status_alt2 = str((lifecycle_alt2 or {}).get("status") or "").lower()
             lifecycle_status_alt3 = str((lifecycle_alt3 or {}).get("status") or "").lower()
             lifecycle_status_alt4 = str((lifecycle_alt4 or {}).get("status") or "").lower()
+            lifecycle_status_alt5 = str((lifecycle_alt5 or {}).get("status") or "").lower()
             lifecycle_blocked_alt2 = lifecycle_status_alt2 in {"pending", "cooldown", "blacklisted"}
             lifecycle_blocked_alt3 = lifecycle_status_alt3 in {"pending", "cooldown", "blacklisted"}
             lifecycle_blocked_alt4 = lifecycle_status_alt4 in {"pending", "cooldown", "blacklisted"}
+            lifecycle_blocked_alt5 = lifecycle_status_alt5 in {"pending", "cooldown", "blacklisted"}
 
             alt2_trade_eligible = bool(row.get("h30_alt2_trade_eligible"))
             alt4_trade_eligible = bool(row.get("h30_alt4_trade_eligible"))
             recommended_alt2 = bool(in_window and has_alt2 and alt2_trade_eligible and not lifecycle_blocked_alt2)
             recommended_alt3 = bool(in_window and has_alt3 and not lifecycle_blocked_alt3)
             recommended_alt4 = bool(in_window and has_alt4 and alt4_trade_eligible and not lifecycle_blocked_alt4)
-            recommended = bool(recommended_alt2 or recommended_alt3 or recommended_alt4)
+            recommended_alt5 = bool(in_window and has_alt5 and not lifecycle_blocked_alt5)
+            recommended = bool(recommended_alt2 or recommended_alt3 or recommended_alt4 or recommended_alt5)
             orig_badge, orig_effective = classify_with_effective(row.get("h30_direction"), hour_utc)
             row2 = {
                 **row,
@@ -890,6 +895,7 @@ async def get_forecasts_history(
                 "recommended_alt2": recommended_alt2,
                 "recommended_alt3": recommended_alt3,
                 "recommended_alt4": recommended_alt4,
+                "recommended_alt5": recommended_alt5,
                 "window_status": "recommended" if recommended else "info_only",
                 "h30_original_mode": orig_badge,
                 "h30_original_effective_direction": orig_effective,
@@ -957,6 +963,17 @@ async def get_forecasts_history(
                 "verified": len(alt4_eligible_verified),
                 "correct": alt4_eligible_correct,
                 "accuracy": _acc(alt4_eligible_correct, len(alt4_eligible_verified)),
+            },
+        }
+        alt5_all = [r for r in enriched_rows if r.get("h30_alt5_direction") is not None]
+        alt5_all_verified = [r for r in alt5_all if r.get("h30_alt5_correct") is not None]
+        alt5_all_correct = sum(1 for r in alt5_all_verified if bool(r.get("h30_alt5_correct")))
+        result["alt5_stats"] = {
+            "all": {
+                "total": len(alt5_all),
+                "verified": len(alt5_all_verified),
+                "correct": alt5_all_correct,
+                "accuracy": _acc(alt5_all_correct, len(alt5_all_verified)),
             },
         }
         result["rows"] = enriched_rows

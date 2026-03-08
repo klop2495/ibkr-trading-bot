@@ -40,7 +40,8 @@ class ForecastRepo:
                     "symbol, h30_direction, h60_direction, h240_direction, h1440_direction, "
                     "h30_alt2_direction, h30_alt2_trade_eligible, h30_alt3_direction, "
                     "h30_alt3v2_direction, h30_alt3v2_trade_eligible, "
-                    "h30_alt4_direction, h30_alt4_mode, h30_alt4_trade_eligible"
+                    "h30_alt4_direction, h30_alt4_mode, h30_alt4_trade_eligible, "
+                    "h30_alt5_direction"
                 )
                 .in_("symbol", symbols)
                 .order("ts_utc", desc=True)
@@ -63,6 +64,7 @@ class ForecastRepo:
                         row.get("h30_alt4_direction"),
                         row.get("h30_alt4_mode"),
                         row.get("h30_alt4_trade_eligible"),
+                        row.get("h30_alt5_direction"),
                     )
         except Exception:
             pass  # If lookup fails, insert all
@@ -84,6 +86,7 @@ class ForecastRepo:
                     f.h30_alt4_direction,
                     f.h30_alt4_mode,
                     f.h30_alt4_trade_eligible,
+                    f.h30_alt5_direction,
                 )
                 if current == prev:
                     continue  # Skip — identical directions + alt signals
