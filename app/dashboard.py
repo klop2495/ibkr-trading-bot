@@ -420,7 +420,7 @@ def _close_trade_sync(trade: dict) -> dict:
         finally:
             try:
                 loop.close()
-            except:
+            except Exception:
                 pass
     
     # Run in separate thread
@@ -1262,7 +1262,6 @@ def _run_optimizer_thread(days: int, horizon: Optional[int], symbol: Optional[st
         _optimizer_state["results"] = None
 
         import itertools
-        import time as _time
         from app.models.forecast import FORECAST_HORIZONS
         from app.market_data.indicators import rsi as calc_rsi, sma as calc_sma
 
@@ -1350,29 +1349,42 @@ def _run_optimizer_thread(days: int, horizon: Optional[int], symbol: Optional[st
 
         # Inline voter functions
         def v_ma_cross(closes, fp, sp):
-            if len(closes) < sp: return 0
-            f = calc_sma(closes, fp); s = calc_sma(closes, sp)
-            if f is None or s is None: return 0
+            if len(closes) < sp:
+                return 0
+            f = calc_sma(closes, fp)
+            s = calc_sma(closes, sp)
+            if f is None or s is None:
+                return 0
             return 1 if f > s else (-1 if f < s else 0)
 
         def v_rsi_trend(closes, per=14, lb=3):
-            if len(closes) < per + 1 + lb: return 0
-            now = calc_rsi(closes, per); prev = calc_rsi(closes[:-lb], per)
-            if now is None or prev is None: return 0
-            if now > 50 and now > prev: return 1
-            if now < 50 and now < prev: return -1
+            if len(closes) < per + 1 + lb:
+                return 0
+            now = calc_rsi(closes, per)
+            prev = calc_rsi(closes[:-lb], per)
+            if now is None or prev is None:
+                return 0
+            if now > 50 and now > prev:
+                return 1
+            if now < 50 and now < prev:
+                return -1
             return 0
 
         def v_rsi_extreme(closes, per=14):
-            if len(closes) < per + 1: return 0
+            if len(closes) < per + 1:
+                return 0
             v = calc_rsi(closes, per)
-            if v is None: return 0
-            if v <= 30: return 1
-            if v >= 70: return -1
+            if v is None:
+                return 0
+            if v <= 30:
+                return 1
+            if v >= 70:
+                return -1
             return 0
 
         def v_price_vs_ma(closes, mp):
-            if len(closes) < mp: return 0
+            if len(closes) < mp:
+                return 0
             ma = calc_sma(closes, mp)
             if ma is None or ma == 0: return 0
             return 1 if closes[-1] > ma else (-1 if closes[-1] < ma else 0)
