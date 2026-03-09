@@ -1386,11 +1386,13 @@ def _run_optimizer_thread(days: int, horizon: Optional[int], symbol: Optional[st
             if len(closes) < mp:
                 return 0
             ma = calc_sma(closes, mp)
-            if ma is None or ma == 0: return 0
+            if ma is None or ma == 0:
+                return 0
             return 1 if closes[-1] > ma else (-1 if closes[-1] < ma else 0)
 
         def v_momentum(closes, lb):
-            if len(closes) < lb + 1: return 0
+            if len(closes) < lb + 1:
+                return 0
             return 1 if closes[-1] > closes[-(lb + 1)] else (-1 if closes[-1] < closes[-(lb + 1)] else 0)
 
         # Run grid search
@@ -1400,15 +1402,19 @@ def _run_optimizer_thread(days: int, horizon: Optional[int], symbol: Optional[st
             primary_tf, secondary_tf = HORIZON_TF[h]
             h_results = []
             for params in combos:
-                total = 0; correct = 0
+                total = 0
+                correct = 0
                 for sym in symbols:
                     m15_bars = data.get(sym, {}).get("M15", [])
-                    if len(m15_bars) < MIN_BARS + 10: continue
+                    if len(m15_bars) < MIN_BARS + 10:
+                        continue
                     for i in range(MIN_BARS, len(m15_bars)):
                         bar = m15_bars[i]
                         bar_dt = datetime.fromisoformat(bar["ts"].replace("Z", "+00:00"))
-                        if bar_dt < backtest_start: continue
-                        if i % 4 != 0: continue
+                        if bar_dt < backtest_start:
+                            continue
+                        if i % 4 != 0:
+                            continue
                         # build closes
                         if primary_tf == "M15":
                             closes = [b["close"] for b in m15_bars[:i]]
@@ -1420,11 +1426,13 @@ def _run_optimizer_thread(days: int, horizon: Optional[int], symbol: Optional[st
                             cts = m15_bars[i - 1]["ts"] if i > 0 else ""
                             tf_bars = data.get(sym, {}).get(secondary_tf, [])
                             closes = [b["close"] for b in tf_bars if b["ts"] <= cts]
-                        if len(closes) < 15: continue
+                        if len(closes) < 15:
+                            continue
                         votes = []
                         votes.append(v_ma_cross(closes, params["ma_fast"], params["ma_slow"]))
                         votes.append(v_rsi_trend(closes, params["rsi_period"], params["rsi_lookback"]))
-                        if h <= 240: votes.append(v_rsi_extreme(closes, params["rsi_period"]))
+                        if h <= 240:
+                            votes.append(v_rsi_extreme(closes, params["rsi_period"]))
                         votes.append(v_price_vs_ma(closes, params["ma_fast"]))
                         votes.append(v_momentum(closes, params["momentum_lookback"]))
                         if secondary_tf:
@@ -1432,17 +1440,27 @@ def _run_optimizer_thread(days: int, horizon: Optional[int], symbol: Optional[st
                             sc = [b["close"] for b in data.get(sym, {}).get(secondary_tf, []) if b["ts"] <= cts2]
                             if len(sc) >= params["ma_slow"]:
                                 votes.append(v_ma_cross(sc, params["ma_fast"], params["ma_slow"]))
-                        t = len(votes); ups = sum(1 for v in votes if v > 0); downs = sum(1 for v in votes if v < 0)
-                        net = ups - downs; ratio = abs(net) / t if t else 0
-                        if ratio < params["min_ratio"]: continue
+                        t = len(votes)
+                        ups = sum(1 for v in votes if v > 0)
+                        downs = sum(1 for v in votes if v < 0)
+                        net = ups - downs
+                        ratio = abs(net) / t if t else 0
+                        if ratio < params["min_ratio"]:
+                            continue
                         direction = "up" if net > 0 else "down"
-                        bars_ahead = h // 15; target_idx = i + bars_ahead
-                        if target_idx >= len(m15_bars): continue
-                        actual_price = m15_bars[target_idx]["close"]; base_price = closes[-1]
+                        bars_ahead = h // 15
+                        target_idx = i + bars_ahead
+                        if target_idx >= len(m15_bars):
+                            continue
+                        actual_price = m15_bars[target_idx]["close"]
+                        base_price = closes[-1]
                         pc = actual_price - base_price
-                        if abs(pc) < 1e-6: ad = "neutral"
-                        else: ad = "up" if pc > 0 else "down"
-                        if direction == ad: correct += 1
+                        if abs(pc) < 1e-6:
+                            ad = "neutral"
+                        else:
+                            ad = "up" if pc > 0 else "down"
+                        if direction == ad:
+                            correct += 1
                         total += 1
                 acc = correct / total if total > 0 else 0
                 h_results.append({**params, "total": total, "correct": correct, "accuracy": acc})
