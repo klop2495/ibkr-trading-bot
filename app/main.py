@@ -1932,6 +1932,138 @@ def main():
     ib_fail_safe_warn_window_s = int(os.getenv("IB_FAILSAFE_WARN_WINDOW_S", "60"))
     last_ib_warn_ts = 0.0
 
+    # Strategy-level rolling guards for forecast variants (adaptive enable/disable).
+    alt2_guard_enabled = os.getenv("ALT2_GUARD_ENABLED", "0") == "1"
+    alt2_guard_window = int(os.getenv("ALT2_GUARD_WINDOW", "40"))
+    alt2_guard_min_samples = int(os.getenv("ALT2_GUARD_MIN_SAMPLES", "20"))
+    alt2_guard_block_below = float(os.getenv("ALT2_GUARD_BLOCK_BELOW", "0.5556"))
+    alt2_guard_unblock_above = float(os.getenv("ALT2_GUARD_UNBLOCK_ABOVE", "0.60"))
+
+    alt3_guard_enabled = os.getenv("ALT3_GUARD_ENABLED", "0") == "1"
+    alt3_guard_window = int(os.getenv("ALT3_GUARD_WINDOW", "40"))
+    alt3_guard_min_samples = int(os.getenv("ALT3_GUARD_MIN_SAMPLES", "20"))
+    alt3_guard_block_below = float(os.getenv("ALT3_GUARD_BLOCK_BELOW", "0.5556"))
+    alt3_guard_unblock_above = float(os.getenv("ALT3_GUARD_UNBLOCK_ABOVE", "0.60"))
+
+    strategy_guard_refresh_s = int(os.getenv("STRATEGY_GUARD_REFRESH_S", "300"))
+    last_strategy_guard_refresh = 0.0
+    strategy_guard_state: Dict[str, Dict[str, Any]] = {
+        "alt2": {"blocked": False, "samples": 0, "accuracy": None, "reason": "guard_disabled"},
+        "alt3v2": {"blocked": False, "samples": 0, "accuracy": None, "reason": "guard_disabled"},
+    }
+
+    def _load_variant_guard_snapshot(
+        *,
+        direction_col: str,
+        correct_col: str,
+        window: int,
+    ) -> Dict[str, Any]:
+        rows_res = (
+            db.client.table("price_forecasts")
+            .select(f"{direction_col}, {correct_col}")
+            .not_(direction_col, "is", "null")
+            .not_(correct_col, "is", "null")
+            .order("ts_utc", desc=True)
+            .limit(window)
+            .execute()
+        )
+        rows = getattr(rows_res, "data", None) or []
+        samples = len(rows)
+        wins = sum(1 for r in rows if bool(r.get(correct_col)))
+        accuracy = (wins / samples) if samples > 0 else None
+        return {"samples": samples, "wins": wins, "accuracy": accuracy}
+
+    def _refresh_strategy_guards(now_ts: float) -> None:
+        nonlocal last_strategy_guard_refresh
+        if now_ts - last_strategy_guard_refresh < strategy_guard_refresh_s:
+            return
+        last_strategy_guard_refresh = now_ts
+
+        configs = [
+            (
+                "alt2",
+                alt2_guard_enabled,
+                "h30_alt2_direction",
+                "h30_alt2_correct",
+                alt2_guard_window,
+                alt2_guard_min_samples,
+                alt2_guard_block_below,
+                alt2_guard_unblock_above,
+            ),
+            (
+                "alt3v2",
+                alt3_guard_enabled,
+                "h30_alt3v2_direction",
+                "h30_alt3v2_correct",
+                alt3_guard_window,
+                alt3_guard_min_samples,
+                alt3_guard_block_below,
+                alt3_guard_unblock_above,
+            ),
+        ]
+
+        for (
+            key,
+            enabled,
+            direction_col,
+            correct_col,
+            window,
+            min_samples,
+            block_below,
+            unblock_above,
+        ) in configs:
+            prev = strategy_guard_state.get(key, {})
+            prev_blocked = bool(prev.get("blocked"))
+
+            if not enabled:
+                strategy_guard_state[key] = {
+                    "blocked": False,
+                    "samples": 0,
+                    "accuracy": None,
+                    "reason": "guard_disabled",
+                }
+                continue
+
+            snap = _load_variant_guard_snapshot(
+                direction_col=direction_col,
+                correct_col=correct_col,
+                window=window,
+            )
+            samples = int(snap.get("samples", 0))
+            accuracy = snap.get("accuracy")
+
+            blocked = prev_blocked
+            reason = "insufficient_samples" if samples < min_samples else "ok"
+            if samples >= min_samples and accuracy is not None:
+                if prev_blocked:
+                    if accuracy >= unblock_above:
+                        blocked = False
+                        reason = "unblocked"
+                    else:
+                        blocked = True
+                        reason = "stay_blocked"
+                else:
+                    if accuracy < block_below:
+                        blocked = True
+                        reason = "blocked"
+                    else:
+                        blocked = False
+                        reason = "allowed"
+
+            strategy_guard_state[key] = {
+                "blocked": blocked,
+                "samples": samples,
+                "accuracy": accuracy,
+                "reason": reason,
+            }
+
+            if blocked != prev_blocked:
+                acc_text = "n/a" if accuracy is None else f"{float(accuracy):.3f}"
+                print(
+                    f"strategy_guard variant={key} blocked={int(blocked)} "
+                    f"samples={samples} accuracy={acc_text} reason={reason}"
+                )
+
     while True:
         tick_count += 1
         settings = bot_settings_repo.get(owner_uuid_str)
@@ -2018,6 +2150,7 @@ def main():
         # Fallback: still run on timer if bar detection fails.
         if signal_gen_enabled and forecast_enabled and market_data_service and fx_market_open:
             now_ts = time.time()
+            _refresh_strategy_guards(now_ts)
             # Detect new M15 bar by checking latest bar timestamp for any symbol
             new_bar_detected = False
             try:
@@ -2056,6 +2189,14 @@ def main():
                                 # Alt2 lifecycle must track ALL Alt2 signals for dedup/cooldown,
                                 # not only execution-eligible subset.
                                 if _alt2_dir:
+                                    if bool(strategy_guard_state.get("alt2", {}).get("blocked")):
+                                        setattr(fc, "h30_alt2_direction", None)
+                                        setattr(fc, "h30_alt2_trade_eligible", None)
+                                        _lc_blocked += 1
+                                        _alt2_dir = None
+                                    else:
+                                        _alt2_dir = getattr(fc, "h30_alt2_direction", None)
+                                if _alt2_dir:
                                     _key2 = f"{fc.symbol}#alt2"
                                     _ok2, _reason2 = signal_lifecycle.can_signal(_key2, _alt2_dir, _lc_now)
                                     if not _ok2:
@@ -2064,6 +2205,14 @@ def main():
                                         setattr(fc, "h30_alt2_trade_eligible", None)
                                         _lc_blocked += 1
 
+                                if _alt3v2_dir:
+                                    if bool(strategy_guard_state.get("alt3v2", {}).get("blocked")):
+                                        setattr(fc, "h30_alt3v2_direction", None)
+                                        setattr(fc, "h30_alt3v2_trade_eligible", None)
+                                        _lc_blocked += 1
+                                        _alt3v2_dir = None
+                                    else:
+                                        _alt3v2_dir = getattr(fc, "h30_alt3v2_direction", None)
                                 if _alt3v2_dir:
                                     _key3 = f"{fc.symbol}#alt3v2"
                                     _ok3, _reason3 = signal_lifecycle.can_signal(_key3, _alt3v2_dir, _lc_now)
