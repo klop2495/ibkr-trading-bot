@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-from typing import Optional
 
 from app.models.order_intent import OrderIntentV1
 from app.models.decision import DecisionV1

@@ -1471,7 +1471,8 @@ def _run_optimizer_thread(days: int, horizon: Optional[int], symbol: Optional[st
 
             # Current defaults for comparison
             cur = {"ma_fast": 20, "ma_slow": 50, "momentum_lookback": 10, "rsi_period": 14, "rsi_lookback": 3, "min_ratio": 0.2}
-            if h == 1440: cur.update(ma_fast=50, ma_slow=200, momentum_lookback=24)
+            if h == 1440:
+                cur.update(ma_fast=50, ma_slow=200, momentum_lookback=24)
             cur_match = [r for r in h_results if r["ma_fast"] == cur["ma_fast"] and r["ma_slow"] == cur["ma_slow"]]
             cur_acc = cur_match[0]["accuracy"] if cur_match else 0
 
@@ -1801,7 +1802,7 @@ def signal_lifecycle_status():
         if data:
             data["recommended_windows_utc"] = get_recommended_window_labels()
             return data
-    except Exception as exc:
+    except Exception:
         pass
     return {"enabled": False, "message": "lifecycle state not available"}
 

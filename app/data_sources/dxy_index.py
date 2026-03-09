@@ -14,7 +14,7 @@ DXY measures USD against a basket of currencies:
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from app.data_sources.base_source import BaseDataSource

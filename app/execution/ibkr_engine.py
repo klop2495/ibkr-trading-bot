@@ -9,7 +9,7 @@ Integrates:
 """
 
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 from uuid import UUID
 
 from app.broker.oms import (
@@ -19,13 +19,12 @@ from app.broker.oms import (
     IBKROrderState,
     IBKRFill,
     OrderSide,
-    OrderStatus,
     OrderType,
 )
 from app.models.decision import DecisionV1
 from app.models.execution_plan import ExecutionPlanV1
 from app.models.risk_verdict import RiskVerdictV1
-from app.pm.position_sizer import PositionSizer, PositionSizerConfig, PositionSizeResult
+from app.pm.position_sizer import PositionSizer
 from app.storage.repositories import RiskEventsRepo
 
 

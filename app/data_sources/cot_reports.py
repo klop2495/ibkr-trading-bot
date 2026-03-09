@@ -15,7 +15,6 @@ CFTC Data URLs:
 import csv
 import io
 import logging
-import os
 import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
