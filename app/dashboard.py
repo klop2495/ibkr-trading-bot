@@ -843,7 +843,11 @@ async def get_forecasts_history(
             offset=offset,
         )
         rows = result.get("rows") or []
-        from app.forecast.recommended_windows import classify_utc_timestamp, get_recommended_window_labels
+        from app.forecast.recommended_windows import (
+            classify_utc_timestamp,
+            get_recommended_window_labels,
+            is_alt5_recommended_timestamp,
+        )
         from app.forecast.original_mode import classify_with_effective
 
         lifecycle_symbols = {}
@@ -880,10 +884,18 @@ async def get_forecasts_history(
 
             alt2_trade_eligible = bool(row.get("h30_alt2_trade_eligible"))
             alt4_trade_eligible = bool(row.get("h30_alt4_trade_eligible"))
+            alt5_trade_eligible = row.get("h30_alt5_trade_eligible")
+            if alt5_trade_eligible is None:
+                alt5_trade_eligible = True
             recommended_alt2 = bool(in_window and has_alt2 and alt2_trade_eligible and not lifecycle_blocked_alt2)
             recommended_alt3 = bool(in_window and has_alt3 and not lifecycle_blocked_alt3)
             recommended_alt4 = bool(in_window and has_alt4 and alt4_trade_eligible and not lifecycle_blocked_alt4)
-            recommended_alt5 = bool(in_window and has_alt5 and not lifecycle_blocked_alt5)
+            recommended_alt5 = bool(
+                is_alt5_recommended_timestamp(str(row.get("ts_utc") or ""))
+                and has_alt5
+                and bool(alt5_trade_eligible)
+                and not lifecycle_blocked_alt5
+            )
             recommended = bool(recommended_alt2 or recommended_alt3 or recommended_alt4 or recommended_alt5)
             orig_badge, orig_effective = classify_with_effective(row.get("h30_direction"), hour_utc)
             row2 = {

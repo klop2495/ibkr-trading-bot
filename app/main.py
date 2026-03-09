@@ -1762,6 +1762,7 @@ def main():
     # Alt4 telegram is enabled by default. Set TG_ALT4_ENABLED=0 to disable.
     tg_alt4_enabled = os.getenv("TG_ALT4_ENABLED", "1") != "0"
     alt4_min_repeat_min = max(0, int(os.getenv("ALT4_MIN_REPEAT_MIN", "120")))
+    alt5_min_repeat_min = max(0, int(os.getenv("ALT5_MIN_REPEAT_MIN", "120")))
     tg_notify_lost = (os.getenv("TG_NOTIFY_LOST_SIGNALS", "1") != "0") and not tg_alt_only
     # Track trading hours transitions
     _prev_in_trading_hours: Optional[bool] = None
@@ -2176,16 +2177,16 @@ def main():
                         )
                         # Signal Lifecycle: filter alt2/alt3-v2 signals (dedup + cooldown + blacklist)
                         # Variant policy:
-                        # - Alt2, Alt3-v2 and Alt4 are tracked independently for A/B comparison.
-                        # - Lifecycle keys are variant-aware: "SYMBOL#alt2" / "SYMBOL#alt3v2" / "SYMBOL#alt4".
+                        # - Alt2, Alt3-v2, Alt4 and Alt5 are tracked independently for A/B comparison.
+                        # - Lifecycle keys are variant-aware: "SYMBOL#alt2" / "SYMBOL#alt3v2" / "SYMBOL#alt4" / "SYMBOL#alt5".
                         if forecasts and signal_lifecycle.enabled:
                             _lc_now = datetime.now(timezone.utc)
                             _lc_blocked = 0
                             for fc in forecasts:
                                 _alt2_dir = getattr(fc, "h30_alt2_direction", None)
-                                _alt2_eligible = bool(getattr(fc, "h30_alt2_trade_eligible", False))
                                 _alt3v2_dir = getattr(fc, "h30_alt3v2_direction", None)
                                 _alt4_dir = getattr(fc, "h30_alt4_direction", None)
+                                _alt5_dir = getattr(fc, "h30_alt5_direction", None)
                                 # Alt2 lifecycle must track ALL Alt2 signals for dedup/cooldown,
                                 # not only execution-eligible subset.
                                 if _alt2_dir:
@@ -2218,6 +2219,7 @@ def main():
                                     _ok3, _reason3 = signal_lifecycle.can_signal(_key3, _alt3v2_dir, _lc_now)
                                     if not _ok3:
                                         setattr(fc, "h30_alt3v2_direction", None)
+                                        setattr(fc, "h30_alt3v2_trade_eligible", None)
                                         _lc_blocked += 1
 
                                 if _alt4_dir:
@@ -2242,6 +2244,26 @@ def main():
                                         setattr(fc, "h30_alt4_direction", None)
                                         setattr(fc, "h30_alt4_mode", None)
                                         setattr(fc, "h30_alt4_trade_eligible", None)
+                                        _lc_blocked += 1
+
+                                if _alt5_dir:
+                                    _key5 = f"{fc.symbol}#alt5"
+                                    _st5 = signal_lifecycle._states.get(_key5)  # noqa: SLF001
+                                    if (
+                                        alt5_min_repeat_min > 0
+                                        and _st5
+                                        and _st5.last_signal_ts is not None
+                                    ):
+                                        _age5 = (_lc_now - _st5.last_signal_ts).total_seconds() / 60
+                                        if _age5 < alt5_min_repeat_min:
+                                            setattr(fc, "h30_alt5_direction", None)
+                                            setattr(fc, "h30_alt5_trade_eligible", None)
+                                            _lc_blocked += 1
+                                            continue
+                                    _ok5, _reason5 = signal_lifecycle.can_signal(_key5, _alt5_dir, _lc_now)
+                                    if not _ok5:
+                                        setattr(fc, "h30_alt5_direction", None)
+                                        setattr(fc, "h30_alt5_trade_eligible", None)
                                         _lc_blocked += 1
                             if _lc_blocked > 0:
                                 print(f"lifecycle_filter blocked={_lc_blocked}")
@@ -2275,6 +2297,7 @@ def main():
                                         _d2 = _row.get("h30_alt2_direction")
                                         _d3 = _row.get("h30_alt3v2_direction")
                                         _d4 = _row.get("h30_alt4_direction")
+                                        _d5 = _row.get("h30_alt5_direction")
                                         if _sym and _d2:
                                             signal_lifecycle.record_signal(
                                                 f"{_sym}#alt2",
@@ -2293,6 +2316,13 @@ def main():
                                             signal_lifecycle.record_signal(
                                                 f"{_sym}#alt4",
                                                 _d4,
+                                                now=_ts,
+                                                row_id=str(_rid) if _rid is not None else None,
+                                            )
+                                        if _sym and _d5:
+                                            signal_lifecycle.record_signal(
+                                                f"{_sym}#alt5",
+                                                _d5,
                                                 now=_ts,
                                                 row_id=str(_rid) if _rid is not None else None,
                                             )
@@ -2324,13 +2354,19 @@ def main():
                                             if _s:
                                                 _inserted_syms.add(_s)
                                     tg_alt5_enabled = os.getenv("TG_ALT5_ENABLED", "1") != "0"
+                                    _alt5_hours_env = os.getenv("ALT5_HOURS_UTC", os.getenv("ALT5_ALLOWED_HOURS", ""))
+                                    _alt5_hours = set()
+                                    for _p in (_alt5_hours_env or "").split(","):
+                                        _pp = _p.strip()
+                                        if _pp.isdigit():
+                                            _h = int(_pp)
+                                            if 0 <= _h <= 23:
+                                                _alt5_hours.add(_h)
                                     for fc in forecasts:
                                         # Only notify for freshly inserted forecasts
                                         if _inserted_syms and fc.symbol not in _inserted_syms:
                                             continue
                                         _in_window, _window_label, _, _ = classify_utc_timestamp(fc.ts_utc.isoformat())
-                                        if not _in_window:
-                                            continue
                                         for strat, attr in [
                                             ("alt2", "h30_alt2_direction"),
                                             ("alt3", "h30_alt3v2_direction"),
@@ -2339,6 +2375,11 @@ def main():
                                         ]:
                                             alt_dir = getattr(fc, attr, None)
                                             if alt_dir:
+                                                _send_allowed = _in_window
+                                                if strat == "alt5":
+                                                    _send_allowed = (fc.ts_utc.hour in _alt5_hours) if _alt5_hours else _in_window
+                                                if not _send_allowed:
+                                                    continue
                                                 if strat == "alt2" and not bool(getattr(fc, "h30_alt2_trade_eligible", False)):
                                                     continue
                                                 if strat == "alt4" and not tg_alt4_enabled:
@@ -2346,6 +2387,8 @@ def main():
                                                 if strat == "alt4" and not bool(getattr(fc, "h30_alt4_trade_eligible", False)):
                                                     continue
                                                 if strat == "alt5" and not tg_alt5_enabled:
+                                                    continue
+                                                if strat == "alt5" and not bool(getattr(fc, "h30_alt5_trade_eligible", False)):
                                                     continue
                                                 import json as _json
                                                 _votes = None

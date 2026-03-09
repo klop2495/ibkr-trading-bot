@@ -102,6 +102,7 @@ class ForecastResult(BaseModel):
     # Alt5: inversion of Alt3 with env filters (hours + ADX)
     h30_alt5_direction: Optional[str] = None
     h30_alt5_correct: Optional[bool] = None
+    h30_alt5_trade_eligible: Optional[bool] = None
 
     # Volatility regime filter (Phase 3 — BBW toxic band detection)
     vol_regime_blocked: Optional[bool] = None   # True if BBW in toxic band
@@ -208,4 +209,5 @@ class ForecastResult(BaseModel):
         # Alt5: inverted Alt3 with hour/ADX filters
         if self.h30_alt5_direction is not None:
             row["h30_alt5_direction"] = self.h30_alt5_direction
+            row["h30_alt5_trade_eligible"] = bool(self.h30_alt5_trade_eligible)
         return row
