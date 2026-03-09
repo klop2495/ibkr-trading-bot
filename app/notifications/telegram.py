@@ -182,7 +182,7 @@ class TelegramNotifier:
     def notify_alt_signal(
         self,
         symbol: str,
-        strategy: str,  # "alt2" or "alt3"
+        strategy: str,  # "alt2" | "alt3" | "alt4" | "alt5"
         direction: str,  # "up" or "down"
         base_price: float,
         adx_value: float | None = None,
@@ -214,6 +214,9 @@ class TelegramNotifier:
         elif strategy == "alt4":
             strat_label = "\U0001f9ea ALT4"
             strat_desc = "hybrid original/inverted"
+        elif strategy == "alt5":
+            strat_label = "\U0001f6e1 ALT5"
+            strat_desc = "anti-alt3 (hours+ADX)"
         else:
             strat_label = "\U0001f3af ALT2"
             strat_desc = "ma\u2260pv + ADX\u226530 + top16"

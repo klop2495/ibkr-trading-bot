@@ -2181,33 +2181,41 @@ def main():
                                         _in_window, _window_label, _, _ = classify_utc_timestamp(fc.ts_utc.isoformat())
                                         if not _in_window:
                                             continue
-                                        for strat, attr in [("alt2", "h30_alt2_direction"), ("alt3", "h30_alt3v2_direction"), ("alt4", "h30_alt4_direction")]:
-                                            alt_dir = getattr(fc, attr, None)
-                                            if alt_dir:
-                                                if strat == "alt2" and not bool(getattr(fc, "h30_alt2_trade_eligible", False)):
-                                                    continue
-                                                if strat == "alt4" and not tg_alt4_enabled:
-                                                    continue
-                                                if strat == "alt4" and not bool(getattr(fc, "h30_alt4_trade_eligible", False)):
-                                                    continue
-                                                import json as _json
-                                                _votes = None
-                                                if fc.h30_votes_json:
-                                                    try:
-                                                        _votes = _json.loads(fc.h30_votes_json) if isinstance(fc.h30_votes_json, str) else fc.h30_votes_json
-                                                    except Exception:
-                                                        pass
-                                                tg_notifier.notify_alt_signal(
-                                                    symbol=fc.symbol,
-                                                    strategy=strat,
-                                                    direction=alt_dir,
-                                                    base_price=fc.base_price or 0,
-                                                    adx_value=fc.adx_value,
-                                                    votes=_votes,
-                                                    h4_direction=fc.mtf_h4_direction,
-                                                    mode=(getattr(fc, "h30_alt4_mode", None) if strat == "alt4" else None),
-                                                    hour_utc=(fc.ts_utc.hour if strat == "alt4" else None),
-                                                )
+                                    tg_alt5_enabled = os.getenv("TG_ALT5_ENABLED", "1") != "0"
+                                    for strat, attr in [
+                                        ("alt2", "h30_alt2_direction"),
+                                        ("alt3", "h30_alt3v2_direction"),
+                                        ("alt4", "h30_alt4_direction"),
+                                        ("alt5", "h30_alt5_direction"),
+                                    ]:
+                                        alt_dir = getattr(fc, attr, None)
+                                        if alt_dir:
+                                            if strat == "alt2" and not bool(getattr(fc, "h30_alt2_trade_eligible", False)):
+                                                continue
+                                            if strat == "alt4" and not tg_alt4_enabled:
+                                                continue
+                                            if strat == "alt4" and not bool(getattr(fc, "h30_alt4_trade_eligible", False)):
+                                                continue
+                                            if strat == "alt5" and not tg_alt5_enabled:
+                                                continue
+                                            import json as _json
+                                            _votes = None
+                                            if fc.h30_votes_json:
+                                                try:
+                                                    _votes = _json.loads(fc.h30_votes_json) if isinstance(fc.h30_votes_json, str) else fc.h30_votes_json
+                                                except Exception:
+                                                    pass
+                                            tg_notifier.notify_alt_signal(
+                                                symbol=fc.symbol,
+                                                strategy=strat,
+                                                direction=alt_dir,
+                                                base_price=fc.base_price or 0,
+                                                adx_value=fc.adx_value,
+                                                votes=_votes,
+                                                h4_direction=fc.mtf_h4_direction,
+                                                mode=(getattr(fc, "h30_alt4_mode", None) if strat == "alt4" else None),
+                                                hour_utc=(fc.ts_utc.hour if strat == "alt4" else None),
+                                            )
                                 except Exception as alt_tg_exc:
                                     print(f"tg_alt_notify_error: {alt_tg_exc}")
 
