@@ -877,24 +877,21 @@ async def get_forecasts_history(
             lifecycle_status_alt3 = str((lifecycle_alt3 or {}).get("status") or "").lower()
             lifecycle_status_alt4 = str((lifecycle_alt4 or {}).get("status") or "").lower()
             lifecycle_status_alt5 = str((lifecycle_alt5 or {}).get("status") or "").lower()
-            lifecycle_blocked_alt2 = lifecycle_status_alt2 in {"pending", "cooldown", "blacklisted"}
-            lifecycle_blocked_alt3 = lifecycle_status_alt3 in {"pending", "cooldown", "blacklisted"}
-            lifecycle_blocked_alt4 = lifecycle_status_alt4 in {"pending", "cooldown", "blacklisted"}
-            lifecycle_blocked_alt5 = lifecycle_status_alt5 in {"pending", "cooldown", "blacklisted"}
 
             alt2_trade_eligible = bool(row.get("h30_alt2_trade_eligible"))
             alt4_trade_eligible = bool(row.get("h30_alt4_trade_eligible"))
             alt5_trade_eligible = row.get("h30_alt5_trade_eligible")
             if alt5_trade_eligible is None:
                 alt5_trade_eligible = True
-            recommended_alt2 = bool(in_window and has_alt2 and alt2_trade_eligible and not lifecycle_blocked_alt2)
-            recommended_alt3 = bool(in_window and has_alt3 and not lifecycle_blocked_alt3)
-            recommended_alt4 = bool(in_window and has_alt4 and alt4_trade_eligible and not lifecycle_blocked_alt4)
+            # History endpoint: "recommended" is historical window eligibility,
+            # not current lifecycle status (which can change later and corrupt history view).
+            recommended_alt2 = bool(in_window and has_alt2 and alt2_trade_eligible)
+            recommended_alt3 = bool(in_window and has_alt3)
+            recommended_alt4 = bool(in_window and has_alt4 and alt4_trade_eligible)
             recommended_alt5 = bool(
                 is_alt5_recommended_timestamp(str(row.get("ts_utc") or ""))
                 and has_alt5
                 and bool(alt5_trade_eligible)
-                and not lifecycle_blocked_alt5
             )
             recommended = bool(recommended_alt2 or recommended_alt3 or recommended_alt4 or recommended_alt5)
             orig_badge, orig_effective = classify_with_effective(row.get("h30_direction"), hour_utc)
