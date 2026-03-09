@@ -26,7 +26,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 

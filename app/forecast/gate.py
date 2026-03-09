@@ -28,7 +28,7 @@ Config via env vars:
 import logging
 import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
@@ -365,7 +365,7 @@ class AdaptiveForecastGate:
                 squeeze_gate_enabled = os.getenv("GATE_SQUEEZE_ENABLED", "0") == "1"
                 if squeeze is True:
                     if squeeze_gate_enabled:
-                        reason = f"squeeze_filter:BB_inside_Keltner (no volatility)"
+                        reason = "squeeze_filter:BB_inside_Keltner (no volatility)"
                         logger.info(f"SqueezeFilter blocked {symbol}: {reason}")
                         return False, reason
                     else:

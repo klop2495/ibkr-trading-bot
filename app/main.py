@@ -20,7 +20,7 @@ from app.risk.engine_v1 import RiskEngineV1
 from app.storage.bot_settings_repo import BotSettingsRepo
 from app.storage.db import SupabaseDB
 from app.storage.repositories import DecisionsRepo, RiskEventsRepo, RiskVerdictsRepo, SignalPreviewsRepo, TradesHistoryRepo
-from app.execution.service import ExecutionService, ExecutionMode, ExecutionResult
+from app.execution.service import ExecutionService, ExecutionResult
 from app.execution.outcome_verifier import ExecutionOutcomeVerifier, evaluate_execution_accuracy
 
 # Phase 0: Shadow mode parallel decisions

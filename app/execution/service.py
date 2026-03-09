@@ -21,7 +21,6 @@ from uuid import UUID, uuid4
 from app.broker.connection_manager import (
     ConnectionCallback,
     ConnectionConfig,
-    ConnectionState,
     IBKRConnectionManager,
 )
 from app.broker.state_service import BrokerConnectionError, BrokerStateService
@@ -35,7 +34,6 @@ from app.broker.oms import (
     IBKROMS,
     IBKROrderCallback,
     IBKROrderRequest,
-    IBKRBracketOrderRequest,
     IBKROrderState,
     IBKRFill,
     OrderSide,

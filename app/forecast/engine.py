@@ -22,14 +22,11 @@ from app.models.forecast import (
     ForecastResult,
 )
 from app.forecast.indicators_vote import (
-    aggregate_votes,
     aggregate_weighted_votes,
     vote_atr_trend,
-    vote_ma_cross,
     vote_ma_cross_inverted,
     vote_momentum,
     vote_price_vs_ma,
-    vote_rsi_extreme,
     vote_rsi_momentum,
     vote_rsi_trend,
 )

@@ -10,8 +10,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.models.forecast import FORECAST_HORIZONS
-
 logger = logging.getLogger(__name__)
 
 # Map horizon_minutes → column prefix
