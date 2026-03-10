@@ -2197,7 +2197,7 @@ def main():
                                     else:
                                         _alt2_dir = getattr(fc, "h30_alt2_direction", None)
                                 if _alt2_dir:
-                                    _key2 = f"{fc.symbol}#alt2"
+                                    _key2 = f"{fc.symbol}#ALT2"
                                     _ok2, _reason2 = signal_lifecycle.can_signal(_key2, _alt2_dir, _lc_now)
                                     if not _ok2:
                                         # Keep base forecast row, but suppress duplicate Alt2 signal in this cycle.
@@ -2214,7 +2214,7 @@ def main():
                                     else:
                                         _alt3v2_dir = getattr(fc, "h30_alt3v2_direction", None)
                                 if _alt3v2_dir:
-                                    _key3 = f"{fc.symbol}#alt3v2"
+                                    _key3 = f"{fc.symbol}#ALT3V2"
                                     _ok3, _reason3 = signal_lifecycle.can_signal(_key3, _alt3v2_dir, _lc_now)
                                     if not _ok3:
                                         setattr(fc, "h30_alt3v2_direction", None)
@@ -2299,28 +2299,28 @@ def main():
                                         _d5 = _row.get("h30_alt5_direction")
                                         if _sym and _d2:
                                             signal_lifecycle.record_signal(
-                                                f"{_sym}#alt2",
+                                                f"{_sym}#ALT2",
                                                 _d2,
                                                 now=_ts,
                                                 row_id=str(_rid) if _rid is not None else None,
                                             )
                                         if _sym and _d3:
                                             signal_lifecycle.record_signal(
-                                                f"{_sym}#alt3v2",
+                                                f"{_sym}#ALT3V2",
                                                 _d3,
                                                 now=_ts,
                                                 row_id=str(_rid) if _rid is not None else None,
                                             )
                                         if _sym and _d4:
                                             signal_lifecycle.record_signal(
-                                                f"{_sym}#alt4",
+                                                f"{_sym}#ALT4",
                                                 _d4,
                                                 now=_ts,
                                                 row_id=str(_rid) if _rid is not None else None,
                                             )
                                         if _sym and _d5:
                                             signal_lifecycle.record_signal(
-                                                f"{_sym}#alt5",
+                                                f"{_sym}#ALT5",
                                                 _d5,
                                                 now=_ts,
                                                 row_id=str(_rid) if _rid is not None else None,
