@@ -12,7 +12,6 @@ from app.models.execution_report_v1 import ExecutionReportV1
 from app.models.order_intent import OrderIntentV1
 from app.models.broker_request import BrokerRequestV1
 from app.models.reconciliation_report_v1 import ReconciliationReportV1
-from app.models.order_intent import OrderIntentV1
 from app.storage.db import SupabaseDB
 
 
