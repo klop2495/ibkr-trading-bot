@@ -869,15 +869,6 @@ async def get_forecasts_history(
             has_alt4 = row.get("h30_alt4_direction") is not None
             has_alt5 = row.get("h30_alt5_direction") is not None
 
-            lifecycle_alt2 = lifecycle_symbols.get(f"{row.get('symbol')}#alt2") or lifecycle_symbols.get(row.get("symbol"))
-            lifecycle_alt3 = lifecycle_symbols.get(f"{row.get('symbol')}#alt3v2") or lifecycle_symbols.get(f"{row.get('symbol')}#alt3")
-            lifecycle_alt4 = lifecycle_symbols.get(f"{row.get('symbol')}#alt4")
-            lifecycle_alt5 = lifecycle_symbols.get(f"{row.get('symbol')}#alt5")
-            lifecycle_status_alt2 = str((lifecycle_alt2 or {}).get("status") or "").lower()
-            lifecycle_status_alt3 = str((lifecycle_alt3 or {}).get("status") or "").lower()
-            lifecycle_status_alt4 = str((lifecycle_alt4 or {}).get("status") or "").lower()
-            lifecycle_status_alt5 = str((lifecycle_alt5 or {}).get("status") or "").lower()
-
             alt2_trade_eligible = bool(row.get("h30_alt2_trade_eligible"))
             alt4_trade_eligible = bool(row.get("h30_alt4_trade_eligible"))
             alt5_trade_eligible = row.get("h30_alt5_trade_eligible")

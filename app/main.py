@@ -20,16 +20,15 @@ from app.risk.engine_v1 import RiskEngineV1
 from app.storage.bot_settings_repo import BotSettingsRepo
 from app.storage.db import SupabaseDB
 from app.storage.repositories import DecisionsRepo, RiskEventsRepo, RiskVerdictsRepo, SignalPreviewsRepo, TradesHistoryRepo
-from app.execution.service import ExecutionService, ExecutionResult
+from app.execution.service import ExecutionService
 from app.execution.outcome_verifier import ExecutionOutcomeVerifier, evaluate_execution_accuracy
 
 # Phase 0: Shadow mode parallel decisions
-from app.models.parallel_decision import ParallelDecisionV1
 from app.storage.parallel_decisions_repo import ParallelDecisionsRepo
 
 # Phase 1: Data sources
 from app.data_sources import EconomicCalendarFetcher, COTReportsFetcher, DXYFetcher
-from app.agents.safety import SourceHealthMonitor, BudgetLimiter, AgentCache, ResponseValidator
+from app.agents.safety import SourceHealthMonitor
 
 # Phase 3-4: LLM Agents and integration
 from app.agents.parallel_runner import ParallelDecisionRunner, create_parallel_runner
