@@ -75,6 +75,23 @@
 - **Deploy:** нет
 - **Следующий шаг:** Commit to repo
 
+## [2026-03-10] Session: Project audit + P0/P1 fixes
+
+- **Задача:** Full project audit, buglist, critical fixes
+- **Файлы изменены:** app/main.py (Supabase .not_() syntax fix), app/models/forecast.py (unused imports), app/models/parallel_decision.py (unused import), app/models/signal_preview.py (unused import), app/notifications/telegram.py (unused vars, f-string)
+- **Файлы НЕ тронуты:** forecast engine, indicators, lifecycle, verifier, market_data
+- **Что сделано:**
+  - P0-1: Fixed _refresh_strategy_guards crash (.not_() → .not_.is_()) — бот перезапускался каждые ~3 мин
+  - P0-2: Closed USDCHF zombie trade (SQL manual cleanup)
+  - P0-4: Cleaned risk_events 571K → 28K (drop trigger, delete, restore trigger)
+  - P1-1: Updated Alt4 ENV: hours 9,19 orig / 15,20,21,22 inv / +GBPUSD exclude
+  - P1-3: Cleaned 2145 mock outcomes from parallel_decisions (pre Feb 25)
+  - 11 ruff lint errors fixed
+  - Created Project_Audit_Plan.md (7 blocks) and Project_Audit_Buglist.md (19 issues)
+- **Результат:** All P0 issues resolved. P1-1, P1-3 done. Bot running stable.
+- **Deploy:** commit fix(P0-1) + commit fix(lint) + VPS rebuild
+- **Следующий шаг:** P1-5 (unverified forecasts), P2 items (dead code, split main.py)
+
 ---
 
 *Append new entries at the bottom.*
