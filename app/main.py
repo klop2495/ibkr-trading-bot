@@ -1961,8 +1961,8 @@ def main():
         rows_res = (
             db.client.table("price_forecasts")
             .select(f"{direction_col}, {correct_col}")
-            .not_(direction_col, "is", "null")
-            .not_(correct_col, "is", "null")
+            .not_.is_(direction_col, "null")
+            .not_.is_(correct_col, "null")
             .order("ts_utc", desc=True)
             .limit(window)
             .execute()
