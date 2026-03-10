@@ -2222,7 +2222,7 @@ def main():
                                         _lc_blocked += 1
 
                                 if _alt4_dir:
-                                    _key4 = f"{fc.symbol}#alt4"
+                                    _key4 = f"{fc.symbol}#ALT4"
                                     # Alt4 strategy-level cooldown (separate from lifecycle min_repeat).
                                     # We keep lifecycle untouched and apply a stricter guard here.
                                     _st4 = signal_lifecycle._states.get(_key4)  # noqa: SLF001
@@ -2246,7 +2246,7 @@ def main():
                                         _lc_blocked += 1
 
                                 if _alt5_dir:
-                                    _key5 = f"{fc.symbol}#alt5"
+                                    _key5 = f"{fc.symbol}#ALT5"
                                     _st5 = signal_lifecycle._states.get(_key5)  # noqa: SLF001
                                     if (
                                         alt5_min_repeat_min > 0
