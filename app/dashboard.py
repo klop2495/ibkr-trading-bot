@@ -919,28 +919,45 @@ async def get_forecasts_history(
         def _acc(correct: int, total: int):
             return (correct / total) if total > 0 else None
 
+        def _pack_stats(signal_rows: list[dict], correct_field: str) -> dict:
+            verified_rows = [r for r in signal_rows if r.get(correct_field) is not None]
+            correct_count = sum(1 for r in verified_rows if bool(r.get(correct_field)))
+            recommended_rows = [r for r in signal_rows if bool(r.get("recommended_window"))]
+            recommended_verified = [r for r in recommended_rows if r.get(correct_field) is not None]
+            recommended_correct = sum(1 for r in recommended_verified if bool(r.get(correct_field)))
+            info_rows = [r for r in signal_rows if not bool(r.get("recommended_window"))]
+            info_verified = [r for r in info_rows if r.get(correct_field) is not None]
+            info_correct = sum(1 for r in info_verified if bool(r.get(correct_field)))
+            return {
+                "all": {
+                    "total": len(signal_rows),
+                    "verified": len(verified_rows),
+                    "correct": correct_count,
+                    "accuracy": _acc(correct_count, len(verified_rows)),
+                },
+                "recommended": {
+                    "total": len(recommended_rows),
+                    "verified": len(recommended_verified),
+                    "correct": recommended_correct,
+                    "accuracy": _acc(recommended_correct, len(recommended_verified)),
+                },
+                "info_only": {
+                    "total": len(info_rows),
+                    "verified": len(info_verified),
+                    "correct": info_correct,
+                    "accuracy": _acc(info_correct, len(info_verified)),
+                },
+            }
+
         alt2_all = [r for r in enriched_rows if r.get("h30_alt2_direction") is not None]
-        alt2_all_verified = [r for r in alt2_all if r.get("h30_alt2_correct") is not None]
-        alt2_all_correct = sum(1 for r in alt2_all_verified if bool(r.get("h30_alt2_correct")))
 
         alt2_eligible = [r for r in alt2_all if bool(r.get("h30_alt2_trade_eligible"))]
         alt2_eligible_verified = [r for r in alt2_eligible if r.get("h30_alt2_correct") is not None]
         alt2_eligible_correct = sum(1 for r in alt2_eligible_verified if bool(r.get("h30_alt2_correct")))
         alt3_all = [r for r in enriched_rows if (r.get("h30_alt3v2_direction") is not None or r.get("h30_alt3_direction") is not None)]
-        alt3_all_verified = [r for r in alt3_all if (r.get("h30_alt3v2_correct") is not None or r.get("h30_alt3_correct") is not None)]
-        alt3_all_correct = sum(
-            1
-            for r in alt3_all_verified
-            if bool(r.get("h30_alt3v2_correct")) or bool(r.get("h30_alt3_correct"))
-        )
 
         result["alt2_stats"] = {
-            "all": {
-                "total": len(alt2_all),
-                "verified": len(alt2_all_verified),
-                "correct": alt2_all_correct,
-                "accuracy": _acc(alt2_all_correct, len(alt2_all_verified)),
-            },
+            **_pack_stats(alt2_all, "h30_alt2_correct"),
             "trade_eligible": {
                 "total": len(alt2_eligible),
                 "verified": len(alt2_eligible_verified),
@@ -948,27 +965,16 @@ async def get_forecasts_history(
                 "accuracy": _acc(alt2_eligible_correct, len(alt2_eligible_verified)),
             },
         }
-        result["alt3_stats"] = {
-            "all": {
-                "total": len(alt3_all),
-                "verified": len(alt3_all_verified),
-                "correct": alt3_all_correct,
-                "accuracy": _acc(alt3_all_correct, len(alt3_all_verified)),
-            },
-        }
+        result["alt3_stats"] = _pack_stats(
+            alt3_all,
+            "h30_alt3v2_correct" if any(r.get("h30_alt3v2_correct") is not None for r in alt3_all) else "h30_alt3_correct",
+        )
         alt4_all = [r for r in enriched_rows if r.get("h30_alt4_direction") is not None]
-        alt4_all_verified = [r for r in alt4_all if r.get("h30_alt4_correct") is not None]
-        alt4_all_correct = sum(1 for r in alt4_all_verified if bool(r.get("h30_alt4_correct")))
         alt4_eligible = [r for r in alt4_all if bool(r.get("h30_alt4_trade_eligible"))]
         alt4_eligible_verified = [r for r in alt4_eligible if r.get("h30_alt4_correct") is not None]
         alt4_eligible_correct = sum(1 for r in alt4_eligible_verified if bool(r.get("h30_alt4_correct")))
         result["alt4_stats"] = {
-            "all": {
-                "total": len(alt4_all),
-                "verified": len(alt4_all_verified),
-                "correct": alt4_all_correct,
-                "accuracy": _acc(alt4_all_correct, len(alt4_all_verified)),
-            },
+            **_pack_stats(alt4_all, "h30_alt4_correct"),
             "trade_eligible": {
                 "total": len(alt4_eligible),
                 "verified": len(alt4_eligible_verified),
@@ -977,16 +983,7 @@ async def get_forecasts_history(
             },
         }
         alt5_all = [r for r in enriched_rows if r.get("h30_alt5_direction") is not None]
-        alt5_all_verified = [r for r in alt5_all if r.get("h30_alt5_correct") is not None]
-        alt5_all_correct = sum(1 for r in alt5_all_verified if bool(r.get("h30_alt5_correct")))
-        result["alt5_stats"] = {
-            "all": {
-                "total": len(alt5_all),
-                "verified": len(alt5_all_verified),
-                "correct": alt5_all_correct,
-                "accuracy": _acc(alt5_all_correct, len(alt5_all_verified)),
-            },
-        }
+        result["alt5_stats"] = _pack_stats(alt5_all, "h30_alt5_correct")
         result["rows"] = paged_rows
         result["total"] = len(enriched_rows) if recommended_only else result.get("total", len(enriched_rows))
         result["recommended_windows_utc"] = get_recommended_window_labels()
