@@ -6,7 +6,7 @@ GPT starts as HOLD stubs until real agents are implemented.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field

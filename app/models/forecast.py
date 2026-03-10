@@ -10,10 +10,9 @@ Forecast generates directional predictions for 4 time horizons:
 Read-only module: does NOT influence trade execution.
 """
 
-import json
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 

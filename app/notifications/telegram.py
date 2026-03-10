@@ -327,8 +327,7 @@ class TelegramNotifier:
         try:
             from zoneinfo import ZoneInfo
             now_paris = datetime.now(ZoneInfo("Europe/Paris"))
-            tz_abbr = "CEST" if now_paris.dst() else "CET"
-            date_str = now_paris.strftime(f"%d %b %Y")
+            date_str = now_paris.strftime("%d %b %Y")
 
             cutoff = (datetime.now(timezone.utc).replace(hour=0, minute=0, second=0)).isoformat()
             res = db_client.table("price_forecasts").select(
@@ -346,7 +345,6 @@ class TelegramNotifier:
 
             h30_ok = sum(1 for r in h30_rows if r["h30_correct"])
             h30_total = len(h30_rows)
-            h30_pct = round(h30_ok / h30_total * 100) if h30_total else 0
 
             # Quality filtered (MED + aligned>=4)
             qf = [r for r in h30_rows
@@ -354,13 +352,11 @@ class TelegramNotifier:
                   and (r.get("h30_aligned") or 0) >= 4]
             qf_ok = sum(1 for r in qf if r["h30_correct"])
             qf_total = len(qf)
-            qf_pct = round(qf_ok / qf_total * 100) if qf_total else 0
 
             # H60 stats
             h60_rows = [r for r in all_rows if r.get("h60_correct") is not None]
             h60_ok = sum(1 for r in h60_rows if r["h60_correct"])
             h60_total = len(h60_rows)
-            h60_pct = round(h60_ok / h60_total * 100) if h60_total else 0
 
             # Time breakdown (on quality filtered)
             early = [r for r in qf if int(r["ts_utc"][11:13]) < 10]
