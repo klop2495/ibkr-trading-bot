@@ -449,13 +449,13 @@ class MarketDataService:
         for b in bars:
             o = getattr(b, "open", None)
             h = getattr(b, "high", None)
-            l = getattr(b, "low", None)
+            low_val = getattr(b, "low", None)
             c = getattr(b, "close", None)
             
-            if o is not None and h is not None and l is not None and c is not None:
+            if o is not None and h is not None and low_val is not None and c is not None:
                 opens.append(float(o))
                 highs.append(float(h))
-                lows.append(float(l))
+                lows.append(float(low_val))
                 closes.append(float(c))
         
         return {
@@ -501,10 +501,10 @@ class MarketDataService:
         period = 14
         
         for i in range(period, len(bars)):
-            h = highs[i-period:i]
-            l = lows[i-period:i]
-            c = closes[i-period:i]
-            atr_val = atr(h, l, c)
+            highs_window = highs[i-period:i]
+            lows_window = lows[i-period:i]
+            closes_window = closes[i-period:i]
+            atr_val = atr(highs_window, lows_window, closes_window)
             if atr_val is not None:
                 atr_values.append(atr_val)
         

@@ -274,7 +274,6 @@ class CandlestickPatternDetector:
             c = candles[i]      # Current candle
             c1 = candles[i-1]   # Previous
             c2 = candles[i-2]   # 2 ago
-            c3 = candles[i-3] if i >= 3 else None  # 3 ago
             
             # ATR filter - skip insignificant candles
             if not self._passes_atr_filter(c, atr):
@@ -791,7 +790,7 @@ if __name__ == "__main__":
     for p in patterns:
         print(f"  [{p.pattern_type.value:7}] {p.name}: strength={p.strength}")
     
-    print(f"\nContext output:")
+    print("\nContext output:")
     ctx = detector.format_for_context(patterns)
     for k, v in ctx.items():
         print(f"  {k}: {v}")

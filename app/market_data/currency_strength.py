@@ -13,7 +13,6 @@ Integration: Used by CorrelationAgent for cross-pair analysis.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 

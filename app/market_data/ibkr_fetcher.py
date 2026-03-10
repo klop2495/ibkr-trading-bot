@@ -1,7 +1,7 @@
 import os
 import time
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, List
 
 from app.broker.contracts import create_cash_fx_contract, create_cfd_fx_contract
 from app.broker.ib_utils import (
@@ -9,7 +9,6 @@ from app.broker.ib_utils import (
     IBGatewayNotReady,
     IBTimeoutError,
     connect_with_backoff,
-    ib_probe_ready,
     ib_request_with_timeout,
 )
 
@@ -275,7 +274,7 @@ class IBKRFetcher:
             if self._owns_connection and self._ib:
                 try:
                     self._ib.disconnect()
-                except:
+                except Exception:
                     pass
                 self._ib = None
             raise RuntimeError(f"ibkr_fetch_failed: symbol={symbol} tf={timeframe} error={exc}") from exc

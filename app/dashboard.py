@@ -869,17 +869,6 @@ async def get_forecasts_history(
         )
         from app.forecast.original_mode import classify_with_effective
 
-        lifecycle_symbols = {}
-        try:
-            if _signal_lifecycle_manager is not None:
-                lifecycle_symbols = _signal_lifecycle_manager.get_status().get("symbols", {}) or {}
-            else:
-                from app.forecast.signal_lifecycle import SignalLifecycleManager
-                data = SignalLifecycleManager.load_from_supabase(_get_supabase_client()) or {}
-                lifecycle_symbols = data.get("symbols", {}) or {}
-        except Exception:
-            lifecycle_symbols = {}
-
         enriched_rows = []
         for row in rows:
             in_window, matched_window, hour_utc, minute_utc = classify_utc_timestamp(str(row.get("ts_utc") or ""))
