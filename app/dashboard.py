@@ -835,14 +835,33 @@ async def get_forecasts_history(
     try:
         from app.storage.forecast_repo import ForecastRepo
         repo = ForecastRepo(db)
-        result = repo.get_history_all(
-            symbol=symbol,
-            since=since,
-            until=until,
-            limit=limit,
-            offset=offset,
-        )
-        rows = result.get("rows") or []
+        # Load full filtered slice (chunked) for accurate period-wide stats.
+        scan_limit = max(500, int(os.getenv("FORECAST_HISTORY_MAX_SCAN", "5000")))
+        chunk = 500
+        all_rows = []
+        scan_offset = 0
+        total_hint: Optional[int] = None
+        while len(all_rows) < scan_limit:
+            batch_result = repo.get_history_all(
+                symbol=symbol,
+                since=since,
+                until=until,
+                limit=min(chunk, scan_limit - len(all_rows)),
+                offset=scan_offset,
+            )
+            if total_hint is None:
+                total_hint = int(batch_result.get("total") or 0)
+            batch_rows = batch_result.get("rows") or []
+            if not batch_rows:
+                break
+            all_rows.extend(batch_rows)
+            scan_offset += len(batch_rows)
+            if len(batch_rows) < chunk:
+                break
+            if total_hint and scan_offset >= total_hint:
+                break
+        rows = all_rows
+        result = {"rows": rows, "total": (total_hint if total_hint is not None else len(rows))}
         from app.forecast.recommended_windows import (
             classify_utc_timestamp,
             get_recommended_window_labels,
@@ -904,6 +923,9 @@ async def get_forecasts_history(
 
         if recommended_only:
             enriched_rows = [r for r in enriched_rows if r.get("recommended_window")]
+
+        # Page table rows from full filtered set; stats below stay period-wide.
+        paged_rows = enriched_rows[offset : offset + limit]
 
         def _acc(correct: int, total: int):
             return (correct / total) if total > 0 else None
@@ -976,7 +998,7 @@ async def get_forecasts_history(
                 "accuracy": _acc(alt5_all_correct, len(alt5_all_verified)),
             },
         }
-        result["rows"] = enriched_rows
+        result["rows"] = paged_rows
         result["total"] = len(enriched_rows) if recommended_only else result.get("total", len(enriched_rows))
         result["recommended_windows_utc"] = get_recommended_window_labels()
         return result
