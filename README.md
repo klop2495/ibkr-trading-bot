@@ -16,7 +16,7 @@ Skeleton structure for IBKR trading bot + Supabase backend.
 
 ```bash
 # Setup
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
@@ -25,7 +25,7 @@ cp .env.example .env
 # Edit .env with your Supabase credentials
 
 # Test
-python -m pytest -q
+python3 -m pytest -q
 ```
 
 ---
@@ -35,9 +35,9 @@ python -m pytest -q
 Pinned versions для стабильности:
 
 ```
-supabase==2.6.0
-httpx==0.26.0
-postgrest==0.13.0
+supabase==2.14.0
+httpx==0.28.1
+postgrest==0.19.3
 ```
 
 При обновлении supabase SDK проверьте совместимость httpx/postgrest.

@@ -135,3 +135,32 @@
   - 19h Alt5 строки корректно стали `recommended_alt5=true`, `window_status="recommended"`
 - **Deploy commit:** `d1d0b2f`
 - **Следующий шаг:** накопление 500+ verified для статистической стабильности Alt5
+
+## [2026-03-11] Session: Documentation sync + local test-runner recovery
+
+- **Задача:** Привести документацию к фактическому состоянию и восстановить локальный запуск тестов
+- **Файлы изменены:** README.md, requirements.txt, docs/CURRENT_STATE.md, app/execution/oms_stub.py, app/execution/engine_stub.py, app/reconciliation/engine_stub.py, app/signals/engine.py
+- **Файлы НЕ тронуты:** forecast engine, market_data, execution бизнес-логика
+- **Что сделано:**
+  - Синхронизированы pinned-версии `supabase/httpx/postgrest` в README с `requirements.txt`
+  - Обновлены команды Quick Start на `python3` для совместимости локальной среды
+  - Добавлен `pytest` в `requirements.txt` для воспроизводимого запуска тестов
+  - Обновлён `docs/CURRENT_STATE.md` по актуальным локальным commit SHA и дате проверки
+- **Результат:** docs aligned; добавлены backward-compatible shim imports для legacy тестов
+- **Deploy:** не деплоилось
+- **Следующий шаг:** при необходимости выполнить полный прогон pytest в изолированном `.venv` окружении
+
+## [2026-03-11] Session: Targeted behavior fixes for remaining pytest failures
+
+- **Задача:** Закрыть оставшиеся behavioral-фейлы без изменения тестов
+- **Файлы изменены:** app/broker/state_service.py, app/agents/parallel_runner.py
+- **Файлы НЕ тронуты:** forecast engine, market_data, execution core
+- **Что сделано:**
+  - Hardened `BrokerStateService` against non-deterministic repo return types (MagicMock/truthy objects):
+    - safe parse for healed rows
+    - strict orphan existence checks
+    - stricter recent orphan row shape validation
+  - Скорректирован `hybrid_signal` в `ParallelDecisionRunner` для shadow path (`llm disabled` + `active_strategy=rules`) через явный сигнал из preview
+- **Результат:** `python3 -m pytest -q` → `459 passed, 7 skipped`
+- **Deploy:** не деплоилось
+- **Следующий шаг:** при необходимости закоммитить изменения отдельным commit

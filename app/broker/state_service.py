@@ -322,9 +322,49 @@ class BrokerStateService:
         if not self._trades_history_repo:
             return None
         try:
-            return self._trades_history_repo.get_latest_orphan_by_instrument_key(instrument_key_value)
+            row = self._trades_history_repo.get_latest_orphan_by_instrument_key(instrument_key_value)
+            return row if isinstance(row, dict) else None
         except Exception:
             return None
+
+    def _coerce_nonnegative_int(self, value: Any, default: int = 0) -> int:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value if value >= 0 else default
+        if isinstance(value, float):
+            if value != value:  # NaN guard
+                return default
+            value_int = int(value)
+            return value_int if value_int >= 0 else default
+        if isinstance(value, str):
+            token = value.strip()
+            if token.isdigit():
+                return int(token)
+            return default
+        return default
+
+    def _has_orphan_trade(self, instrument_key_value: str) -> bool:
+        if not self._trades_history_repo:
+            return False
+        checker = getattr(self._trades_history_repo, "has_orphan_by_instrument_key", None)
+        if not callable(checker):
+            return False
+        try:
+            raw = checker(instrument_key_value)
+        except Exception:
+            return False
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, int):
+            return raw > 0
+        if isinstance(raw, float):
+            return raw > 0
+        if isinstance(raw, (list, tuple, set, dict)):
+            return len(raw) > 0
+        return False
 
     def _is_recent_orphan(self, orphan: Optional[dict], now: datetime) -> bool:
         if not orphan:
@@ -674,11 +714,9 @@ class BrokerStateService:
                 return result
 
             try:
-                healed_raw = self._trades_history_repo.heal_inconsistent_open_trades()
-                try:
-                    healed = int(healed_raw or 0)
-                except Exception:
-                    healed = 0
+                heal_fn = getattr(self._trades_history_repo, "heal_inconsistent_open_trades", None)
+                healed_raw = heal_fn() if callable(heal_fn) else 0
+                healed = self._coerce_nonnegative_int(healed_raw, default=0)
                 if healed > 0:
                     result.mismatches.append(f"healed_open_closed_inconsistent:{healed}")
                     self._log_event(
@@ -800,7 +838,7 @@ class BrokerStateService:
                     else:
                         result.mismatches.append(f"orphan_exists:{key}")
                     continue
-                if self._trades_history_repo.has_orphan_by_instrument_key(key):
+                if self._has_orphan_trade(key):
                     result.mismatches.append(f"orphan_exists:{key}")
                     continue
                 side = "BUY" if position.quantity > 0 else "SELL"

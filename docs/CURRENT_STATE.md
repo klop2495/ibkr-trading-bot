@@ -3,7 +3,7 @@
 > Обновляется после каждого деплоя / значимого изменения.
 > AI-разработчик: прочитай ПЕРЕД началом работы.
 
-**Последнее обновление:** 10 March 2026
+**Последнее обновление:** 11 March 2026
 
 ---
 
@@ -70,10 +70,10 @@ ALT5_EXCLUDE_CONFIDENCE=
 - `ibkr-trading-bot`: healthy
 - `api/health`: `{"status":"ok","supabase":true}`
 
-### Репозитории на сервере синхронизированы с origin/main
+### Локальные репозитории синхронизированы с origin/main (проверка 11 March 2026)
 
-- `/root/ibkr-trading-bot`: `d1d0b2f` (HEAD == origin/main)
-- `/root/ibkr-trading-fronend`: `ab5ca18` (HEAD == origin/main)
+- `ibkr-trading-bot`: `153d5b1` (HEAD == origin/main)
+- `ibkr-trading-fronend`: `5e24529` (HEAD == origin/main)
 
 ---
 
@@ -88,9 +88,9 @@ ALT5_EXCLUDE_CONFIDENCE=
 
 ---
 
-## Последние деплой-коммиты
+## Последние известные коммиты (локально)
 
-- `ibkr-trading-bot`: `2584d48`, `d1d0b2f`
-- `ibkr-trading-frontend`: `ab5ca18`
+- `ibkr-trading-bot`: `bb01ef7`, `153d5b1`
+- `ibkr-trading-frontend`: `1cfc28c`, `5e24529`
 
 *Обновляй этот файл после каждого деплоя.*

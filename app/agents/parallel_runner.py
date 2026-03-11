@@ -128,6 +128,8 @@ class ParallelDecisionRunner:
         hybrid_score, hybrid_signal = self._compute_hybrid_score(
             rules_score, llm_score, risk_veto, blend_with_llm=llm_contour_enabled
         )
+        if not llm_contour_enabled and self.active_strategy == "rules":
+            hybrid_signal = self._preview_signal(preview)
 
         # 4. Determine executed strategy
         executed_strategy, executed_signal = self._select_strategy(
@@ -429,6 +431,18 @@ class ParallelDecisionRunner:
             return "rules", rules_signal
         else:
             return "hybrid", hybrid_signal
+
+    def _preview_signal(self, preview: SignalPreviewV1) -> str:
+        direction = getattr(preview, "direction", Direction.FLAT)
+        direction_val = direction.value if isinstance(direction, Direction) else str(direction or "flat").lower()
+        entry_triggered = bool(getattr(preview, "entry_triggered", False))
+        if not entry_triggered:
+            return "HOLD"
+        if direction_val == "long":
+            return "LONG"
+        if direction_val == "short":
+            return "SHORT"
+        return "HOLD"
 
     def _log_hybrid_tick(
         self,
