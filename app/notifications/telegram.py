@@ -191,7 +191,7 @@ class TelegramNotifier:
         mode: str | None = None,
         hour_utc: int | None = None,
     ) -> int:
-        """Send Alt2/Alt3 signal notification to Telegram."""
+        """Send Alt strategy signal notification to Telegram."""
         if not self.enabled:
             return 0
 
@@ -209,14 +209,14 @@ class TelegramNotifier:
         price_str = f"{base_price:.3f}" if is_jpy else f"{base_price:.5f}"
 
         if strategy == "alt3":
-            strat_label = "\U0001f52c ALT3"
-            strat_desc = "Alt2+momentum"
+            strat_label = "\U0001f52c ALT3 (v2)"
+            strat_desc = "main strict weighted blend"
         elif strategy == "alt4":
             strat_label = "\U0001f9ea ALT4"
             strat_desc = "hybrid original/inverted"
         elif strategy == "alt5":
             strat_label = "\U0001f6e1 ALT5"
-            strat_desc = "anti-alt3 (hours+ADX)"
+            strat_desc = "anti-alt3 legacy (hours+ADX)"
         else:
             strat_label = "\U0001f3af ALT2"
             strat_desc = "ma\u2260pv + ADX\u226530 + top16"

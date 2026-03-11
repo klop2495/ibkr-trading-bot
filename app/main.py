@@ -1756,7 +1756,7 @@ def main():
 
     # Telegram notifications for binary signals
     tg_notifier = TelegramNotifier()
-    # If TG_ALT_ONLY=1 (default), send only Alt2/Alt3 alerts.
+    # If TG_ALT_ONLY=1 (default), send only Alt strategy alerts (Alt3 main=v2 / Alt4 / Alt5).
     tg_alt_only = os.getenv("TG_ALT_ONLY", "1") != "0"
     # Alt4 telegram is enabled by default. Set TG_ALT4_ENABLED=0 to disable.
     tg_alt4_enabled = os.getenv("TG_ALT4_ENABLED", "1") != "0"
@@ -2479,8 +2479,8 @@ def main():
                                         )
                                     if new_signals:
                                         print(f"🟢 NEW_SIGNALS: {', '.join(sorted(new_signals))}")
-                                        # Alt1 Telegram notifications DISABLED — only Alt2/Alt3 sent via TG
-                                        # (Alt2/Alt3 notifications are sent above in the forecast insert block)
+                                        # Alt1 Telegram notifications DISABLED — only Alt strategy notifications are sent via TG
+                                        # (Alt3/Alt4/Alt5 notifications are sent above in the forecast insert block)
                                     if lost_signals:
                                         print(f"🔴 LOST_SIGNALS: {', '.join(sorted(lost_signals))}")
                                         if tg_notify_lost:

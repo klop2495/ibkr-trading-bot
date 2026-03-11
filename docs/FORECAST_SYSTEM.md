@@ -20,10 +20,10 @@ The forecast is not a price target. It answers one question: *"Will the price be
 ### Alt Strategies (H30)
 
 - `Alt2`: ma!=pv + ADX>=30 (+ eligibility marker)
-- `Alt3`: stricter legacy variant (momentum confirms ma)
-- `Alt3-v2`: independent strict weighted variant
+- `Alt3 (legacy)`: stricter legacy variant (momentum confirms ma)
+- `Alt3 (main=v2)`: independent strict weighted variant (primary working Alt3)
 - `Alt4`: hour-based original/inverted mode
-- `Alt5`: **ANTI_ALT3** (inverse of Alt3) with env filters:
+- `Alt5`: **ANTI_ALT3_LEGACY** (inverse of Alt3 legacy) with env filters:
   - `ALT5_ENABLED`
   - `ALT5_ALLOWED_HOURS` (UTC CSV)
   - `ALT5_MIN_ADX`
