@@ -1,5 +1,5 @@
 """
-Signal Lifecycle Manager — deduplication + cooldown with escalation for Alt2 signals.
+Signal Lifecycle Manager — deduplication + cooldown with escalation for ALT strategies.
 
 Ensures one active signal per symbol at a time:
 - NEW signal → PENDING (waiting for verification, 30 min)
@@ -11,8 +11,9 @@ Cooldown escalation:
 - 2nd consecutive miss: 60 min cooldown
 - 3rd+ consecutive miss: block until next UTC hour change
 
-Blacklist hours (session transitions where Alt2 fails):
-- Hours 06, 08, 13, 14, 18 UTC → signal generation blocked
+Blacklist hours:
+- Can be explicit via SIGNAL_BLACKLIST_HOURS
+- Or auto-derived as complement of FORECAST_RECOMMENDED_WINDOWS_UTC
 
 Config via env vars:
   SIGNAL_LIFECYCLE_ENABLED=1
@@ -20,6 +21,7 @@ Config via env vars:
   SIGNAL_COOLDOWN_2=60         (minutes after 2nd consecutive miss)
   SIGNAL_COOLDOWN_3=session    (block until next UTC hour after 3rd miss)
   SIGNAL_BLACKLIST_HOURS=06,08,13,14,18
+  SIGNAL_BLACKLIST_SOURCE=env   ("env" | "recommended_complement")
 """
 
 import logging
@@ -27,6 +29,8 @@ import os
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Set, Tuple
+
+from app.forecast.recommended_windows import get_recommended_windows_utc, minute_in_window
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,22 @@ def _parse_hours(env_val: str) -> Set[int]:
             if 0 <= h <= 23:
                 hours.add(h)
     return hours
+
+
+def _recommended_hours_utc() -> Set[int]:
+    """Return UTC hours touched by recommended windows."""
+    windows = get_recommended_windows_utc()
+    if not windows:
+        return set()
+    out: Set[int] = set()
+    for hour in range(24):
+        start_min = hour * 60
+        end_min = start_min + 59
+        for minute_of_day in range(start_min, end_min + 1):
+            if any(minute_in_window(minute_of_day, w) for w in windows):
+                out.add(hour)
+                break
+    return out
 
 
 class SignalState:
@@ -90,9 +110,16 @@ class SignalLifecycleManager:
         self._pending_min_verify_min = int(os.getenv("SIGNAL_PENDING_MIN_VERIFY_MIN", "30"))
         self._min_repeat_min = int(os.getenv("SIGNAL_MIN_REPEAT_MIN", "45"))
         self._blacklist_blocking = os.getenv("SIGNAL_BLACKLIST_BLOCKING", "0") == "1"
-        self._blacklist_hours = _parse_hours(
+        _blacklist_source = (os.getenv("SIGNAL_BLACKLIST_SOURCE", "env") or "env").strip().lower()
+        _configured_blacklist = _parse_hours(
             os.getenv("SIGNAL_BLACKLIST_HOURS", ",".join(str(h) for h in sorted(BLACKLIST_HOURS_DEFAULT)))
         )
+        if _blacklist_source == "recommended_complement":
+            _rec_hours = _recommended_hours_utc()
+            # Fail-safe: if recommended windows are not configured, keep explicit list.
+            self._blacklist_hours = (set(range(24)) - _rec_hours) if _rec_hours else _configured_blacklist
+        else:
+            self._blacklist_hours = _configured_blacklist
 
         self._states: Dict[str, SignalState] = {}
         self._supabase = supabase_client

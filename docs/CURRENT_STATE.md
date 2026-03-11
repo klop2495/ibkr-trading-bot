@@ -46,8 +46,12 @@ ALT5_EXCLUDE_CONFIDENCE=
 
 ### Lifecycle
 
-- Alt2/Alt3v2/Alt4/Alt5 отслеживаются раздельно (`SYMBOL#variant`).
-- Alt5 cooldown активен через `ALT5_MIN_REPEAT_MIN`.
+- Alt3v2/Alt4/Alt5 отслеживаются раздельно (`SYMBOL#variant`).
+- Базовое правило дедупликации/ожидания: pending + repeat guard (`SIGNAL_MIN_REPEAT_MIN=45`).
+- Strategy repeat guard: `ALT3_MIN_REPEAT_MIN=45`, `ALT4_MIN_REPEAT_MIN=45`, `ALT5_MIN_REPEAT_MIN=45`.
+- Cooldown escalation: `30m -> 60m -> session`.
+- Для блокировки вне торговых окон используется `SIGNAL_BLACKLIST_SOURCE=recommended_complement`
+  (часы берутся как дополнение к `FORECAST_RECOMMENDED_WINDOWS_UTC`).
 - В history API флаг recommended считается по историческим условиям окна, а не по текущему lifecycle status.
 
 ---

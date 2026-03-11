@@ -1741,7 +1741,7 @@ def main():
     else:
         print(f"Phase 8: Forecast engine DISABLED (forecast_enabled={forecast_enabled} signal_gen={signal_gen_enabled})")
 
-    # Signal Lifecycle Manager — dedup + cooldown for Alt2 signals
+    # Signal Lifecycle Manager — dedup + cooldown for Alt3v2/Alt4/Alt5 signals
     signal_lifecycle = SignalLifecycleManager(supabase_client=db.client)
     if signal_lifecycle.enabled:
         _restored = signal_lifecycle.restore_from_supabase()
@@ -1760,8 +1760,8 @@ def main():
     tg_alt_only = os.getenv("TG_ALT_ONLY", "1") != "0"
     # Alt4 telegram is enabled by default. Set TG_ALT4_ENABLED=0 to disable.
     tg_alt4_enabled = os.getenv("TG_ALT4_ENABLED", "1") != "0"
-    alt4_min_repeat_min = max(0, int(os.getenv("ALT4_MIN_REPEAT_MIN", "120")))
-    alt5_min_repeat_min = max(0, int(os.getenv("ALT5_MIN_REPEAT_MIN", "120")))
+    alt4_min_repeat_min = max(0, int(os.getenv("ALT4_MIN_REPEAT_MIN", "45")))
+    alt5_min_repeat_min = max(0, int(os.getenv("ALT5_MIN_REPEAT_MIN", "45")))
     alt3_min_repeat_min = max(0, int(os.getenv("ALT3_MIN_REPEAT_MIN", "45")))
     tg_notify_lost = (os.getenv("TG_NOTIFY_LOST_SIGNALS", "1") != "0") and not tg_alt_only
     # Hard TG anti-spam guard (works even if lifecycle is disabled).
