@@ -2329,11 +2329,12 @@ def main():
                             if execution_service and execution_service.forecast_gate:
                                 execution_service.forecast_gate.update_forecasts_batch(forecasts)
 
-                            # Alt2/Alt3/Alt4 Telegram notifications — only for RECOMMENDED signals.
+                            # Alt3/Alt4/Alt5 Telegram notifications — only for RECOMMENDED signals.
                             # Recommended policy:
                             # - timestamp is inside FORECAST_RECOMMENDED_WINDOWS_UTC
-                            # - Alt2: h30_alt2_trade_eligible == True
-                            # - Alt3: strategy already strict; lifecycle block already removed above
+                            # - Alt3: h30_alt3v2_trade_eligible == True
+                            # - Alt4: h30_alt4_trade_eligible == True
+                            # - Alt5: h30_alt5_trade_eligible == True (+ TG_ALT5_ENABLED / ALT5 hours gate)
                             # Fail-closed: if windows are missing/invalid, nothing is sent.
                             if fc_count > 0:
                                 try:
@@ -2367,7 +2368,6 @@ def main():
                                             continue
                                         _in_window, _window_label, _, _ = classify_utc_timestamp(fc.ts_utc.isoformat())
                                         for strat, attr in [
-                                            ("alt2", "h30_alt2_direction"),
                                             ("alt3", "h30_alt3v2_direction"),
                                             ("alt4", "h30_alt4_direction"),
                                             ("alt5", "h30_alt5_direction"),
@@ -2379,7 +2379,7 @@ def main():
                                                     _send_allowed = (fc.ts_utc.hour in _alt5_hours) if _alt5_hours else _in_window
                                                 if not _send_allowed:
                                                     continue
-                                                if strat == "alt2" and not bool(getattr(fc, "h30_alt2_trade_eligible", False)):
+                                                if strat == "alt3" and not bool(getattr(fc, "h30_alt3v2_trade_eligible", False)):
                                                     continue
                                                 if strat == "alt4" and not tg_alt4_enabled:
                                                     continue
