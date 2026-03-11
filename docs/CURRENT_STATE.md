@@ -15,8 +15,7 @@
 
 | Стратегия | Статус | Текущая оценка | Поток |
 |---|---|---|---|
-| Alt2 | 🟢 active | меняется по рыночным часам | variable |
-| Alt3 (legacy) | 🟢 active | используется как источник для Alt5 (anti) | variable |
+| Alt3 (legacy) | ⚫ deprecated | отключен в runtime (оставлен только в исторических данных) | none |
 | Alt3 (main=v2) | 🟢 active | основная рабочая версия Alt3 | low/medium |
 | Alt4 | 🟢 active | live в работе | variable |
 | Alt5 | 🟢 active (deployed) | 120h: 65.71% (23/35), 7d: 71.43% (30/42) | low/medium |

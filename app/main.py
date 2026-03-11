@@ -1933,12 +1933,6 @@ def main():
     last_ib_warn_ts = 0.0
 
     # Strategy-level rolling guards for forecast variants (adaptive enable/disable).
-    alt2_guard_enabled = os.getenv("ALT2_GUARD_ENABLED", "0") == "1"
-    alt2_guard_window = int(os.getenv("ALT2_GUARD_WINDOW", "40"))
-    alt2_guard_min_samples = int(os.getenv("ALT2_GUARD_MIN_SAMPLES", "20"))
-    alt2_guard_block_below = float(os.getenv("ALT2_GUARD_BLOCK_BELOW", "0.5556"))
-    alt2_guard_unblock_above = float(os.getenv("ALT2_GUARD_UNBLOCK_ABOVE", "0.60"))
-
     alt3_guard_enabled = os.getenv("ALT3_GUARD_ENABLED", "0") == "1"
     alt3_guard_window = int(os.getenv("ALT3_GUARD_WINDOW", "40"))
     alt3_guard_min_samples = int(os.getenv("ALT3_GUARD_MIN_SAMPLES", "20"))
@@ -1948,7 +1942,6 @@ def main():
     strategy_guard_refresh_s = int(os.getenv("STRATEGY_GUARD_REFRESH_S", "300"))
     last_strategy_guard_refresh = 0.0
     strategy_guard_state: Dict[str, Dict[str, Any]] = {
-        "alt2": {"blocked": False, "samples": 0, "accuracy": None, "reason": "guard_disabled"},
         "alt3v2": {"blocked": False, "samples": 0, "accuracy": None, "reason": "guard_disabled"},
     }
 
@@ -1980,16 +1973,6 @@ def main():
         last_strategy_guard_refresh = now_ts
 
         configs = [
-            (
-                "alt2",
-                alt2_guard_enabled,
-                "h30_alt2_direction",
-                "h30_alt2_correct",
-                alt2_guard_window,
-                alt2_guard_min_samples,
-                alt2_guard_block_below,
-                alt2_guard_unblock_above,
-            ),
             (
                 "alt3v2",
                 alt3_guard_enabled,
@@ -2174,36 +2157,17 @@ def main():
                             market_data_service=market_data_service,
                             symbols=active_symbols,
                         )
-                        # Signal Lifecycle: filter alt2/alt3-v2 signals (dedup + cooldown + blacklist)
+                        # Signal Lifecycle: filter active variants (dedup + cooldown + blacklist)
                         # Variant policy:
-                        # - Alt2, Alt3-v2, Alt4 and Alt5 are tracked independently for A/B comparison.
-                        # - Lifecycle keys are variant-aware: "SYMBOL#alt2" / "SYMBOL#alt3v2" / "SYMBOL#alt4" / "SYMBOL#alt5".
+                        # - Alt3-v2, Alt4 and Alt5 are tracked independently.
+                        # - Lifecycle keys are variant-aware: "SYMBOL#alt3v2" / "SYMBOL#alt4" / "SYMBOL#alt5".
                         if forecasts and signal_lifecycle.enabled:
                             _lc_now = datetime.now(timezone.utc)
                             _lc_blocked = 0
                             for fc in forecasts:
-                                _alt2_dir = getattr(fc, "h30_alt2_direction", None)
                                 _alt3v2_dir = getattr(fc, "h30_alt3v2_direction", None)
                                 _alt4_dir = getattr(fc, "h30_alt4_direction", None)
                                 _alt5_dir = getattr(fc, "h30_alt5_direction", None)
-                                # Alt2 lifecycle must track ALL Alt2 signals for dedup/cooldown,
-                                # not only execution-eligible subset.
-                                if _alt2_dir:
-                                    if bool(strategy_guard_state.get("alt2", {}).get("blocked")):
-                                        setattr(fc, "h30_alt2_direction", None)
-                                        setattr(fc, "h30_alt2_trade_eligible", None)
-                                        _lc_blocked += 1
-                                        _alt2_dir = None
-                                    else:
-                                        _alt2_dir = getattr(fc, "h30_alt2_direction", None)
-                                if _alt2_dir:
-                                    _key2 = f"{fc.symbol}#ALT2"
-                                    _ok2, _reason2 = signal_lifecycle.can_signal(_key2, _alt2_dir, _lc_now)
-                                    if not _ok2:
-                                        # Keep base forecast row, but suppress duplicate Alt2 signal in this cycle.
-                                        setattr(fc, "h30_alt2_direction", None)
-                                        setattr(fc, "h30_alt2_trade_eligible", None)
-                                        _lc_blocked += 1
 
                                 if _alt3v2_dir:
                                     if bool(strategy_guard_state.get("alt3v2", {}).get("blocked")):
@@ -2293,17 +2257,9 @@ def main():
                                                 _ts = datetime.fromisoformat(_ts_raw.replace("Z", "+00:00"))
                                             except Exception:
                                                 pass
-                                        _d2 = _row.get("h30_alt2_direction")
                                         _d3 = _row.get("h30_alt3v2_direction")
                                         _d4 = _row.get("h30_alt4_direction")
                                         _d5 = _row.get("h30_alt5_direction")
-                                        if _sym and _d2:
-                                            signal_lifecycle.record_signal(
-                                                f"{_sym}#ALT2",
-                                                _d2,
-                                                now=_ts,
-                                                row_id=str(_rid) if _rid is not None else None,
-                                            )
                                         if _sym and _d3:
                                             signal_lifecycle.record_signal(
                                                 f"{_sym}#ALT3V2",
@@ -2544,16 +2500,15 @@ def main():
                             try:
                                 for _av in verify_result.alt_results:
                                     _variant = str(getattr(_av, "variant", "") or "").lower()
-                                    if _variant not in ("alt2", "alt3", "alt3v2", "alt4", "alt5"):
+                                    if _variant not in ("alt3v2", "alt4", "alt5"):
                                         continue
                                     _sym = str(getattr(_av, "symbol", "") or "").upper()
                                     if not _sym:
                                         continue
                                     _correct = bool(getattr(_av, "correct", False))
                                     _row_id = getattr(_av, "row_id", None)
-                                    _variant_key = "alt3v2" if _variant == "alt3" else _variant
                                     signal_lifecycle.record_verification(
-                                        f"{_sym}#{_variant_key}",
+                                        f"{_sym}#{_variant}",
                                         correct=_correct,
                                         row_id=str(_row_id) if _row_id is not None else None,
                                     )

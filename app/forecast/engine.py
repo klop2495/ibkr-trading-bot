@@ -93,7 +93,13 @@ class ForecastEngine:
             lower=True,
         )
         self._alt5_enabled = os.getenv("ALT5_ENABLED", "1") == "1"
-        self._alt5_source_strategy = (os.getenv("ALT5_SOURCE_STRATEGY", "alt3") or "alt3").strip().lower()
+        raw_alt5_source = (os.getenv("ALT5_SOURCE_STRATEGY", "alt3v2") or "alt3v2").strip().lower()
+        # Legacy "alt3" is deprecated. Supported sources: alt3v2, original.
+        if raw_alt5_source == "alt3":
+            raw_alt5_source = "alt3v2"
+        if raw_alt5_source not in {"alt3v2", "original"}:
+            raw_alt5_source = "alt3v2"
+        self._alt5_source_strategy = raw_alt5_source
         self._alt5_invert = os.getenv("ALT5_INVERT", "1") != "0"
         self._alt5_allowed_hours = self._parse_hour_set_or_none(
             os.getenv("ALT5_HOURS_UTC", os.getenv("ALT5_ALLOWED_HOURS", ""))
@@ -226,8 +232,9 @@ class ForecastEngine:
             else:
                 mtf_conflict = False
 
-        _alt2_dir = self._compute_alt2_signal(symbol, h30_votes_json, adx_value)
-        _alt3_dir = self._compute_alt3_signal(symbol, h30_votes_json, adx_value)
+        # Alt2 and Alt3(legacy) are deprecated and intentionally disabled.
+        _alt2_dir = None
+        _alt3_dir = None
         _alt3v2_dir, _alt3v2_eligible, _alt3v2_score, _alt3v2_meta = self._compute_alt3v2_signal(
             symbol, h30_votes_json, adx_value
         )
@@ -239,9 +246,9 @@ class ForecastEngine:
             h30_confidence=_h30_confidence,
             ts_utc=ts,
         )
-        _alt5_source = _alt3v2_dir if self._alt5_source_strategy == "alt3v2" else _alt3_dir
+        _alt5_source = _alt3v2_dir if self._alt5_source_strategy == "alt3v2" else _h30_direction
         _alt5_dir, _alt5_eligible = self._compute_alt5_signal(
-            alt3_direction=_alt5_source,
+            source_direction=_alt5_source,
             adx_value=adx_value,
             ts_utc=ts,
             h30_confidence=_h30_confidence,
@@ -263,7 +270,7 @@ class ForecastEngine:
             # h30_alt_direction=h30_alt_direction,
             # h30_alt_strength=h30_alt_strength,
             h30_alt2_direction=_alt2_dir,
-            h30_alt2_trade_eligible=self._compute_alt2_trade_eligible(h30_votes_json, _alt2_dir),
+            h30_alt2_trade_eligible=None,
             h30_alt3_direction=_alt3_dir,
             h30_alt3v2_direction=_alt3v2_dir,
             h30_alt3v2_trade_eligible=_alt3v2_eligible,
@@ -523,15 +530,15 @@ class ForecastEngine:
 
     def _compute_alt5_signal(
         self,
-        alt3_direction: Optional[str],
+        source_direction: Optional[str],
         adx_value: Optional[float],
         ts_utc: datetime,
         h30_confidence: Optional[str],
     ) -> Tuple[Optional[str], Optional[bool]]:
-        """Alt5: inversion of legacy Alt3 direction with env-configurable filters."""
+        """Alt5: inversion of configurable source direction with env-configurable filters."""
         if not self._alt5_enabled:
             return None, None
-        if alt3_direction not in {"up", "down"}:
+        if source_direction not in {"up", "down"}:
             return None, None
         if self._alt5_allowed_hours is not None and ts_utc.hour not in self._alt5_allowed_hours:
             return None, None
@@ -541,9 +548,9 @@ class ForecastEngine:
             return None, None
         if self._alt5_exclude_confidence and (h30_confidence or "").lower() in self._alt5_exclude_confidence:
             return None, None
-        direction = alt3_direction
+        direction = source_direction
         if self._alt5_invert:
-            direction = "down" if alt3_direction == "up" else "up"
+            direction = "down" if source_direction == "up" else "up"
         return direction, True
 
     @staticmethod

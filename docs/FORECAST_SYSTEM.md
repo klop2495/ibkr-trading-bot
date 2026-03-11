@@ -23,7 +23,7 @@ The forecast is not a price target. It answers one question: *"Will the price be
 - `Alt3 (legacy)`: stricter legacy variant (momentum confirms ma)
 - `Alt3 (main=v2)`: independent strict weighted variant (primary working Alt3)
 - `Alt4`: hour-based original/inverted mode
-- `Alt5`: **ANTI_ALT3_LEGACY** (inverse of Alt3 legacy) with env filters:
+- `Alt5`: anti-trend strategy with configurable source (`ALT5_SOURCE_STRATEGY=alt3v2|original`) and env filters:
   - `ALT5_ENABLED`
   - `ALT5_ALLOWED_HOURS` (UTC CSV)
   - `ALT5_MIN_ADX`
