@@ -1762,7 +1762,10 @@ def main():
     tg_alt4_enabled = os.getenv("TG_ALT4_ENABLED", "1") != "0"
     alt4_min_repeat_min = max(0, int(os.getenv("ALT4_MIN_REPEAT_MIN", "120")))
     alt5_min_repeat_min = max(0, int(os.getenv("ALT5_MIN_REPEAT_MIN", "120")))
+    alt3_min_repeat_min = max(0, int(os.getenv("ALT3_MIN_REPEAT_MIN", "45")))
     tg_notify_lost = (os.getenv("TG_NOTIFY_LOST_SIGNALS", "1") != "0") and not tg_alt_only
+    # Hard TG anti-spam guard (works even if lifecycle is disabled).
+    _tg_alt_last_sent: Dict[str, datetime] = {}
     # Track trading hours transitions
     _prev_in_trading_hours: Optional[bool] = None
     # Trading hours for notifications (same as quality filter)
@@ -2345,6 +2348,19 @@ def main():
                                                     continue
                                                 if strat == "alt5" and not bool(getattr(fc, "h30_alt5_trade_eligible", False)):
                                                     continue
+                                                # Hard per-symbol repeat guard for Telegram notifications.
+                                                _repeat_min = (
+                                                    alt3_min_repeat_min if strat == "alt3"
+                                                    else alt4_min_repeat_min if strat == "alt4"
+                                                    else alt5_min_repeat_min
+                                                )
+                                                if _repeat_min > 0:
+                                                    _tg_key = f"{strat}:{fc.symbol}".upper()
+                                                    _last_ts = _tg_alt_last_sent.get(_tg_key)
+                                                    if _last_ts is not None:
+                                                        _age_min = (fc.ts_utc - _last_ts).total_seconds() / 60
+                                                        if _age_min < _repeat_min:
+                                                            continue
                                                 import json as _json
                                                 _votes = None
                                                 if fc.h30_votes_json:
@@ -2352,7 +2368,7 @@ def main():
                                                         _votes = _json.loads(fc.h30_votes_json) if isinstance(fc.h30_votes_json, str) else fc.h30_votes_json
                                                     except Exception:
                                                         pass
-                                                tg_notifier.notify_alt_signal(
+                                                _sent = tg_notifier.notify_alt_signal(
                                                     symbol=fc.symbol,
                                                     strategy=strat,
                                                     direction=alt_dir,
@@ -2363,6 +2379,8 @@ def main():
                                                     mode=(getattr(fc, "h30_alt4_mode", None) if strat == "alt4" else None),
                                                     hour_utc=(fc.ts_utc.hour if strat == "alt4" else None),
                                                 )
+                                                if _sent > 0:
+                                                    _tg_alt_last_sent[f"{strat}:{fc.symbol}".upper()] = fc.ts_utc
                                 except Exception as alt_tg_exc:
                                     print(f"tg_alt_notify_error: {alt_tg_exc}")
 
