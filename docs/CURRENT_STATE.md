@@ -3,7 +3,7 @@
 > Обновляется после каждого деплоя / значимого изменения.
 > AI-разработчик: прочитай ПЕРЕД началом работы.
 
-**Последнее обновление:** 11 March 2026
+**Последнее обновление:** 13 March 2026
 
 ---
 
@@ -53,6 +53,9 @@ ALT5_EXCLUDE_CONFIDENCE=
 - Для блокировки вне торговых окон используется `SIGNAL_BLACKLIST_SOURCE=recommended_complement`
   (часы берутся как дополнение к `FORECAST_RECOMMENDED_WINDOWS_UTC`).
 - В history API флаг recommended считается по историческим условиям окна, а не по текущему lifecycle status.
+- Для H30 верификации доступен `FORECAST_VERIFY_H30_STRICT_EXPIRY=1`:
+  цена берется как первый `market_snapshots.M15` snapshot на/после `expiry`,
+  а не ближайший бар вокруг `expiry`.
 
 ---
 

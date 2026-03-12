@@ -6,6 +6,7 @@ horizon has elapsed, compares the predicted direction with actual price change.
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,6 +48,9 @@ class ForecastVerifier:
     def __init__(self, db: Any) -> None:
         self.db = db
         self._last_log: Optional[str] = None
+        self._h30_strict_expiry = os.getenv("FORECAST_VERIFY_H30_STRICT_EXPIRY", "1").strip().lower() not in {
+            "0", "false", "no", "off"
+        }
 
     @staticmethod
     def _is_weekend(ts: datetime) -> bool:
@@ -236,7 +240,11 @@ class ForecastVerifier:
                     alt5_dir = row.get("h30_alt5_direction")
                     if alt2_dir or alt3_dir or alt3v2_dir or alt4_dir or alt5_dir:
                         # Need actual price to determine actual_dir
-                        _actual_price = self._get_historical_price(symbol, horizon_end)
+                        _actual_price = self._get_historical_price(
+                            symbol,
+                            horizon_end,
+                            strict_expiry=(horizon_min == 30 and self._h30_strict_expiry),
+                        )
                         if _actual_price is None:
                             _actual_price = self._get_current_price(symbol, mds)
                         if _actual_price is not None and base_price is not None:
@@ -260,7 +268,11 @@ class ForecastVerifier:
                 continue
 
             # Get actual price at horizon end from historical data
-            actual_price = self._get_historical_price(symbol, horizon_end)
+            actual_price = self._get_historical_price(
+                symbol,
+                horizon_end,
+                strict_expiry=(horizon_min == 30 and self._h30_strict_expiry),
+            )
             if actual_price is None:
                 # Fallback to current price if horizon just elapsed
                 actual_price = self._get_current_price(symbol, mds)
@@ -395,11 +407,18 @@ class ForecastVerifier:
             logger.warning(f"forecast_verify_update_error id={row_id} error={exc}")
             return False, []
 
-    def _get_historical_price(self, symbol: str, target_ts: datetime) -> Optional[float]:
+    def _get_historical_price(
+        self,
+        symbol: str,
+        target_ts: datetime,
+        strict_expiry: bool = False,
+    ) -> Optional[float]:
         """
-        Get close price from market_snapshots nearest to target_ts.
-        Uses a wider search window and picks the bar closest to target time.
-        Returns None if no bar found within reasonable window or if market was closed.
+        Get close price from market_snapshots around target_ts.
+
+        Default mode picks the bar nearest to target_ts inside a wide window.
+        Strict-expiry mode picks the first snapshot at or after target_ts, which
+        better matches binary expiry semantics for H30 verification.
         """
         try:
             # Check if target_ts falls on weekend (forex closed Fri 22:00 - Sun 22:00 UTC)
@@ -412,8 +431,26 @@ class ForecastVerifier:
             if wd == 4 and hour >= 22:  # Friday after 22:00 — closed
                 return None
 
-            # Search window: look back up to 30 min before target, up to 15 min after
-            # This handles cases where M15 bars may not align perfectly with target
+            if strict_expiry:
+                window_end = (target_ts + timedelta(minutes=15)).isoformat()
+                res = (
+                    self.db.client.table("market_snapshots")
+                    .select("close, ts")
+                    .eq("symbol", symbol)
+                    .eq("timeframe", "M15")
+                    .gte("ts", target_ts.isoformat())
+                    .lte("ts", window_end)
+                    .order("ts", desc=False)
+                    .limit(20)
+                ).execute()
+                rows = res.data or []
+                for row in rows:
+                    close = row.get("close")
+                    if close is not None:
+                        return float(close)
+                return None
+
+            # Legacy mode: look back up to 30 min before target, up to 15 min after.
             window_start = (target_ts - timedelta(minutes=30)).isoformat()
             window_end = (target_ts + timedelta(minutes=15)).isoformat()
             res = (
@@ -423,16 +460,15 @@ class ForecastVerifier:
                 .eq("timeframe", "M15")
                 .gte("ts", window_start)
                 .lte("ts", window_end)
-                .order("ts", desc=True)
-                .limit(3)
+                .order("ts", desc=False)
+                .limit(50)
             ).execute()
             rows = res.data or []
             if not rows:
                 return None
 
-            # Pick the bar closest to target_ts
             best = None
-            best_delta = float('inf')
+            best_delta = float("inf")
             for row in rows:
                 if row.get("close") is None:
                     continue
