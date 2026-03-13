@@ -9,7 +9,6 @@ Calculates position size based on:
 """
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field

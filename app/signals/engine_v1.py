@@ -275,8 +275,6 @@ class SignalEngineV1:
 
         dir_h4 = self._direction_from_ma(snap_h4)
         dir_h1 = self._direction_from_ma(snap_h1)
-        dir_m15 = self._direction_from_ma(snap_m15)
-
         if self.params.gates.disallow_h4_neutral and dir_h4 == Direction.FLAT:
             return self._base_preview(
                 symbol,

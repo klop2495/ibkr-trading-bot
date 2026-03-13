@@ -16,13 +16,13 @@ IMPORTANT: This engine does NOT:
 import os
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
 from app.simulation.models import (
-    SimTrade, SimFill, SimEquityPoint, SimEvent,
+    SimTrade, SimFill, SimEquityPoint,
     SimTradeStatus, SimCloseReason, SimSide, SimEventType, BlockReason,
-    FOREX_PIP_SIZES, DEFAULT_PIP_SIZE
+    DEFAULT_PIP_SIZE
 )
 from app.simulation.repository import (
     SimTradesRepo, SimFillsRepo, SimEquityCurveRepo, SimEventsRepo

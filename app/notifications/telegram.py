@@ -388,12 +388,15 @@ class TelegramNotifier:
 
             # Accuracy emoji
             def acc_emoji(pct: int) -> str:
-                if pct >= 75: return "🟢"
-                if pct >= 55: return "🟡"
+                if pct >= 75:
+                    return "🟢"
+                if pct >= 55:
+                    return "🟡"
                 return "🔴"
 
             def fmt_acc(ok: int, total: int) -> str:
-                if total == 0: return "—"
+                if total == 0:
+                    return "—"
                 pct = round(ok / total * 100)
                 return f"{acc_emoji(pct)} {ok}/{total} = {pct}%"
 
