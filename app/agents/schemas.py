@@ -12,7 +12,6 @@ ALLOWED_SYMBOLS = [
     "USDCHF",
     "AUDUSD",
     "USDCAD",
-    "NZDUSD",
     # JPY crosses
     "EURJPY",
     "GBPJPY",

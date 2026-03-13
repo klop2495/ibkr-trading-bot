@@ -6,6 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.signals_params import SignalsParams
 
+DISABLED_SYMBOLS = {
+    "NZDUSD",
+}
+
 DEFAULT_SYMBOLS = [
     "EURUSD",
     "GBPUSD",
@@ -13,7 +17,6 @@ DEFAULT_SYMBOLS = [
     "USDCHF",
     "AUDUSD",
     "USDCAD",
-    "NZDUSD",
     "EURJPY",
     "GBPJPY",
     "AUDJPY",
@@ -77,7 +80,7 @@ class BotSettings(BaseModel):
             if not isinstance(s, str):
                 continue
             name = s.strip().upper()
-            if not name or name in seen:
+            if not name or name in seen or name in DISABLED_SYMBOLS:
                 continue
             seen.add(name)
             cleaned.append(name)
