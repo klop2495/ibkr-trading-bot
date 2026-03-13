@@ -234,6 +234,32 @@ def squeeze_breakout_confirm(row: RowFeature, s5: Sequence[Tuple[datetime, float
     return final_close <= min(early) - 0.5 * ps
 
 
+def squeeze_breakout_confirm_relaxed_1(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> bool:
+    if len(s5) < 10 or row.h30_direction not in {"up", "down"}:
+        return False
+    closes = [x[1] for x in s5]
+    early = closes[:-2]
+    final_close = closes[-1]
+    ps = pip_size(row.symbol)
+    if row.h30_direction == "up":
+        return final_close >= max(early) + 0.2 * ps
+    return final_close <= min(early) - 0.2 * ps
+
+
+def squeeze_breakout_confirm_relaxed_2(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> bool:
+    if len(s5) < 8 or row.h30_direction not in {"up", "down"}:
+        return False
+    closes = [x[1] for x in s5]
+    ps = pip_size(row.symbol)
+    start = closes[0]
+    end = closes[-1]
+    net = end - start
+    last3 = closes[-3:]
+    if row.h30_direction == "up":
+        return net >= 0.3 * ps and last3[-1] >= last3[0]
+    return net <= -0.3 * ps and last3[-1] <= last3[0]
+
+
 def exhaustion_reversal_direction(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
     if len(s5) < 24:
         return None
@@ -332,6 +358,28 @@ def strategy_squeeze_breakout(row: RowFeature, s5: Sequence[Tuple[datetime, floa
     return row.h30_direction
 
 
+def strategy_squeeze_breakout_relaxed_1(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
+    if row.h30_direction not in {"up", "down"}:
+        return None
+    width_ok = row.bb_width is not None and row.bb_width <= 0.0065
+    if not (bool(row.bb_squeeze) or width_ok):
+        return None
+    if not squeeze_breakout_confirm_relaxed_1(row, s5):
+        return None
+    return row.h30_direction
+
+
+def strategy_squeeze_breakout_relaxed_2(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
+    if row.h30_direction not in {"up", "down"}:
+        return None
+    width_ok = row.bb_width is not None and row.bb_width <= 0.008
+    if not (bool(row.bb_squeeze) or width_ok):
+        return None
+    if not squeeze_breakout_confirm_relaxed_2(row, s5):
+        return None
+    return row.h30_direction
+
+
 def strategy_exhaustion_mean_reversion(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
     if row.adx_value is not None and row.adx_value >= 20:
         return None
@@ -393,6 +441,8 @@ def main() -> int:
         "regime_switch_alt4": [],
         "trend_pullback_confirmation": [],
         "squeeze_breakout": [],
+        "squeeze_breakout_relaxed_1": [],
+        "squeeze_breakout_relaxed_2": [],
         "exhaustion_mean_reversion": [],
         "currency_strength_overlay": [],
     }
@@ -403,6 +453,8 @@ def main() -> int:
             "regime_switch_alt4": strategy_regime_switch_alt4(row, s5_short),
             "trend_pullback_confirmation": strategy_trend_pullback_confirmation(row, s5_short),
             "squeeze_breakout": strategy_squeeze_breakout(row, s5_short),
+            "squeeze_breakout_relaxed_1": strategy_squeeze_breakout_relaxed_1(row, s5_short),
+            "squeeze_breakout_relaxed_2": strategy_squeeze_breakout_relaxed_2(row, s5_short),
             "exhaustion_mean_reversion": strategy_exhaustion_mean_reversion(row, s5_short),
             "currency_strength_overlay": strategy_currency_strength_overlay(row, s5_short, m15),
         }
