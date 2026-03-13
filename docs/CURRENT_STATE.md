@@ -56,6 +56,9 @@ ALT5_EXCLUDE_CONFIDENCE=
 - Для H30 верификации доступен `FORECAST_VERIFY_H30_STRICT_EXPIRY=1`:
   цена берется как первый `market_snapshots.M15` snapshot на/после `expiry`,
   а не ближайший бар вокруг `expiry`.
+- Для более точной H30 экспирации доступен `S5` recorder:
+  `FORECAST_VERIFY_S5_ENABLED=1`, `FORECAST_VERIFY_S5_FLUSH_INTERVAL=5`,
+  verifier сначала ищет `market_snapshots.timeframe='S5'`, затем fallback на `M15`.
 
 ---
 

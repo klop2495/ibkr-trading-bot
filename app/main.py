@@ -1660,6 +1660,8 @@ def main():
     signal_gen_interval = int(os.getenv("SIGNAL_GEN_INTERVAL", str(DEFAULT_SIGNAL_GEN_INTERVAL)))
     last_signal_gen_tick = 0.0
     last_signal_gen_log: Optional[str] = None
+    realtime_snapshot_interval = int(os.getenv("FORECAST_VERIFY_S5_FLUSH_INTERVAL", "5"))
+    last_realtime_snapshot_tick = 0.0
     
     market_data_service: Optional[MarketDataService] = None
     signal_engine_instance: Optional[SignalEngineV1] = None
@@ -2502,6 +2504,16 @@ def main():
 
         # Forecast verification — runs independently, more frequently than forecast generation
         if forecast_verifier and market_data_service and forecast_enabled:
+            now_ts = time.time()
+            if realtime_snapshot_interval > 0 and now_ts - last_realtime_snapshot_tick >= realtime_snapshot_interval:
+                try:
+                    inserted = market_data_service.record_realtime_snapshots()
+                    if inserted > 0:
+                        print(f"realtime_snapshots inserted={inserted} timeframe=S5")
+                except Exception as rtexc:
+                    print(f"realtime_snapshot_tick_error: {rtexc}")
+                last_realtime_snapshot_tick = now_ts
+
             now_ts = time.time()
             if now_ts - last_forecast_verify_tick >= forecast_verify_interval:
                 try:

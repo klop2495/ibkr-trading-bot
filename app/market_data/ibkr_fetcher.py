@@ -1,7 +1,7 @@
 import os
 import time
-from datetime import datetime
-from typing import Any, List
+from datetime import datetime, timezone
+from typing import Any, Dict, List
 
 from app.broker.contracts import create_cash_fx_contract, create_cfd_fx_contract
 from app.broker.ib_utils import (
@@ -73,6 +73,9 @@ class IBKRFetcher:
         self._bars_cache: dict[tuple[str, str], list[Any]] = {}
         self._last_bar_ts: dict[tuple[str, str], datetime] = {}
         self._bars_cache_ts: dict[tuple[str, str], float] = {}  # epoch seconds when cache was filled
+        self._realtime_bars: Dict[str, Any] = {}
+        self._realtime_contracts: Dict[str, Any] = {}
+        self._realtime_last_ts: Dict[str, datetime] = {}
 
     def force_reconnect(self) -> bool:
         """Force disconnect and reconnect. Returns True if connected."""
@@ -193,6 +196,10 @@ class IBKRFetcher:
             return create_cfd_fx_contract(ib, symbol)
         return create_cash_fx_contract(ib, symbol)
 
+    def _make_realtime_contract(self, ib: Any, symbol: str):
+        """Use CASH FX for realtime midpoint bars."""
+        return create_cash_fx_contract(ib, symbol)
+
     def _convert_timeframe(self, timeframe: str) -> str:
         """Convert our timeframe format to IB Gateway format."""
         return TIMEFRAME_MAP.get(timeframe, timeframe)
@@ -290,3 +297,69 @@ class IBKRFetcher:
             return None
         except Exception:
             return None
+
+    def ensure_realtime_bar_subscriptions(self, symbols: List[str]) -> int:
+        """
+        Ensure reqRealTimeBars(5s) subscriptions exist for the provided symbols.
+        Returns count of active subscriptions tracked by the fetcher.
+        """
+        try:
+            ib = self._ensure_connected()
+            # Let ib_insync process incoming bar updates.
+            ib.sleep(0.05)
+            for symbol in symbols:
+                if symbol in self._realtime_bars:
+                    continue
+                contract = self._realtime_contracts.get(symbol)
+                if contract is None:
+                    contract = self._make_realtime_contract(ib, symbol)
+                    self._realtime_contracts[symbol] = contract
+                bars = ib.reqRealTimeBars(contract, 5, "MIDPOINT", False)
+                self._realtime_bars[symbol] = bars
+            return len(self._realtime_bars)
+        except Exception as exc:
+            print(f"ibkr_realtime_subscribe_error symbols={len(symbols)} error={exc}")
+            return len(self._realtime_bars)
+
+    def collect_realtime_bars(self) -> List[dict]:
+        """
+        Return unseen 5-second bars from active reqRealTimeBars subscriptions.
+        """
+        try:
+            ib = self._ensure_connected()
+            ib.sleep(0.05)
+        except Exception as exc:
+            print(f"ibkr_realtime_collect_error error={exc}")
+            return []
+
+        out: List[dict] = []
+        for symbol, bars in self._realtime_bars.items():
+            last_seen = self._realtime_last_ts.get(symbol)
+            latest_seen = last_seen
+            for bar in list(bars):
+                bar_ts = getattr(bar, "time", None)
+                if bar_ts is None:
+                    continue
+                if bar_ts.tzinfo is None:
+                    bar_ts = bar_ts.replace(tzinfo=timezone.utc)
+                else:
+                    bar_ts = bar_ts.astimezone(timezone.utc)
+                if last_seen is not None and bar_ts <= last_seen:
+                    continue
+                close = getattr(bar, "close", None)
+                if close is None:
+                    continue
+                out.append(
+                    {
+                        "symbol": symbol,
+                        "time": bar_ts,
+                        "open": float(getattr(bar, "open_", close)),
+                        "high": float(getattr(bar, "high", close)),
+                        "low": float(getattr(bar, "low", close)),
+                        "close": float(close),
+                    }
+                )
+                latest_seen = bar_ts if latest_seen is None or bar_ts > latest_seen else latest_seen
+            if latest_seen is not None:
+                self._realtime_last_ts[symbol] = latest_seen
+        return out

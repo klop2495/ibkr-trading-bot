@@ -51,6 +51,9 @@ class ForecastVerifier:
         self._h30_strict_expiry = os.getenv("FORECAST_VERIFY_H30_STRICT_EXPIRY", "1").strip().lower() not in {
             "0", "false", "no", "off"
         }
+        self._h30_prefer_s5 = os.getenv("FORECAST_VERIFY_H30_PREFER_S5", "1").strip().lower() not in {
+            "0", "false", "no", "off"
+        }
 
     @staticmethod
     def _is_weekend(ts: datetime) -> bool:
@@ -432,6 +435,24 @@ class ForecastVerifier:
                 return None
 
             if strict_expiry:
+                if self._h30_prefer_s5:
+                    s5_window_end = (target_ts + timedelta(minutes=5)).isoformat()
+                    res = (
+                        self.db.client.table("market_snapshots")
+                        .select("close, ts")
+                        .eq("symbol", symbol)
+                        .eq("timeframe", "S5")
+                        .gte("ts", target_ts.isoformat())
+                        .lte("ts", s5_window_end)
+                        .order("ts", desc=False)
+                        .limit(120)
+                    ).execute()
+                    rows = res.data or []
+                    for row in rows:
+                        close = row.get("close")
+                        if close is not None:
+                            return float(close)
+
                 window_end = (target_ts + timedelta(minutes=15)).isoformat()
                 res = (
                     self.db.client.table("market_snapshots")

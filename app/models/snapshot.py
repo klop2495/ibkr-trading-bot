@@ -6,7 +6,7 @@ class MarketSnapshot(BaseModel):
     schema_version: int = 1
     timestamp: datetime
     symbol: str
-    timeframe: Literal["M15", "H1", "H4"]
+    timeframe: Literal["S5", "M15", "H1", "H4"]
     close: float
     atr: float
     rsi: float

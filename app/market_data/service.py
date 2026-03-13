@@ -56,6 +56,9 @@ class MarketDataService:
         self._last_ib_error_code: Optional[str] = None
         self._last_ib_error_ts: Optional[datetime] = None
         self._persist_snapshots = True
+        self._s5_realtime_enabled = os.getenv("FORECAST_VERIFY_S5_ENABLED", "1").strip().lower() not in {
+            "0", "false", "no", "off"
+        }
         
         # Phase 7: Cache for bars data (symbol, timeframe) -> list of bars
         self._bars_cache: Dict[Tuple[str, str], List[Any]] = {}
@@ -182,6 +185,48 @@ class MarketDataService:
                 print(f"fetch_errors count={len(fetch_errors)} pairs={fetch_errors[:5]}{'...' if len(fetch_errors) > 5 else ''}")
         
         return warmup_ready, snapshots
+
+    def record_realtime_snapshots(self) -> int:
+        """
+        Persist unseen 5-second realtime bars into market_snapshots as timeframe=S5.
+
+        This is used only for more accurate H30 expiry verification and does not
+        participate in signal generation.
+        """
+        if not self._persist_snapshots or not self._s5_realtime_enabled or not self.snapshots_repo:
+            return 0
+        ensure = getattr(self.fetcher, "ensure_realtime_bar_subscriptions", None)
+        collect = getattr(self.fetcher, "collect_realtime_bars", None)
+        if not callable(ensure) or not callable(collect):
+            return 0
+        try:
+            ensure(self.symbols)
+            bars = collect() or []
+        except Exception as exc:
+            print(f"realtime_snapshot_error: {exc}")
+            return 0
+
+        inserted = 0
+        for bar in bars:
+            try:
+                snap = MarketSnapshot(
+                    schema_version=1,
+                    timestamp=bar["time"],
+                    symbol=bar["symbol"],
+                    timeframe="S5",
+                    close=bar["close"],
+                    atr=0.0,
+                    rsi=0.0,
+                    ma_fast=0.0,
+                    ma_slow=0.0,
+                    spread=0.0,
+                    data_quality="ok",
+                )
+                self.snapshots_repo.insert(snap)
+                inserted += 1
+            except Exception:
+                continue
+        return inserted
 
     def is_ib_untrusted(self) -> bool:
         return self._last_ib_status == "untrusted"
