@@ -92,6 +92,7 @@ class ForecastEngine:
             os.getenv("ALT4_ELIGIBLE_CONFIDENCE", "medium,high"),
             lower=True,
         )
+        self._alt4_min_adx = self._parse_float(os.getenv("ALT4_MIN_ADX", "0"), 0.0)
         self._alt5_enabled = os.getenv("ALT5_ENABLED", "1") == "1"
         raw_alt5_source = (os.getenv("ALT5_SOURCE_STRATEGY", "alt3v2") or "alt3v2").strip().lower()
         # Legacy "alt3" is deprecated. Supported sources: alt3v2, original.
@@ -244,6 +245,7 @@ class ForecastEngine:
             symbol=symbol,
             h30_direction=_h30_direction,
             h30_confidence=_h30_confidence,
+            adx_value=adx_value,
             ts_utc=ts,
         )
         _alt5_source = _alt3v2_dir if self._alt5_source_strategy == "alt3v2" else _h30_direction
@@ -503,6 +505,7 @@ class ForecastEngine:
         symbol: str,
         h30_direction: Optional[str],
         h30_confidence: Optional[str],
+        adx_value: Optional[float],
         ts_utc: datetime,
     ) -> Tuple[Optional[str], Optional[str], Optional[bool]]:
         """Alt4 hybrid signal: hour-based original/inverted direction + eligibility.
@@ -525,6 +528,8 @@ class ForecastEngine:
         if symbol.upper() in self._alt4_exclude_symbols:
             eligible = False
         if (h30_confidence or "").lower() not in self._alt4_eligible_confidence:
+            eligible = False
+        if adx_value is None or adx_value < self._alt4_min_adx:
             eligible = False
         return alt4_direction, mode, eligible
 
