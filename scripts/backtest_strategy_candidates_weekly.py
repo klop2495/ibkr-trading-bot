@@ -260,6 +260,26 @@ def squeeze_breakout_confirm_relaxed_2(row: RowFeature, s5: Sequence[Tuple[datet
     return net <= -0.3 * ps and last3[-1] <= last3[0]
 
 
+def squeeze_breakout_confirm_strict_s5(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> bool:
+    if len(s5) < 8 or row.h30_direction not in {"up", "down"}:
+        return False
+    closes = [x[1] for x in s5]
+    ps = pip_size(row.symbol)
+    net = closes[-1] - closes[0]
+    last3 = closes[-3:]
+    if row.h30_direction == "up":
+        return (
+            net >= 0.5 * ps
+            and last3[0] <= last3[1] <= last3[2]
+            and closes[-1] >= max(closes[:-3])
+        )
+    return (
+        net <= -0.5 * ps
+        and last3[0] >= last3[1] >= last3[2]
+        and closes[-1] <= min(closes[:-3])
+    )
+
+
 def exhaustion_reversal_direction(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
     if len(s5) < 24:
         return None
@@ -380,6 +400,31 @@ def strategy_squeeze_breakout_relaxed_2(row: RowFeature, s5: Sequence[Tuple[date
     return row.h30_direction
 
 
+def strategy_squeeze_breakout_relaxed_2_adx20(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
+    if row.adx_value is None or row.adx_value < 20:
+        return None
+    return strategy_squeeze_breakout_relaxed_2(row, s5)
+
+
+def strategy_squeeze_breakout_relaxed_2_adx20_no_mtf_conflict(
+    row: RowFeature, s5: Sequence[Tuple[datetime, float]]
+) -> Optional[str]:
+    if row.mtf_conflict:
+        return None
+    return strategy_squeeze_breakout_relaxed_2_adx20(row, s5)
+
+
+def strategy_squeeze_breakout_relaxed_2_strict_s5(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
+    if row.h30_direction not in {"up", "down"}:
+        return None
+    width_ok = row.bb_width is not None and row.bb_width <= 0.008
+    if not (bool(row.bb_squeeze) or width_ok):
+        return None
+    if not squeeze_breakout_confirm_strict_s5(row, s5):
+        return None
+    return row.h30_direction
+
+
 def strategy_exhaustion_mean_reversion(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
     if row.adx_value is not None and row.adx_value >= 20:
         return None
@@ -443,6 +488,9 @@ def main() -> int:
         "squeeze_breakout": [],
         "squeeze_breakout_relaxed_1": [],
         "squeeze_breakout_relaxed_2": [],
+        "squeeze_breakout_relaxed_2_adx20": [],
+        "squeeze_breakout_relaxed_2_adx20_no_mtf_conflict": [],
+        "squeeze_breakout_relaxed_2_strict_s5": [],
         "exhaustion_mean_reversion": [],
         "currency_strength_overlay": [],
     }
@@ -455,6 +503,9 @@ def main() -> int:
             "squeeze_breakout": strategy_squeeze_breakout(row, s5_short),
             "squeeze_breakout_relaxed_1": strategy_squeeze_breakout_relaxed_1(row, s5_short),
             "squeeze_breakout_relaxed_2": strategy_squeeze_breakout_relaxed_2(row, s5_short),
+            "squeeze_breakout_relaxed_2_adx20": strategy_squeeze_breakout_relaxed_2_adx20(row, s5_short),
+            "squeeze_breakout_relaxed_2_adx20_no_mtf_conflict": strategy_squeeze_breakout_relaxed_2_adx20_no_mtf_conflict(row, s5_short),
+            "squeeze_breakout_relaxed_2_strict_s5": strategy_squeeze_breakout_relaxed_2_strict_s5(row, s5_short),
             "exhaustion_mean_reversion": strategy_exhaustion_mean_reversion(row, s5_short),
             "currency_strength_overlay": strategy_currency_strength_overlay(row, s5_short, m15),
         }
