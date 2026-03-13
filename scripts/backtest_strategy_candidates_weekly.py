@@ -280,6 +280,52 @@ def squeeze_breakout_confirm_strict_s5(row: RowFeature, s5: Sequence[Tuple[datet
     )
 
 
+def squeeze_breakout_confirm_strict_s5_v2(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> bool:
+    if len(s5) < 10 or row.h30_direction not in {"up", "down"}:
+        return False
+    closes = [x[1] for x in s5]
+    ps = pip_size(row.symbol)
+    net = closes[-1] - closes[0]
+    last4 = closes[-4:]
+    body = max(closes) - min(closes)
+    if row.h30_direction == "up":
+        return (
+            net >= 0.8 * ps
+            and last4[0] <= last4[1] <= last4[2] <= last4[3]
+            and closes[-1] >= max(closes[:-4])
+            and body >= 1.0 * ps
+        )
+    return (
+        net <= -0.8 * ps
+        and last4[0] >= last4[1] >= last4[2] >= last4[3]
+        and closes[-1] <= min(closes[:-4])
+        and body >= 1.0 * ps
+    )
+
+
+def squeeze_breakout_confirm_strict_s5_v3(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> bool:
+    if len(s5) < 12 or row.h30_direction not in {"up", "down"}:
+        return False
+    closes = [x[1] for x in s5]
+    ps = pip_size(row.symbol)
+    net = closes[-1] - closes[0]
+    last4 = closes[-4:]
+    pullback = max(closes[-8:-4]) - min(closes[-8:-4])
+    if row.h30_direction == "up":
+        return (
+            net >= 1.0 * ps
+            and last4[0] <= last4[1] <= last4[2] <= last4[3]
+            and closes[-1] >= max(closes[:-4])
+            and pullback <= 0.6 * ps
+        )
+    return (
+        net <= -1.0 * ps
+        and last4[0] >= last4[1] >= last4[2] >= last4[3]
+        and closes[-1] <= min(closes[:-4])
+        and pullback <= 0.6 * ps
+    )
+
+
 def exhaustion_reversal_direction(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
     if len(s5) < 24:
         return None
@@ -425,6 +471,28 @@ def strategy_squeeze_breakout_relaxed_2_strict_s5(row: RowFeature, s5: Sequence[
     return row.h30_direction
 
 
+def strategy_squeeze_breakout_relaxed_2_strict_s5_v2(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
+    if row.h30_direction not in {"up", "down"}:
+        return None
+    width_ok = row.bb_width is not None and row.bb_width <= 0.008
+    if not (bool(row.bb_squeeze) or width_ok):
+        return None
+    if not squeeze_breakout_confirm_strict_s5_v2(row, s5):
+        return None
+    return row.h30_direction
+
+
+def strategy_squeeze_breakout_relaxed_2_strict_s5_v3(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
+    if row.h30_direction not in {"up", "down"}:
+        return None
+    width_ok = row.bb_width is not None and row.bb_width <= 0.007
+    if not (bool(row.bb_squeeze) or width_ok):
+        return None
+    if not squeeze_breakout_confirm_strict_s5_v3(row, s5):
+        return None
+    return row.h30_direction
+
+
 def strategy_exhaustion_mean_reversion(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
     if row.adx_value is not None and row.adx_value >= 20:
         return None
@@ -542,6 +610,8 @@ def main() -> int:
         "squeeze_breakout_relaxed_2_adx20": [],
         "squeeze_breakout_relaxed_2_adx20_no_mtf_conflict": [],
         "squeeze_breakout_relaxed_2_strict_s5": [],
+        "squeeze_breakout_relaxed_2_strict_s5_v2": [],
+        "squeeze_breakout_relaxed_2_strict_s5_v3": [],
         "exhaustion_mean_reversion": [],
         "currency_strength_overlay": [],
     }
@@ -557,6 +627,8 @@ def main() -> int:
             "squeeze_breakout_relaxed_2_adx20": strategy_squeeze_breakout_relaxed_2_adx20(row, s5_short),
             "squeeze_breakout_relaxed_2_adx20_no_mtf_conflict": strategy_squeeze_breakout_relaxed_2_adx20_no_mtf_conflict(row, s5_short),
             "squeeze_breakout_relaxed_2_strict_s5": strategy_squeeze_breakout_relaxed_2_strict_s5(row, s5_short),
+            "squeeze_breakout_relaxed_2_strict_s5_v2": strategy_squeeze_breakout_relaxed_2_strict_s5_v2(row, s5_short),
+            "squeeze_breakout_relaxed_2_strict_s5_v3": strategy_squeeze_breakout_relaxed_2_strict_s5_v3(row, s5_short),
             "exhaustion_mean_reversion": strategy_exhaustion_mean_reversion(row, s5_short),
             "currency_strength_overlay": strategy_currency_strength_overlay(row, s5_short, m15),
         }
@@ -569,6 +641,8 @@ def main() -> int:
 
     summarize_working_hours_breakdown("squeeze_breakout_relaxed_2", results["squeeze_breakout_relaxed_2"])
     summarize_working_hours_breakdown("squeeze_breakout_relaxed_2_strict_s5", results["squeeze_breakout_relaxed_2_strict_s5"])
+    summarize_working_hours_breakdown("squeeze_breakout_relaxed_2_strict_s5_v2", results["squeeze_breakout_relaxed_2_strict_s5_v2"])
+    summarize_working_hours_breakdown("squeeze_breakout_relaxed_2_strict_s5_v3", results["squeeze_breakout_relaxed_2_strict_s5_v3"])
 
     return 0
 
