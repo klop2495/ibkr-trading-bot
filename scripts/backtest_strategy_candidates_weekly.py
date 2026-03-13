@@ -326,6 +326,32 @@ def squeeze_breakout_confirm_strict_s5_v3(row: RowFeature, s5: Sequence[Tuple[da
     )
 
 
+def extension_veto(row: RowFeature, s5: Sequence[Tuple[datetime, float]], max_extension_pips: float = 1.8) -> bool:
+    if len(s5) < 8 or row.h30_direction not in {"up", "down"}:
+        return False
+    closes = [x[1] for x in s5]
+    ps = pip_size(row.symbol)
+    start = closes[0]
+    end = closes[-1]
+    extension = (end - start) / ps
+    if row.h30_direction == "up":
+        return extension > max_extension_pips
+    return extension < -max_extension_pips
+
+
+def pullback_veto(row: RowFeature, s5: Sequence[Tuple[datetime, float]], max_pullback_pips: float = 0.45) -> bool:
+    if len(s5) < 6 or row.h30_direction not in {"up", "down"}:
+        return False
+    closes = [x[1] for x in s5]
+    ps = pip_size(row.symbol)
+    last4 = closes[-4:]
+    if row.h30_direction == "up":
+        adverse = (max(last4) - last4[-1]) / ps
+        return adverse > max_pullback_pips
+    adverse = (last4[-1] - min(last4)) / ps
+    return adverse > max_pullback_pips
+
+
 def exhaustion_reversal_direction(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
     if len(s5) < 24:
         return None
@@ -493,6 +519,30 @@ def strategy_squeeze_breakout_relaxed_2_strict_s5_v3(row: RowFeature, s5: Sequen
     return row.h30_direction
 
 
+def strategy_squeeze_breakout_relaxed_2_strict_s5_v2_extension_veto(
+    row: RowFeature, s5: Sequence[Tuple[datetime, float]]
+) -> Optional[str]:
+    direction = strategy_squeeze_breakout_relaxed_2_strict_s5_v2(row, s5)
+    if direction is None:
+        return None
+    if extension_veto(row, s5):
+        return None
+    return direction
+
+
+def strategy_squeeze_breakout_relaxed_2_strict_s5_v2_extension_pullback_veto(
+    row: RowFeature, s5: Sequence[Tuple[datetime, float]]
+) -> Optional[str]:
+    direction = strategy_squeeze_breakout_relaxed_2_strict_s5_v2(row, s5)
+    if direction is None:
+        return None
+    if extension_veto(row, s5):
+        return None
+    if pullback_veto(row, s5):
+        return None
+    return direction
+
+
 def strategy_exhaustion_mean_reversion(row: RowFeature, s5: Sequence[Tuple[datetime, float]]) -> Optional[str]:
     if row.adx_value is not None and row.adx_value >= 20:
         return None
@@ -612,6 +662,8 @@ def main() -> int:
         "squeeze_breakout_relaxed_2_strict_s5": [],
         "squeeze_breakout_relaxed_2_strict_s5_v2": [],
         "squeeze_breakout_relaxed_2_strict_s5_v3": [],
+        "squeeze_breakout_relaxed_2_strict_s5_v2_extension_veto": [],
+        "squeeze_breakout_relaxed_2_strict_s5_v2_extension_pullback_veto": [],
         "exhaustion_mean_reversion": [],
         "currency_strength_overlay": [],
     }
@@ -629,6 +681,8 @@ def main() -> int:
             "squeeze_breakout_relaxed_2_strict_s5": strategy_squeeze_breakout_relaxed_2_strict_s5(row, s5_short),
             "squeeze_breakout_relaxed_2_strict_s5_v2": strategy_squeeze_breakout_relaxed_2_strict_s5_v2(row, s5_short),
             "squeeze_breakout_relaxed_2_strict_s5_v3": strategy_squeeze_breakout_relaxed_2_strict_s5_v3(row, s5_short),
+            "squeeze_breakout_relaxed_2_strict_s5_v2_extension_veto": strategy_squeeze_breakout_relaxed_2_strict_s5_v2_extension_veto(row, s5_short),
+            "squeeze_breakout_relaxed_2_strict_s5_v2_extension_pullback_veto": strategy_squeeze_breakout_relaxed_2_strict_s5_v2_extension_pullback_veto(row, s5_short),
             "exhaustion_mean_reversion": strategy_exhaustion_mean_reversion(row, s5_short),
             "currency_strength_overlay": strategy_currency_strength_overlay(row, s5_short, m15),
         }
@@ -643,6 +697,14 @@ def main() -> int:
     summarize_working_hours_breakdown("squeeze_breakout_relaxed_2_strict_s5", results["squeeze_breakout_relaxed_2_strict_s5"])
     summarize_working_hours_breakdown("squeeze_breakout_relaxed_2_strict_s5_v2", results["squeeze_breakout_relaxed_2_strict_s5_v2"])
     summarize_working_hours_breakdown("squeeze_breakout_relaxed_2_strict_s5_v3", results["squeeze_breakout_relaxed_2_strict_s5_v3"])
+    summarize_working_hours_breakdown(
+        "squeeze_breakout_relaxed_2_strict_s5_v2_extension_veto",
+        results["squeeze_breakout_relaxed_2_strict_s5_v2_extension_veto"],
+    )
+    summarize_working_hours_breakdown(
+        "squeeze_breakout_relaxed_2_strict_s5_v2_extension_pullback_veto",
+        results["squeeze_breakout_relaxed_2_strict_s5_v2_extension_pullback_veto"],
+    )
 
     return 0
 
