@@ -460,6 +460,57 @@ def summarize(name: str, rows: Sequence[Tuple[RowFeature, Optional[str], Optiona
             )
 
 
+def summarize_working_hours_breakdown(
+    name: str,
+    rows: Sequence[Tuple[RowFeature, Optional[str], Optional[bool]]],
+    hour_from: int = 9,
+    hour_to_exclusive: int = 20,
+) -> None:
+    traded = [
+        (r, pred, ok)
+        for r, pred, ok in rows
+        if pred in {"up", "down"}
+        and ok is not None
+        and hour_from <= r.ts_utc.hour < hour_to_exclusive
+    ]
+    n = len(traded)
+    ok_n = sum(1 for _, _, ok in traded if bool(ok))
+    acc = 100.0 * ok_n / n if n else 0.0
+    pnl = ok_n * 80 - (n - ok_n) * 100
+    print(f"\n=== {name} | working_hours_utc={hour_from:02d}:00-{hour_to_exclusive - 1:02d}:59 ===")
+    print(f"ALL: {ok_n}/{n} acc={acc:.1f}% pnl={pnl:+d}")
+
+    by_day: Dict[str, Dict[str, int]] = defaultdict(lambda: {"n": 0, "ok": 0})
+    by_symbol: Dict[str, Dict[str, int]] = defaultdict(lambda: {"n": 0, "ok": 0})
+    by_hour: Dict[int, Dict[str, int]] = defaultdict(lambda: {"n": 0, "ok": 0})
+
+    for row, _, ok in traded:
+        day_key = row.ts_utc.strftime("%Y-%m-%d")
+        by_day[day_key]["n"] += 1
+        by_day[day_key]["ok"] += int(bool(ok))
+
+        by_symbol[row.symbol]["n"] += 1
+        by_symbol[row.symbol]["ok"] += int(bool(ok))
+
+        by_hour[row.ts_utc.hour]["n"] += 1
+        by_hour[row.ts_utc.hour]["ok"] += int(bool(ok))
+
+    print("BY_DAY")
+    for day in sorted(by_day):
+        s = by_day[day]
+        print(f"{day} | {s['ok']}/{s['n']} acc={100.0 * s['ok'] / s['n']:.1f}%")
+
+    print("BY_HOUR")
+    for hour in sorted(by_hour):
+        s = by_hour[hour]
+        print(f"{hour:02d} | {s['ok']}/{s['n']} acc={100.0 * s['ok'] / s['n']:.1f}%")
+
+    print("BY_SYMBOL")
+    for symbol in sorted(by_symbol, key=lambda x: (-by_symbol[x]["n"], x)):
+        s = by_symbol[symbol]
+        print(f"{symbol:7s} | {s['ok']}/{s['n']} acc={100.0 * s['ok'] / s['n']:.1f}%")
+
+
 def main() -> int:
     args = parse_args()
     now = datetime.now(timezone.utc)
@@ -515,6 +566,9 @@ def main() -> int:
     print("\n=== WEEKLY STRATEGY CANDIDATES ===")
     for name, rows in results.items():
         summarize(name, rows, args.details)
+
+    summarize_working_hours_breakdown("squeeze_breakout_relaxed_2", results["squeeze_breakout_relaxed_2"])
+    summarize_working_hours_breakdown("squeeze_breakout_relaxed_2_strict_s5", results["squeeze_breakout_relaxed_2_strict_s5"])
 
     return 0
 
