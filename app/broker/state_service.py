@@ -800,6 +800,7 @@ class BrokerStateService:
                             close_reason="BROKER_FLAT",
                             pnl=pnl,
                             pnl_pips=pnl_pips,
+                            close_source="broker_reconcile",
                         )
                         if symbol:
                             result.positions_closed.append(symbol)
@@ -893,6 +894,7 @@ class BrokerStateService:
                             close_reason=reason,
                             pnl=pnl,
                             pnl_pips=pnl_pips,
+                            close_source="broker_reconcile",
                         )
                         if symbol:
                             result.positions_closed.append(symbol)

@@ -1857,6 +1857,10 @@ def main():
         broker_sync_interval = DEFAULT_POSITION_SYNC_INTERVAL
     last_broker_sync_tick = 0.0
     last_broker_sync_log: Optional[str] = None
+    stale_pending_min = max(1, int(os.getenv("EXECUTION_STALE_PENDING_MIN", "30")))
+    stale_submitted_min = max(1, int(os.getenv("EXECUTION_STALE_SUBMITTED_MIN", "20")))
+    execution_watchdog_interval = max(15, int(os.getenv("EXECUTION_WATCHDOG_INTERVAL", "60")))
+    last_execution_watchdog_tick = 0.0
 
     print(f"BrokerStateService sync interval={broker_sync_interval}s")
     try:
@@ -2792,6 +2796,52 @@ def main():
                         data={"error": str(exc)},
                     )
             last_broker_sync_tick = now_ts
+
+        if now_ts - last_execution_watchdog_tick >= execution_watchdog_interval:
+            try:
+                stale_rows = trades_history_repo.get_stale_trades(
+                    pending_minutes=stale_pending_min,
+                    submitted_minutes=stale_submitted_min,
+                )
+                expired_count = 0
+                for trade in stale_rows:
+                    try:
+                        trades_history_repo.expire_trade_as_stale(
+                            str(trade.get("id")),
+                            reason=f"watchdog:{trade.get('status')}",
+                        )
+                        expired_count += 1
+                    except Exception as exc:
+                        if risk_events_repo:
+                            risk_events_repo.insert(
+                                event_type="EXECUTION_STALE_WATCHDOG_ERROR",
+                                severity="error",
+                                message=f"Failed to expire stale trade {trade.get('id')}: {exc}",
+                                data={"trade_id": trade.get("id"), "error": str(exc)},
+                            )
+                if expired_count > 0:
+                    print(f"execution_watchdog expired={expired_count}")
+                    if risk_events_repo:
+                        risk_events_repo.insert(
+                            event_type="EXECUTION_STALE_WATCHDOG",
+                            severity="warn",
+                            message=f"Expired stale execution rows: {expired_count}",
+                            data={
+                                "expired_count": expired_count,
+                                "pending_minutes": stale_pending_min,
+                                "submitted_minutes": stale_submitted_min,
+                            },
+                        )
+            except Exception as exc:
+                print(f"execution_watchdog_error: {exc}")
+                if risk_events_repo:
+                    risk_events_repo.insert(
+                        event_type="EXECUTION_STALE_WATCHDOG_ERROR",
+                        severity="error",
+                        message=f"Execution watchdog failed: {exc}",
+                        data={"error": str(exc)},
+                    )
+            last_execution_watchdog_tick = now_ts
 
         # Periodic stats logging
         if tick_count % stats_log_interval == 0 and llm_enabled:

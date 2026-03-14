@@ -458,7 +458,7 @@ def close_trade(req: CloseTradeRequest):
         raise HTTPException(status_code=400, detail="trade_not_open")
 
     try:
-        from app.storage.repositories import RiskEventsRepo
+        from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
 
         RiskEventsRepo(db).insert(
             event_type="MANUAL_CLOSE_REQUEST",
@@ -487,11 +487,14 @@ def close_trade(req: CloseTradeRequest):
     if result.get("no_position"):
         logger.info(f"Trade {req.trade_id} position not found at broker - marking as closed")
         try:
-            db.client.table("trades_history").update({
-                "status": "CLOSED",
-                "close_reason": "RECONCILED_PHANTOM",
-                "closed_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", req.trade_id).execute()
+            TradesHistoryRepo(db).close_trade(
+                trade_id=req.trade_id,
+                exit_price=float(trade.get("entry_price") or 0.0),
+                close_reason="RECONCILED_PHANTOM",
+                pnl=0.0,
+                pnl_pips=0.0,
+                close_source="manual",
+            )
         except Exception as exc:
             logger.error(f"Failed to update phantom trade: {exc}")
         
@@ -522,14 +525,14 @@ def close_trade(req: CloseTradeRequest):
                 pnl_pips = -pnl_pips
 
     try:
-        db.client.table("trades_history").update({
-            "status": "CLOSED",
-            "exit_price": exit_price,
-            "close_reason": "MANUAL",
-            "closed_at": datetime.now(timezone.utc).isoformat(),
-            "pnl": pnl,
-            "pnl_pips": pnl_pips,
-        }).eq("id", req.trade_id).execute()
+        TradesHistoryRepo(db).close_trade(
+            trade_id=req.trade_id,
+            exit_price=float(exit_price),
+            close_reason="MANUAL",
+            pnl=pnl,
+            pnl_pips=pnl_pips,
+            close_source="manual",
+        )
     except Exception as exc:
         logger.error(f"Failed to update trade close: {exc}")
 

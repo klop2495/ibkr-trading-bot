@@ -4,6 +4,15 @@ from datetime import datetime
 from uuid import uuid4
 from typing import Any, Optional
 
+from app.execution.lifecycle import (
+    ACTIVE_EXECUTION_STATUSES,
+    append_status_trace,
+    infer_close_source,
+    infer_completion_status,
+    merge_integrity_flags,
+    stale_cutoff,
+    validate_execution_transition,
+)
 from app.models import MarketSnapshot, Signal
 from app.models.signal_preview import SignalPreviewV1
 from app.models.decision import DecisionV1
@@ -427,6 +436,44 @@ class TradesHistoryRepo(BaseRepo):
     """Repository for trades_history table - tracks open/closed trades with P/L."""
     table = "trades_history"
 
+    def _status_payload(
+        self,
+        *,
+        current_row: Optional[dict],
+        new_status: str,
+        reason: Optional[str] = None,
+        actor: Optional[str] = None,
+        close_reason: Optional[str] = None,
+        exit_price: Any = None,
+        pnl: Any = None,
+        extra_flags: Optional[list[str]] = None,
+        close_source: Optional[str] = None,
+    ) -> dict[str, Any]:
+        now_iso = datetime.utcnow().isoformat()
+        current_status = (current_row or {}).get("status")
+        validate_execution_transition(current_status, new_status)
+        payload: dict[str, Any] = {
+            "status": new_status,
+            "updated_at": now_iso,
+            "last_status_at": now_iso,
+            "completion_status": infer_completion_status(new_status, exit_price=exit_price, pnl=pnl),
+            "status_trace": append_status_trace(
+                (current_row or {}).get("status_trace"),
+                from_status=current_status,
+                to_status=new_status,
+                reason=reason,
+                actor=actor,
+            ),
+        }
+        if close_reason is not None or close_source is not None:
+            payload["close_source"] = infer_close_source(close_reason, fallback=close_source)
+        if extra_flags:
+            payload["data_integrity_flags"] = merge_integrity_flags(
+                (current_row or {}).get("data_integrity_flags"),
+                *extra_flags,
+            )
+        return payload
+
     def create_trade(
         self,
         symbol: str,
@@ -470,6 +517,17 @@ class TradesHistoryRepo(BaseRepo):
             "signal_preview_id": signal_preview_id,
             "decision_id": decision_id,
             "ib_order_id": ib_order_id,
+            "completion_status": infer_completion_status(status),
+            "close_source": None,
+            "data_integrity_flags": [],
+            "last_status_at": datetime.utcnow().isoformat(),
+            "status_trace": append_status_trace(
+                [],
+                from_status=None,
+                to_status=status,
+                reason="create_trade",
+                actor="system",
+            ),
         }
         if meta is not None:
             payload["meta"] = meta
@@ -495,7 +553,7 @@ class TradesHistoryRepo(BaseRepo):
         query = (
             self.db.client.table(self.table)
             .select("id, symbol, status, decision_id, ib_order_id, opened_at")
-            .in_("status", ["PENDING", "SUBMITTED", "OPEN"])
+            .in_("status", sorted(ACTIVE_EXECUTION_STATUSES))
         )
         if symbol:
             query = query.eq("symbol", symbol)
@@ -508,9 +566,10 @@ class TradesHistoryRepo(BaseRepo):
             self.db.client.table(self.table)
             .select(
                 "id, symbol, status, side, quantity, entry_price, stop_loss, "
-                "take_profit, opened_at, created_at, ib_order_id, mode, meta"
+                "take_profit, opened_at, created_at, ib_order_id, mode, meta, "
+                "completion_status, close_source, data_integrity_flags, last_status_at, status_trace"
             )
-            .in_("status", ["PENDING", "SUBMITTED", "OPEN"])
+            .in_("status", sorted(ACTIVE_EXECUTION_STATUSES))
             .execute()
         )
         return getattr(res, "data", None) or []
@@ -645,16 +704,24 @@ class TradesHistoryRepo(BaseRepo):
         
         Also updates quantity if it was adjusted by FX Funds Guard.
         """
-        payload = {
-            "status": status,
-            "updated_at": datetime.utcnow().isoformat(),
-        }
+        current_row = self.get_trade_by_id(trade_id)
+        payload = self._status_payload(
+            current_row=current_row,
+            new_status=status,
+            reason="update_status",
+            actor="system",
+        )
         if entry_price is not None:
             payload["entry_price"] = entry_price
         if ib_order_id is not None:
             payload["ib_order_id"] = ib_order_id
         if error_message is not None:
             payload["error_message"] = error_message
+            if status == "REJECTED":
+                payload["data_integrity_flags"] = merge_integrity_flags(
+                    (current_row or {}).get("data_integrity_flags"),
+                    "BROKER_REJECTED",
+                )
         if quantity is not None:
             payload["quantity"] = quantity
         if meta is not None:
@@ -700,16 +767,29 @@ class TradesHistoryRepo(BaseRepo):
         close_reason: str,
         pnl: Optional[float] = None,
         pnl_pips: Optional[float] = None,
+        close_source: Optional[str] = None,
     ) -> None:
         """Close an existing trade with exit details."""
+        current_row = self.get_trade_by_id(trade_id)
         payload = {
             "exit_price": exit_price,
             "close_reason": close_reason,
             "pnl": pnl,
             "pnl_pips": pnl_pips,
-            "status": "CLOSED",
             "closed_at": datetime.utcnow().isoformat(),
         }
+        payload.update(
+            self._status_payload(
+                current_row=current_row,
+                new_status="CLOSED",
+                reason=close_reason,
+                actor="system",
+                close_reason=close_reason,
+                exit_price=exit_price,
+                pnl=pnl,
+                close_source=close_source,
+            )
+        )
         self.db.client.table(self.table).update(payload).eq("id", trade_id).execute()
 
     def get_open_trades(self, symbol: Optional[str] = None) -> list[dict]:
@@ -744,6 +824,75 @@ class TradesHistoryRepo(BaseRepo):
         """Get a single trade by ID."""
         res = self.db.client.table(self.table).select("*").eq("id", trade_id).limit(1).execute()
         return res.data[0] if res.data else None
+
+    def get_stale_trades(self, pending_minutes: int, submitted_minutes: int) -> list[dict]:
+        pending_cutoff = stale_cutoff(pending_minutes).isoformat()
+        submitted_cutoff = stale_cutoff(submitted_minutes).isoformat()
+        res = (
+            self.db.client.table(self.table)
+            .select(
+                "id, symbol, status, opened_at, created_at, last_status_at, ib_order_id, "
+                "completion_status, data_integrity_flags"
+            )
+            .or_(
+                ",".join(
+                    [
+                        f"and(status.eq.PENDING,last_status_at.lt.{pending_cutoff})",
+                        f"and(status.eq.SUBMITTED,last_status_at.lt.{submitted_cutoff})",
+                    ]
+                )
+            )
+            .execute()
+        )
+        return getattr(res, "data", None) or []
+
+    def expire_trade_as_stale(self, trade_id: str, reason: str = "stale_watchdog") -> None:
+        current_row = self.get_trade_by_id(trade_id)
+        if not current_row:
+            return
+        payload = self._status_payload(
+            current_row=current_row,
+            new_status="EXPIRED",
+            reason=reason,
+            actor="watchdog",
+            close_source="watchdog",
+            extra_flags=["STALE_STATUS"],
+        )
+        payload["error_message"] = current_row.get("error_message") or reason
+        payload["closed_at"] = datetime.utcnow().isoformat()
+        self.db.client.table(self.table).update(payload).eq("id", trade_id).execute()
+
+    def get_execution_health_summary(self, pending_minutes: int, submitted_minutes: int) -> dict[str, int]:
+        stale_rows = self.get_stale_trades(pending_minutes, submitted_minutes)
+        stale_pending = sum(1 for row in stale_rows if row.get("status") == "PENDING")
+        stale_submitted = sum(1 for row in stale_rows if row.get("status") == "SUBMITTED")
+
+        open_count = (
+            self.db.client.table(self.table)
+            .select("id", count="exact", head=True)
+            .eq("status", "OPEN")
+            .execute()
+        )
+        incomplete_closed = (
+            self.db.client.table(self.table)
+            .select("id", count="exact", head=True)
+            .eq("status", "CLOSED")
+            .neq("completion_status", "complete")
+            .execute()
+        )
+        recovered = (
+            self.db.client.table(self.table)
+            .select("id", count="exact", head=True)
+            .eq("status", "ORPHAN_POSITION")
+            .execute()
+        )
+        return {
+            "stale_pending": stale_pending,
+            "stale_submitted": stale_submitted,
+            "open_positions": int(getattr(open_count, "count", 0) or 0),
+            "closed_incomplete": int(getattr(incomplete_closed, "count", 0) or 0),
+            "recovered_positions": int(getattr(recovered, "count", 0) or 0),
+        }
 
     def get_recent_trades(self, limit: int = 100) -> list[dict]:
         """Get recent trades ordered by opened_at."""

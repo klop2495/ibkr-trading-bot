@@ -345,6 +345,7 @@ class ExecutionServiceCallback(IBKROrderCallback):
                             close_reason=close_reason,
                             pnl=pnl,
                             pnl_pips=pnl_pips,
+                            close_source="broker_bracket",
                         )
                         self._request_trade_map.pop(str(fill.request_id), None)
                         
