@@ -467,6 +467,12 @@ class TradesHistoryRepo(BaseRepo):
         }
         if close_reason is not None or close_source is not None:
             payload["close_source"] = infer_close_source(close_reason, fallback=close_source)
+        elif new_status == "CANCELLED":
+            payload["close_source"] = "system"
+        elif new_status == "REJECTED":
+            payload["close_source"] = "broker"
+        elif new_status == "EXPIRED":
+            payload["close_source"] = "watchdog"
         if extra_flags:
             payload["data_integrity_flags"] = merge_integrity_flags(
                 (current_row or {}).get("data_integrity_flags"),
@@ -893,6 +899,77 @@ class TradesHistoryRepo(BaseRepo):
             "closed_incomplete": int(getattr(incomplete_closed, "count", 0) or 0),
             "recovered_positions": int(getattr(recovered, "count", 0) or 0),
         }
+
+    def normalize_execution_metadata(self, batch_limit: int = 200) -> int:
+        rows = (
+            self.db.client.table(self.table)
+            .select(
+                "id, status, close_reason, close_source, exit_price, pnl, data_integrity_flags, "
+                "status_trace, last_status_at, updated_at, created_at, opened_at"
+            )
+            .or_(
+                ",".join(
+                    [
+                        "completion_status.is.null",
+                        "close_source.is.null",
+                        "data_integrity_flags.is.null",
+                        "status_trace.is.null",
+                        "status_trace.eq.[]",
+                        "last_status_at.is.null",
+                    ]
+                )
+            )
+            .limit(batch_limit)
+            .execute()
+        )
+        data = getattr(rows, "data", None) or []
+        if not data:
+            return 0
+
+        fixed = 0
+        for row in data:
+            status = str(row.get("status") or "").upper()
+            close_reason = row.get("close_reason")
+            close_source = row.get("close_source")
+            if not close_source:
+                if status == "CANCELLED":
+                    close_source = "system"
+                elif status == "REJECTED":
+                    close_source = "broker"
+                elif status == "EXPIRED":
+                    close_source = "watchdog"
+                else:
+                    close_source = infer_close_source(close_reason)
+
+            status_trace = row.get("status_trace")
+            if not status_trace:
+                status_trace = append_status_trace(
+                    [],
+                    from_status=None,
+                    to_status=status,
+                    reason="metadata_backfill",
+                    actor="normalizer",
+                )
+
+            payload = {
+                "completion_status": infer_completion_status(
+                    status,
+                    exit_price=row.get("exit_price"),
+                    pnl=row.get("pnl"),
+                ),
+                "close_source": close_source,
+                "data_integrity_flags": merge_integrity_flags(row.get("data_integrity_flags")),
+                "status_trace": status_trace,
+                "last_status_at": row.get("last_status_at")
+                or row.get("updated_at")
+                or row.get("created_at")
+                or row.get("opened_at")
+                or datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            self.db.client.table(self.table).update(payload).eq("id", row.get("id")).execute()
+            fixed += 1
+        return fixed
 
     def get_recent_trades(self, limit: int = 100) -> list[dict]:
         """Get recent trades ordered by opened_at."""

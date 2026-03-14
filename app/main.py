@@ -1861,6 +1861,8 @@ def main():
     stale_submitted_min = max(1, int(os.getenv("EXECUTION_STALE_SUBMITTED_MIN", "20")))
     execution_watchdog_interval = max(15, int(os.getenv("EXECUTION_WATCHDOG_INTERVAL", "60")))
     last_execution_watchdog_tick = 0.0
+    execution_normalize_interval = max(60, int(os.getenv("EXECUTION_NORMALIZE_INTERVAL", "300")))
+    last_execution_normalize_tick = 0.0
 
     print(f"BrokerStateService sync interval={broker_sync_interval}s")
     try:
@@ -1896,6 +1898,12 @@ def main():
                 message=f"Startup broker sync failed: {exc}",
                 data={"error": str(exc)},
             )
+    try:
+        normalized = trades_history_repo.normalize_execution_metadata(batch_limit=500)
+        if normalized > 0:
+            print(f"execution_metadata_normalized count={normalized}")
+    except Exception as exc:
+        print(f"execution_metadata_normalize_error: {exc}")
 
     batch_size = int(os.getenv("CONTROL_PLANE_BACKFILL_BATCH_SIZE", str(DEFAULT_BACKFILL_BATCH)))
     backfill_max_per_tick = int(os.getenv("CONTROL_PLANE_BACKFILL_MAX_PER_TICK", str(DEFAULT_BACKFILL_MAX_PER_TICK)))
@@ -2842,6 +2850,22 @@ def main():
                         data={"error": str(exc)},
                     )
             last_execution_watchdog_tick = now_ts
+
+        if now_ts - last_execution_normalize_tick >= execution_normalize_interval:
+            try:
+                normalized = trades_history_repo.normalize_execution_metadata(batch_limit=200)
+                if normalized > 0:
+                    print(f"execution_metadata_normalized count={normalized}")
+            except Exception as exc:
+                print(f"execution_metadata_normalize_error: {exc}")
+                if risk_events_repo:
+                    risk_events_repo.insert(
+                        event_type="EXECUTION_METADATA_NORMALIZE_ERROR",
+                        severity="error",
+                        message=f"Execution metadata normalize failed: {exc}",
+                        data={"error": str(exc)},
+                    )
+            last_execution_normalize_tick = now_ts
 
         # Periodic stats logging
         if tick_count % stats_log_interval == 0 and llm_enabled:
