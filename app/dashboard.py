@@ -87,6 +87,9 @@ class SignalComparison(BaseModel):
 
 class CloseTradeRequest(BaseModel):
     trade_id: str
+    actor_user_id: Optional[str] = None
+    actor_email: Optional[str] = None
+    actor_origin: Optional[str] = None
 
 
 class CloseTradeResponse(BaseModel):
@@ -454,6 +457,26 @@ def close_trade(req: CloseTradeRequest):
     if trade.get("status") != "OPEN":
         raise HTTPException(status_code=400, detail="trade_not_open")
 
+    try:
+        from app.storage.repositories import RiskEventsRepo
+
+        RiskEventsRepo(db).insert(
+            event_type="MANUAL_CLOSE_REQUEST",
+            severity="info",
+            symbol=trade.get("symbol"),
+            message="manual close requested via admin executions",
+            data={
+                "trade_id": req.trade_id,
+                "actor_user_id": req.actor_user_id,
+                "actor_email": req.actor_email,
+                "actor_origin": req.actor_origin,
+                "mode": trade.get("mode"),
+                "ib_order_id": trade.get("ib_order_id"),
+            },
+        )
+    except Exception as exc:
+        logger.error(f"Failed to log MANUAL_CLOSE_REQUEST: {exc}")
+
     # Close via IB Gateway (runs in separate thread with own event loop)
     result = _close_trade_sync(trade)
     
@@ -509,6 +532,28 @@ def close_trade(req: CloseTradeRequest):
         }).eq("id", req.trade_id).execute()
     except Exception as exc:
         logger.error(f"Failed to update trade close: {exc}")
+
+    try:
+        from app.storage.repositories import RiskEventsRepo
+
+        RiskEventsRepo(db).insert(
+            event_type="MANUAL_CLOSE_SUCCESS",
+            severity="info",
+            symbol=trade.get("symbol"),
+            message="manual close completed",
+            data={
+                "trade_id": req.trade_id,
+                "actor_user_id": req.actor_user_id,
+                "actor_email": req.actor_email,
+                "actor_origin": req.actor_origin,
+                "mode": trade.get("mode"),
+                "ib_order_id": trade.get("ib_order_id"),
+                "exit_price": exit_price,
+                "closed_quantity": qty,
+            },
+        )
+    except Exception as exc:
+        logger.error(f"Failed to log MANUAL_CLOSE_SUCCESS: {exc}")
 
     return CloseTradeResponse(
         status="closed",
