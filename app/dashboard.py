@@ -527,7 +527,7 @@ def close_trade(req: CloseTradeRequest):
                 db.client.table("market_snapshots")
                 .select("symbol,timeframe,ts,created_at,close")
                 .in_("symbol", candidates)
-                .in_("timeframe", ["S5", "M1", "M15"])
+                .in_("timeframe", ["S5", "M15"])
                 .order("ts", desc=True)
                 .limit(50)
                 .execute()
@@ -535,7 +535,7 @@ def close_trade(req: CloseTradeRequest):
                 or []
             )
             best = {}
-            rank = {"S5": 0, "M1": 1, "M15": 2}
+            rank = {"S5": 0, "M15": 1}
             for row in rows:
                 sym = str(row.get("symbol") or "").upper()
                 tf = str(row.get("timeframe") or "").upper()
