@@ -148,5 +148,92 @@ def merge_integrity_flags(existing: Any, *new_flags: Optional[str]) -> list[str]
     return sorted(flags)
 
 
+def _coerce_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_fx_symbol(symbol: Optional[str]) -> Optional[tuple[str, str]]:
+    clean = str(symbol or "").replace("/", "").replace(".", "").replace(" ", "").upper()
+    if len(clean) < 6:
+        return None
+    return (clean[:3], clean[3:6])
+
+
+def _price_scale_flags(symbol: Optional[str], price: Any, field_name: str) -> list[str]:
+    parsed = _parse_fx_symbol(symbol)
+    numeric = _coerce_float(price)
+    if parsed is None or numeric is None:
+        return []
+
+    _, quote = parsed
+    flags: list[str] = []
+    if numeric <= 0:
+        flags.append(f"CORRUPTED_{field_name}")
+        return flags
+
+    if quote == "JPY":
+        if numeric < 10:
+            flags.append(f"SUSPECT_{field_name}_SCALE")
+    else:
+        if numeric >= 10:
+            flags.append(f"SUSPECT_{field_name}_SCALE")
+    return flags
+
+
+def infer_integrity_flags(
+    *,
+    symbol: Optional[str],
+    status: Optional[str],
+    close_reason: Optional[str],
+    close_source: Optional[str],
+    entry_price: Any = None,
+    exit_price: Any = None,
+    pnl: Any = None,
+    pnl_pips: Any = None,
+) -> list[str]:
+    normalized_status = normalize_execution_status(status)
+    normalized_reason = str(close_reason or "").strip().upper()
+    normalized_source = str(close_source or "").strip().lower()
+
+    flags: list[str] = []
+    flags.extend(_price_scale_flags(symbol, entry_price, "ENTRY_PRICE"))
+    flags.extend(_price_scale_flags(symbol, exit_price, "EXIT_PRICE"))
+
+    entry_value = _coerce_float(entry_price)
+    exit_value = _coerce_float(exit_price)
+    pnl_value = _coerce_float(pnl)
+    pnl_pips_value = _coerce_float(pnl_pips)
+
+    if normalized_status == "CLOSED":
+        if exit_value is None:
+            flags.append("MISSING_EXIT_PRICE")
+        if pnl_value is None or pnl_pips_value is None:
+            flags.append("MISSING_PNL")
+        if normalized_reason == "UNKNOWN":
+            flags.append("UNKNOWN_CLOSE_REASON")
+        if normalized_reason == "SYNC_PHANTOM":
+            flags.append("PHANTOM_CLOSE")
+        if normalized_reason == "MANUAL_CLEANUP":
+            flags.append("MANUAL_CLEANUP_CLOSE")
+        if normalized_reason == "BROKER_FLAT" or normalized_source == "broker_reconcile":
+            flags.append("RECONCILE_CLOSE")
+        if pnl_pips_value is not None and abs(pnl_pips_value) > 1000:
+            flags.append("EXTREME_PNL_PIPS")
+        if (
+            entry_value is not None
+            and exit_value is not None
+            and abs(entry_value - exit_value) < 1e-12
+            and normalized_reason in {"UNKNOWN", "BROKER_FLAT", "SYNC_PHANTOM", "MANUAL_CLEANUP"}
+        ):
+            flags.append("ZERO_MOVE_DIRTY_CLOSE")
+
+    return merge_integrity_flags([], *flags)
+
+
 def stale_cutoff(threshold_minutes: int) -> datetime:
     return utcnow() - timedelta(minutes=max(0, int(threshold_minutes)))

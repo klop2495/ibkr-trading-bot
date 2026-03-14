@@ -9,6 +9,7 @@ from app.execution.lifecycle import (
     append_status_trace,
     infer_close_source,
     infer_completion_status,
+    infer_integrity_flags,
     merge_integrity_flags,
     stale_cutoff,
     validate_execution_transition,
@@ -796,6 +797,19 @@ class TradesHistoryRepo(BaseRepo):
                 close_source=close_source,
             )
         )
+        payload["data_integrity_flags"] = merge_integrity_flags(
+            (current_row or {}).get("data_integrity_flags"),
+            *infer_integrity_flags(
+                symbol=(current_row or {}).get("symbol"),
+                status="CLOSED",
+                close_reason=close_reason,
+                close_source=payload.get("close_source"),
+                entry_price=(current_row or {}).get("entry_price"),
+                exit_price=exit_price,
+                pnl=pnl,
+                pnl_pips=pnl_pips,
+            ),
+        )
         self.db.client.table(self.table).update(payload).eq("id", trade_id).execute()
 
     def get_open_trades(self, symbol: Optional[str] = None) -> list[dict]:
@@ -904,7 +918,7 @@ class TradesHistoryRepo(BaseRepo):
         rows = (
             self.db.client.table(self.table)
             .select(
-                "id, status, close_reason, close_source, exit_price, pnl, data_integrity_flags, "
+                "id, symbol, status, close_reason, close_source, entry_price, exit_price, pnl, pnl_pips, data_integrity_flags, "
                 "status_trace, last_status_at, updated_at, created_at, opened_at"
             )
             .or_(
@@ -913,6 +927,7 @@ class TradesHistoryRepo(BaseRepo):
                         "completion_status.is.null",
                         "close_source.is.null",
                         "data_integrity_flags.is.null",
+                        "data_integrity_flags.eq.[]",
                         "status_trace.is.null",
                         "status_trace.eq.[]",
                         "last_status_at.is.null",
@@ -958,7 +973,19 @@ class TradesHistoryRepo(BaseRepo):
                     pnl=row.get("pnl"),
                 ),
                 "close_source": close_source,
-                "data_integrity_flags": merge_integrity_flags(row.get("data_integrity_flags")),
+                "data_integrity_flags": merge_integrity_flags(
+                    row.get("data_integrity_flags"),
+                    *infer_integrity_flags(
+                        symbol=row.get("symbol"),
+                        status=status,
+                        close_reason=close_reason,
+                        close_source=close_source,
+                        entry_price=row.get("entry_price"),
+                        exit_price=row.get("exit_price"),
+                        pnl=row.get("pnl"),
+                        pnl_pips=row.get("pnl_pips"),
+                    ),
+                ),
                 "status_trace": status_trace,
                 "last_status_at": row.get("last_status_at")
                 or row.get("updated_at")
