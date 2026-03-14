@@ -18,37 +18,27 @@
 | Alt3 (legacy) | ⚫ deprecated | отключен в runtime (оставлен только в исторических данных) | none |
 | Alt3 (main=v2) | 🟢 active | основная рабочая версия Alt3 | low/medium |
 | Alt4 | 🟢 active | live в работе | variable |
-| Alt5 | 🟢 active (deployed) | 120h: 65.71% (23/35), 7d: 71.43% (30/42) | low/medium |
+| Alt6 | 🟢 active (candidate adopted) | strategy = `strict_s5_v2_extension_veto` | research->runtime |
 
-### Alt5 ENV (production)
+### Alt6 ENV (production)
 
 ```bash
-ALT5_ENABLED=1
-ALT5_SOURCE_STRATEGY=alt3
-ALT5_INVERT=1
-ALT5_HOURS_UTC=3,9,11,19
-ALT5_ALLOWED_HOURS=3,9,11,19
-ALT5_MIN_ADX=20
-ALT5_MIN_REPEAT_MIN=120
-ALT5_EXCLUDE_CONFIDENCE=
+ALT6_MIN_REPEAT_MIN=45
 ```
 
-### Alt5 critical notes
+### Alt6 critical notes
 
-1. Исторические строки Alt5, созданные до фикса, могли иметь `h30_alt5_trade_eligible=false`.
-2. Для консистентного historical view выполнен backfill eligibility за 7 дней.
-3. После backfill для строк Alt5 в часах стратегии корректно выставляются:
-   - `recommended_alt5=true`
-   - `window_status="recommended"` (включая 19h)
-4. Для Python dashboard endpoint использовать:
+1. `Alt6` использует отдельные поля `h30_alt6_*`; старый `Alt5` остается только как historical legacy.
+2. Направление строится из `strict_s5_v2_extension_veto` поверх recent `S5` snapshots.
+3. Для Python dashboard endpoint использовать:
    - `/api/forecasts-history`
    - поле ответа: `rows` (не `forecasts`)
 
 ### Lifecycle
 
-- Alt3v2/Alt4/Alt5 отслеживаются раздельно (`SYMBOL#variant`).
+- Alt3v2/Alt4/Alt6 отслеживаются раздельно (`SYMBOL#variant`).
 - Базовое правило дедупликации/ожидания: pending + repeat guard (`SIGNAL_MIN_REPEAT_MIN=45`).
-- Strategy repeat guard: `ALT3_MIN_REPEAT_MIN=45`, `ALT4_MIN_REPEAT_MIN=45`, `ALT5_MIN_REPEAT_MIN=45`.
+- Strategy repeat guard: `ALT3_MIN_REPEAT_MIN=45`, `ALT4_MIN_REPEAT_MIN=45`, `ALT6_MIN_REPEAT_MIN=45`.
 - `ALT4` now supports an intrinsic ADX floor via `ALT4_MIN_ADX` (recommended current test value: `20`).
 - Cooldown escalation: `30m -> 60m -> session`.
 - Для блокировки вне торговых окон используется `SIGNAL_BLACKLIST_SOURCE=recommended_complement`
@@ -94,7 +84,7 @@ ALT5_EXCLUDE_CONFIDENCE=
 |---|---|---|---|
 | TASK-C | P1 | 📋 open | Execution layer hardening / consistency |
 | TASK-D | P1 | ✅ deployed | Inverted Rules + GPT cleanup |
-| Alt5 stabilization | P1 | ⏳ in progress | накопить больше live-выборку (500+ verified) |
+| Alt6 stabilization | P1 | ⏳ in progress | накопить больше live-выборку (500+ verified) |
 | Forecast docs sync | P2 | ⏳ in progress | поддерживать AGENTS/CURRENT_STATE/CHANGELOG |
 
 ---

@@ -98,10 +98,15 @@ class ForecastResult(BaseModel):
     h30_alt4_correct: Optional[bool] = None
     h30_alt4_trade_eligible: Optional[bool] = None
 
-    # Alt5: inversion of Alt3 with env filters (hours + ADX)
+    # Alt5: legacy strategy retained in historical rows only
     h30_alt5_direction: Optional[str] = None
     h30_alt5_correct: Optional[bool] = None
     h30_alt5_trade_eligible: Optional[bool] = None
+
+    # Alt6: strict_s5_v2_extension_veto
+    h30_alt6_direction: Optional[str] = None
+    h30_alt6_correct: Optional[bool] = None
+    h30_alt6_trade_eligible: Optional[bool] = None
 
     # Volatility regime filter (Phase 3 — BBW toxic band detection)
     vol_regime_blocked: Optional[bool] = None   # True if BBW in toxic band
@@ -205,8 +210,8 @@ class ForecastResult(BaseModel):
             row["h30_alt4_direction"] = self.h30_alt4_direction
             row["h30_alt4_mode"] = self.h30_alt4_mode
             row["h30_alt4_trade_eligible"] = bool(self.h30_alt4_trade_eligible)
-        # Alt5: inverted Alt3 with hour/ADX filters
-        if self.h30_alt5_direction is not None:
-            row["h30_alt5_direction"] = self.h30_alt5_direction
-            row["h30_alt5_trade_eligible"] = bool(self.h30_alt5_trade_eligible)
+        # Alt6: strict S5 breakout with extension veto
+        if self.h30_alt6_direction is not None:
+            row["h30_alt6_direction"] = self.h30_alt6_direction
+            row["h30_alt6_trade_eligible"] = bool(self.h30_alt6_trade_eligible)
         return row

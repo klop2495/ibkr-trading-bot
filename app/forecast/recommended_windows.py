@@ -96,33 +96,6 @@ def get_recommended_window_labels() -> List[str]:
     return [w.label for w in get_recommended_windows_utc()]
 
 
-def get_alt5_hours_utc() -> List[int]:
-    raw = (
-        os.getenv("ALT5_HOURS_UTC", os.getenv("ALT5_ALLOWED_HOURS", "")) or ""
-    ).strip()
-    if not raw:
-        return []
-    out: List[int] = []
-    for part in raw.split(","):
-        token = part.strip()
-        if not token or not token.isdigit():
-            continue
-        hour = int(token)
-        if 0 <= hour <= 23 and hour not in out:
-            out.append(hour)
-    return sorted(out)
-
-
-def is_alt5_recommended_timestamp(ts: str) -> bool:
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except Exception:
-        return False
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    dt_utc = dt.astimezone(timezone.utc)
-    hours = get_alt5_hours_utc()
-    if hours:
-        return dt_utc.hour in hours
+def is_alt6_recommended_timestamp(ts: str) -> bool:
     in_window, _, _, _ = classify_utc_timestamp(ts)
     return in_window

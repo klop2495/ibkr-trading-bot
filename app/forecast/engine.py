@@ -93,24 +93,6 @@ class ForecastEngine:
             lower=True,
         )
         self._alt4_min_adx = self._parse_float(os.getenv("ALT4_MIN_ADX", "0"), 0.0)
-        self._alt5_enabled = os.getenv("ALT5_ENABLED", "1") == "1"
-        raw_alt5_source = (os.getenv("ALT5_SOURCE_STRATEGY", "alt3v2") or "alt3v2").strip().lower()
-        # Legacy "alt3" is deprecated. Supported sources: alt3v2, original.
-        if raw_alt5_source == "alt3":
-            raw_alt5_source = "alt3v2"
-        if raw_alt5_source not in {"alt3v2", "original"}:
-            raw_alt5_source = "alt3v2"
-        self._alt5_source_strategy = raw_alt5_source
-        self._alt5_invert = os.getenv("ALT5_INVERT", "1") != "0"
-        self._alt5_allowed_hours = self._parse_hour_set_or_none(
-            os.getenv("ALT5_HOURS_UTC", os.getenv("ALT5_ALLOWED_HOURS", ""))
-        )
-        self._alt5_exclude_hours = self._parse_hour_set_or_none(os.getenv("ALT5_EXCLUDE_HOURS_UTC", ""))
-        self._alt5_exclude_confidence = self._parse_csv_set(
-            os.getenv("ALT5_EXCLUDE_CONFIDENCE", ""),
-            lower=True,
-        )
-        self._alt5_min_adx = self._parse_float(os.getenv("ALT5_MIN_ADX", "0"), 0.0)
 
     def compute_all(
         self,
@@ -248,13 +230,6 @@ class ForecastEngine:
             adx_value=adx_value,
             ts_utc=ts,
         )
-        _alt5_source = _alt3v2_dir if self._alt5_source_strategy == "alt3v2" else _h30_direction
-        _alt5_dir, _alt5_eligible = self._compute_alt5_signal(
-            source_direction=_alt5_source,
-            adx_value=adx_value,
-            ts_utc=ts,
-            h30_confidence=_h30_confidence,
-        )
         return ForecastResult(
             ts_utc=ts,
             symbol=symbol,
@@ -281,8 +256,6 @@ class ForecastEngine:
             h30_alt4_direction=_alt4_dir,
             h30_alt4_mode=_alt4_mode,
             h30_alt4_trade_eligible=_alt4_eligible,
-            h30_alt5_direction=_alt5_dir,
-            h30_alt5_trade_eligible=_alt5_eligible,
         )
 
     def _compute_horizon(
@@ -505,8 +478,8 @@ class ForecastEngine:
         symbol: str,
         h30_direction: Optional[str],
         h30_confidence: Optional[str],
-        adx_value: Optional[float],
         ts_utc: datetime,
+        adx_value: Optional[float] = None,
     ) -> Tuple[Optional[str], Optional[str], Optional[bool]]:
         """Alt4 hybrid signal: hour-based original/inverted direction + eligibility.
 
@@ -529,34 +502,10 @@ class ForecastEngine:
             eligible = False
         if (h30_confidence or "").lower() not in self._alt4_eligible_confidence:
             eligible = False
-        if adx_value is None or adx_value < self._alt4_min_adx:
-            eligible = False
+        if self._alt4_min_adx > 0:
+            if adx_value is None or adx_value < self._alt4_min_adx:
+                eligible = False
         return alt4_direction, mode, eligible
-
-    def _compute_alt5_signal(
-        self,
-        source_direction: Optional[str],
-        adx_value: Optional[float],
-        ts_utc: datetime,
-        h30_confidence: Optional[str],
-    ) -> Tuple[Optional[str], Optional[bool]]:
-        """Alt5: inversion of configurable source direction with env-configurable filters."""
-        if not self._alt5_enabled:
-            return None, None
-        if source_direction not in {"up", "down"}:
-            return None, None
-        if self._alt5_allowed_hours is not None and ts_utc.hour not in self._alt5_allowed_hours:
-            return None, None
-        if self._alt5_exclude_hours is not None and ts_utc.hour in self._alt5_exclude_hours:
-            return None, None
-        if adx_value is None or adx_value < self._alt5_min_adx:
-            return None, None
-        if self._alt5_exclude_confidence and (h30_confidence or "").lower() in self._alt5_exclude_confidence:
-            return None, None
-        direction = source_direction
-        if self._alt5_invert:
-            direction = "down" if source_direction == "up" else "up"
-        return direction, True
 
     @staticmethod
     def _compute_alt2_trade_eligible(votes: Optional[Dict[str, int]], alt2_direction: Optional[str]) -> Optional[bool]:

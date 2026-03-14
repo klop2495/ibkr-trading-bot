@@ -61,7 +61,9 @@ def test_default_symbols_constant():
         "USDCHF",
         "AUDUSD",
         "USDCAD",
-        "NZDUSD",
+        "EURJPY",
     ]
-    assert DEFAULT_SYMBOLS[:7] == base_symbols
+    assert DEFAULT_SYMBOLS[:6] == base_symbols[:6]
+    assert DEFAULT_SYMBOLS[6] == "EURJPY"
+    assert "NZDUSD" not in DEFAULT_SYMBOLS
     assert len(DEFAULT_SYMBOLS) >= 7

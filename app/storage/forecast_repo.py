@@ -22,10 +22,10 @@ class ForecastRepo:
             res = self.db.client.table(self.table).insert(payload).execute()
             return {"count": len(res.data or []), "data": res.data}
         except Exception as exc:
-            # Backward compatibility: older DB schema may not have alt5 eligibility column yet.
             msg = str(exc)
-            if "h30_alt5_trade_eligible" in msg and "does not exist" in msg:
-                payload.pop("h30_alt5_trade_eligible", None)
+            if "h30_alt6_" in msg and "does not exist" in msg:
+                payload.pop("h30_alt6_direction", None)
+                payload.pop("h30_alt6_trade_eligible", None)
                 try:
                     res = self.db.client.table(self.table).insert(payload).execute()
                     return {"count": len(res.data or []), "data": res.data}
@@ -50,7 +50,7 @@ class ForecastRepo:
                     "h30_alt2_direction, h30_alt2_trade_eligible, h30_alt3_direction, "
                     "h30_alt3v2_direction, h30_alt3v2_trade_eligible, "
                     "h30_alt4_direction, h30_alt4_mode, h30_alt4_trade_eligible, "
-                    "h30_alt5_direction, h30_alt5_trade_eligible"
+                    "h30_alt6_direction, h30_alt6_trade_eligible"
                 )
                 .in_("symbol", symbols)
                 .order("ts_utc", desc=True)
@@ -73,8 +73,8 @@ class ForecastRepo:
                         row.get("h30_alt4_direction"),
                         row.get("h30_alt4_mode"),
                         row.get("h30_alt4_trade_eligible"),
-                        row.get("h30_alt5_direction"),
-                        row.get("h30_alt5_trade_eligible"),
+                        row.get("h30_alt6_direction"),
+                        row.get("h30_alt6_trade_eligible"),
                     )
         except Exception:
             pass  # If lookup fails, insert all
@@ -96,8 +96,8 @@ class ForecastRepo:
                     f.h30_alt4_direction,
                     f.h30_alt4_mode,
                     f.h30_alt4_trade_eligible,
-                    f.h30_alt5_direction,
-                    f.h30_alt5_trade_eligible,
+                    f.h30_alt6_direction,
+                    f.h30_alt6_trade_eligible,
                 )
                 if current == prev:
                     continue  # Skip — identical directions + alt signals
@@ -118,11 +118,12 @@ class ForecastRepo:
             }
         except Exception as exc:
             msg = str(exc)
-            if "h30_alt5_trade_eligible" in msg and "does not exist" in msg:
+            if "h30_alt6_" in msg and "does not exist" in msg:
                 payloads_legacy = []
                 for p in payloads:
                     q = dict(p)
-                    q.pop("h30_alt5_trade_eligible", None)
+                    q.pop("h30_alt6_direction", None)
+                    q.pop("h30_alt6_trade_eligible", None)
                     payloads_legacy.append(q)
                 try:
                     res = self.db.client.table(self.table).insert(payloads_legacy).execute()

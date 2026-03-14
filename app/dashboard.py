@@ -865,7 +865,7 @@ async def get_forecasts_history(
         from app.forecast.recommended_windows import (
             classify_utc_timestamp,
             get_recommended_window_labels,
-            is_alt5_recommended_timestamp,
+            is_alt6_recommended_timestamp,
         )
         from app.forecast.original_mode import classify_with_effective
 
@@ -875,24 +875,24 @@ async def get_forecasts_history(
             has_alt2 = row.get("h30_alt2_direction") is not None
             has_alt3 = row.get("h30_alt3v2_direction") is not None or row.get("h30_alt3_direction") is not None
             has_alt4 = row.get("h30_alt4_direction") is not None
-            has_alt5 = row.get("h30_alt5_direction") is not None
+            has_alt6 = row.get("h30_alt6_direction") is not None
 
             alt2_trade_eligible = bool(row.get("h30_alt2_trade_eligible"))
             alt4_trade_eligible = bool(row.get("h30_alt4_trade_eligible"))
-            alt5_trade_eligible = row.get("h30_alt5_trade_eligible")
-            if alt5_trade_eligible is None:
-                alt5_trade_eligible = True
+            alt6_trade_eligible = row.get("h30_alt6_trade_eligible")
+            if alt6_trade_eligible is None:
+                alt6_trade_eligible = True
             # History endpoint: "recommended" is historical window eligibility,
             # not current lifecycle status (which can change later and corrupt history view).
             recommended_alt2 = bool(in_window and has_alt2 and alt2_trade_eligible)
             recommended_alt3 = bool(in_window and has_alt3)
             recommended_alt4 = bool(in_window and has_alt4 and alt4_trade_eligible)
-            recommended_alt5 = bool(
-                is_alt5_recommended_timestamp(str(row.get("ts_utc") or ""))
-                and has_alt5
-                and bool(alt5_trade_eligible)
+            recommended_alt6 = bool(
+                is_alt6_recommended_timestamp(str(row.get("ts_utc") or ""))
+                and has_alt6
+                and bool(alt6_trade_eligible)
             )
-            recommended = bool(recommended_alt2 or recommended_alt3 or recommended_alt4 or recommended_alt5)
+            recommended = bool(recommended_alt2 or recommended_alt3 or recommended_alt4 or recommended_alt6)
             orig_badge, orig_effective = classify_with_effective(row.get("h30_direction"), hour_utc)
             row2 = {
                 **row,
@@ -903,7 +903,7 @@ async def get_forecasts_history(
                 "recommended_alt2": recommended_alt2,
                 "recommended_alt3": recommended_alt3,
                 "recommended_alt4": recommended_alt4,
-                "recommended_alt5": recommended_alt5,
+                "recommended_alt6": recommended_alt6,
                 "window_status": "recommended" if recommended else "info_only",
                 "h30_original_mode": orig_badge,
                 "h30_original_effective_direction": orig_effective,
@@ -982,8 +982,8 @@ async def get_forecasts_history(
                 "accuracy": _acc(alt4_eligible_correct, len(alt4_eligible_verified)),
             },
         }
-        alt5_all = [r for r in enriched_rows if r.get("h30_alt5_direction") is not None]
-        result["alt5_stats"] = _pack_stats(alt5_all, "h30_alt5_correct")
+        alt6_all = [r for r in enriched_rows if r.get("h30_alt6_direction") is not None]
+        result["alt6_stats"] = _pack_stats(alt6_all, "h30_alt6_correct")
         result["rows"] = paged_rows
         result["total"] = len(enriched_rows) if recommended_only else result.get("total", len(enriched_rows))
         result["recommended_windows_utc"] = get_recommended_window_labels()
