@@ -17,6 +17,7 @@ from pydantic import BaseModel
 import threading
 
 from app.storage.db import SupabaseDB
+from app.execution.fx_pnl import calculate_realized_pnl_usd
 from app.broker.account_api import get_broker_api
 
 # Optimizer state (in-memory, runs as background thread)
@@ -489,10 +490,10 @@ def close_trade(req: CloseTradeRequest):
         try:
             TradesHistoryRepo(db).close_trade(
                 trade_id=req.trade_id,
-                exit_price=float(trade.get("entry_price") or 0.0),
+                exit_price=None,
                 close_reason="RECONCILED_PHANTOM",
-                pnl=0.0,
-                pnl_pips=0.0,
+                pnl=None,
+                pnl_pips=None,
                 close_source="manual",
             )
         except Exception as exc:
@@ -508,26 +509,66 @@ def close_trade(req: CloseTradeRequest):
         )
 
     exit_price = result.get("exit_price")
+    if exit_price in (None, 0):
+        exit_price = None
     qty = float(result.get("closed_qty") or trade.get("quantity") or 0)
     entry = trade.get("entry_price")
     side = (trade.get("side") or "BUY").upper()
     pnl = None
     pnl_pips = None
     if entry is not None and exit_price is not None and qty:
-        if side == "BUY":
-            pnl = (exit_price - entry) * qty
-        else:
-            pnl = (entry - exit_price) * qty
-        pip = _pip_size(trade.get("symbol") or "")
-        if pip > 0:
-            pnl_pips = (exit_price - entry) / pip
-            if side == "SELL":
-                pnl_pips = -pnl_pips
+        def resolve_rate(quote_ccy: str):
+            direct = f"{quote_ccy}USD"
+            inverse = f"USD{quote_ccy}"
+            via_direct = f"{quote_ccy}EUR"
+            via_inverse = f"EUR{quote_ccy}"
+            candidates = [direct, inverse, via_direct, via_inverse, "EURUSD"]
+            rows = (
+                db.client.table("market_snapshots")
+                .select("symbol,timeframe,ts,created_at,close")
+                .in_("symbol", candidates)
+                .in_("timeframe", ["S5", "M1", "M15"])
+                .order("ts", desc=True)
+                .limit(50)
+                .execute()
+                .data
+                or []
+            )
+            best = {}
+            rank = {"S5": 0, "M1": 1, "M15": 2}
+            for row in rows:
+                sym = str(row.get("symbol") or "").upper()
+                tf = str(row.get("timeframe") or "").upper()
+                close = row.get("close")
+                if not sym or close in (None, 0):
+                    continue
+                tf_rank = rank.get(tf, 99)
+                if sym not in best or tf_rank < best[sym][0]:
+                    best[sym] = (tf_rank, float(close))
+            if direct in best:
+                return best[direct][1]
+            if inverse in best and best[inverse][1] > 0:
+                return 1.0 / best[inverse][1]
+            eurusd = best.get("EURUSD", (99, None))[1]
+            if eurusd and via_direct in best:
+                return best[via_direct][1] * eurusd
+            if eurusd and via_inverse in best and best[via_inverse][1] > 0:
+                return eurusd / best[via_inverse][1]
+            return None
+
+        pnl, pnl_pips = calculate_realized_pnl_usd(
+            symbol=str(trade.get("symbol") or ""),
+            side=side,
+            entry_price=entry,
+            exit_price=exit_price,
+            quantity=qty,
+            rate_resolver=resolve_rate,
+        )
 
     try:
         TradesHistoryRepo(db).close_trade(
             trade_id=req.trade_id,
-            exit_price=float(exit_price),
+            exit_price=exit_price,
             close_reason="MANUAL",
             pnl=pnl,
             pnl_pips=pnl_pips,

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.broker.keys import fx_contract_snapshot, fx_display_symbol, instrument_key
+from app.execution.fx_pnl import calculate_realized_pnl_usd
 from app.models.broker_state import BrokerOrder, BrokerPosition, BrokerState, SyncResult
 from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
 from app.storage.bot_settings_repo import BotSettingsRepo
@@ -553,30 +554,65 @@ class BrokerStateService:
         return None
 
     def _calculate_trade_pnl(self, trade: dict, exit_price: float) -> Tuple[Optional[float], Optional[float]]:
+        symbol = str(trade.get("symbol") or "").upper()
         side = str(trade.get("side") or "").upper()
-        if side.startswith("B"):
-            side_sign = 1.0
-        elif side.startswith("S"):
-            side_sign = -1.0
-        else:
-            return None, None
 
-        try:
-            entry_price = float(trade.get("entry_price"))
-            quantity = abs(float(trade.get("quantity")))
-        except Exception:
-            return None, None
+        def resolve_rate(quote_ccy: str) -> Optional[float]:
+            if not self._trades_history_repo:
+                return None
+            db = getattr(self._trades_history_repo, "db", None)
+            if db is None:
+                return None
 
-        if quantity <= 0:
-            return None, None
+            direct = f"{quote_ccy}USD"
+            inverse = f"USD{quote_ccy}"
+            via_direct = f"{quote_ccy}EUR"
+            via_inverse = f"EUR{quote_ccy}"
+            candidates = [direct, inverse, via_direct, via_inverse, "EURUSD"]
 
-        delta = (float(exit_price) - entry_price) * side_sign
-        pnl = delta * quantity
-        pip_value = 0.01 if "JPY" in str(trade.get("symbol") or "").upper() else 0.0001
-        if pip_value <= 0:
-            return pnl, None
-        pnl_pips = delta / pip_value
-        return pnl, pnl_pips
+            rows = (
+                db.client.table("market_snapshots")
+                .select("symbol,timeframe,ts,created_at,close")
+                .in_("symbol", candidates)
+                .in_("timeframe", ["S5", "M1", "M15"])
+                .order("ts", desc=True)
+                .limit(50)
+                .execute()
+                .data
+                or []
+            )
+            best: dict[str, tuple[int, float]] = {}
+            rank = {"S5": 0, "M1": 1, "M15": 2}
+            for row in rows:
+                sym = str(row.get("symbol") or "").upper()
+                tf = str(row.get("timeframe") or "").upper()
+                close = row.get("close")
+                if not sym or close in (None, 0):
+                    continue
+                tf_rank = rank.get(tf, 99)
+                if sym not in best or tf_rank < best[sym][0]:
+                    best[sym] = (tf_rank, float(close))
+
+            if direct in best:
+                return best[direct][1]
+            if inverse in best and best[inverse][1] > 0:
+                return 1.0 / best[inverse][1]
+
+            eurusd = best.get("EURUSD", (99, None))[1]
+            if eurusd and via_direct in best:
+                return best[via_direct][1] * eurusd
+            if eurusd and via_inverse in best and best[via_inverse][1] > 0:
+                return eurusd / best[via_inverse][1]
+            return None
+
+        return calculate_realized_pnl_usd(
+            symbol=symbol,
+            side=side,
+            entry_price=trade.get("entry_price"),
+            exit_price=exit_price,
+            quantity=trade.get("quantity"),
+            rate_resolver=resolve_rate,
+        )
 
     def _determine_close_reason(
         self,
@@ -791,9 +827,10 @@ class BrokerStateService:
                         exit_px = exit_from_exec
                         if exit_px is None:
                             exit_px = self._market_snapshot_exit_price(trade)
-                        if exit_px is None:
-                            exit_px = float(trade.get("entry_price") or 0.0)
-                        pnl, pnl_pips = self._calculate_trade_pnl(trade, exit_px)
+                        pnl = None
+                        pnl_pips = None
+                        if exit_px is not None:
+                            pnl, pnl_pips = self._calculate_trade_pnl(trade, exit_px)
                         self._trades_history_repo.close_trade(
                             trade_id=str(trade.get("id")),
                             exit_price=exit_px,
@@ -883,14 +920,15 @@ class BrokerStateService:
                     reason, exit_price = self._determine_close_reason(trade, executions)
                     if exit_price is None:
                         exit_price = self._market_snapshot_exit_price(trade)
-                    if exit_price is None:
-                        exit_price = float(trade.get("entry_price") or 0.0)
                     symbol = str(trade.get("symbol") or "").upper()
                     try:
-                        pnl, pnl_pips = self._calculate_trade_pnl(trade, float(exit_price))
+                        pnl = None
+                        pnl_pips = None
+                        if exit_price is not None:
+                            pnl, pnl_pips = self._calculate_trade_pnl(trade, float(exit_price))
                         self._trades_history_repo.close_trade(
                             trade_id=str(trade.get("id")),
-                            exit_price=float(exit_price),
+                            exit_price=exit_price,
                             close_reason=reason,
                             pnl=pnl,
                             pnl_pips=pnl_pips,

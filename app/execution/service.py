@@ -24,6 +24,7 @@ from app.broker.connection_manager import (
     IBKRConnectionManager,
 )
 from app.broker.state_service import BrokerConnectionError, BrokerStateService
+from app.execution.fx_pnl import calculate_realized_pnl_usd
 
 try:
     from app.forecast.gate import ForecastGate
@@ -182,6 +183,54 @@ class ExecutionServiceCallback(IBKROrderCallback):
             return PIP_VALUES["JPY"]
         return PIP_VALUES["DEFAULT"]
 
+    def _resolve_quote_to_usd_rate(self, quote_ccy: str) -> Optional[float]:
+        if not self.trades_history_repo:
+            return None
+        db = getattr(self.trades_history_repo, "db", None)
+        if db is None:
+            return None
+
+        direct = f"{quote_ccy}USD"
+        inverse = f"USD{quote_ccy}"
+        via_direct = f"{quote_ccy}EUR"
+        via_inverse = f"EUR{quote_ccy}"
+        candidates = [direct, inverse, via_direct, via_inverse, "EURUSD"]
+        rows = (
+            db.client.table("market_snapshots")
+            .select("symbol,timeframe,ts,created_at,close")
+            .in_("symbol", candidates)
+            .in_("timeframe", ["S5", "M1", "M15"])
+            .order("ts", desc=True)
+            .limit(50)
+            .execute()
+            .data
+            or []
+        )
+
+        best: Dict[str, tuple[int, float]] = {}
+        rank = {"S5": 0, "M1": 1, "M15": 2}
+        for row in rows:
+            sym = str(row.get("symbol") or "").upper()
+            tf = str(row.get("timeframe") or "").upper()
+            close = row.get("close")
+            if not sym or close in (None, 0):
+                continue
+            tf_rank = rank.get(tf, 99)
+            if sym not in best or tf_rank < best[sym][0]:
+                best[sym] = (tf_rank, float(close))
+
+        if direct in best:
+            return best[direct][1]
+        if inverse in best and best[inverse][1] > 0:
+            return 1.0 / best[inverse][1]
+
+        eurusd = best.get("EURUSD", (99, None))[1]
+        if eurusd and via_direct in best:
+            return best[via_direct][1] * eurusd
+        if eurusd and via_inverse in best and best[via_inverse][1] > 0:
+            return eurusd / best[via_inverse][1]
+        return None
+
     def _ensure_trade_instrument_key(self, trade: Optional[dict], instrument_key: Optional[str]) -> None:
         if not trade or not instrument_key or not self.trades_history_repo:
             return
@@ -330,14 +379,14 @@ class ExecutionServiceCallback(IBKROrderCallback):
                         pnl = None
                         pnl_pips = None
                         if entry_price is not None and quantity:
-                            if side == "BUY":
-                                pnl = (fill.price - entry_price) * quantity
-                            else:
-                                pnl = (entry_price - fill.price) * quantity
-                            pip_value = self._get_pip_value(symbol)
-                            pnl_pips = (fill.price - entry_price) / pip_value
-                            if side == "SELL":
-                                pnl_pips = -pnl_pips
+                            pnl, pnl_pips = calculate_realized_pnl_usd(
+                                symbol=symbol,
+                                side=side,
+                                entry_price=entry_price,
+                                exit_price=fill.price,
+                                quantity=quantity,
+                                rate_resolver=self._resolve_quote_to_usd_rate,
+                            )
                         
                         self.trades_history_repo.close_trade(
                             trade_id=trade["id"],
