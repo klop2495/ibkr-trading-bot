@@ -135,7 +135,7 @@ def _build_old_params(current: SignalsParams) -> SignalsParams:
 def _fetch_snapshot_rows(db: SupabaseDB, *, since_iso: str, symbols: list[str]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     chunk_size = 5
-    select_cols = "symbol,timeframe,ts,close,atr,rsi,ma_fast,ma_slow,spread,data_quality"
+    select_cols = "symbol,timeframe,ts,close,atr,rsi,ma_fast,ma_slow,spread"
     for i in range(0, len(symbols), chunk_size):
         chunk = symbols[i : i + chunk_size]
         res = (
