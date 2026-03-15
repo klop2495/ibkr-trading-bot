@@ -70,6 +70,17 @@ class SignalsM15Confirm(BaseModel):
     pullback_max_pips: float | None = Field(default=15.0, ge=0.0)
 
 
+class SignalsScoring(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    min_regime_score: float = Field(default=12.0, ge=0.0, le=25.0)
+    min_setup_score: float = Field(default=40.0, ge=0.0, le=70.0)
+    min_entry_score: float = Field(default=50.0, ge=0.0, le=100.0)
+    high_confidence_score: float = Field(default=70.0, ge=0.0, le=100.0)
+    regime_separation_atr_cap: float = Field(default=1.5, gt=0.0)
+    trigger_break_buffer_pips: float = Field(default=0.5, ge=0.0, le=10.0)
+
+
 class SignalsParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -84,6 +95,7 @@ class SignalsParams(BaseModel):
     rr: SignalsRR = Field(default_factory=SignalsRR)
     filters: SignalsFilters = Field(default_factory=SignalsFilters)
     m15_confirm: SignalsM15Confirm = Field(default_factory=SignalsM15Confirm)
+    scoring: SignalsScoring = Field(default_factory=SignalsScoring)
     symbol_overrides: Dict[str, Dict] = Field(default_factory=dict)
 
     def is_configured(self) -> bool:

@@ -28,6 +28,11 @@ FLAG_SETUP_INVALIDATED = "SETUP_INVALIDATED"
 FLAG_ENTRY_NOT_TRIGGERED = "ENTRY_NOT_TRIGGERED"
 FLAG_SWING_NOT_DETECTED = "SWING_NOT_DETECTED"
 FLAG_STRUCTURAL_SL_TP = "STRUCTURAL_SL_TP"
+FLAG_REGIME_SCORE_WEAK = "REGIME_SCORE_WEAK"
+FLAG_IMPULSE_SCORE_WEAK = "IMPULSE_SCORE_WEAK"
+FLAG_PULLBACK_SCORE_WEAK = "PULLBACK_SCORE_WEAK"
+FLAG_TRIGGER_SCORE_WEAK = "TRIGGER_SCORE_WEAK"
+FLAG_CONTINUATION_SCORE_LOW = "CONTINUATION_SCORE_LOW"
 FLAG_LEGACY_CONFIRM_FALLBACK = "LEGACY_CONFIRM_FALLBACK"
 FLAG_FALLBACK_SL_FROM_SETTINGS = "FALLBACK_SL_FROM_SETTINGS"
 FLAG_FALLBACK_TP_FROM_SETTINGS = "FALLBACK_TP_FROM_SETTINGS"
@@ -150,15 +155,44 @@ class SignalEngineV1:
 
     def _compute_confidence(
         self,
-        dir_h4: Direction,
-        dir_h1: Direction,
+        continuation_score: float,
         m15_confirm: bool,
     ) -> Confidence:
-        if dir_h4 == Direction.FLAT or dir_h1 == Direction.FLAT:
+        if continuation_score <= 0:
             return Confidence.LOW
-        if dir_h4 == dir_h1 and m15_confirm:
+        if continuation_score >= self.params.scoring.high_confidence_score and m15_confirm:
             return Confidence.HIGH
-        return Confidence.NORMAL
+        if continuation_score >= self.params.scoring.min_entry_score:
+            return Confidence.NORMAL
+        return Confidence.LOW
+
+    @staticmethod
+    def _clamp(value: float, low: float, high: float) -> float:
+        return max(low, min(high, value))
+
+    def _score_regime(self, direction: Direction, snap_h4: MarketSnapshot | None, snap_h1: MarketSnapshot | None) -> float:
+        if direction == Direction.FLAT or snap_h4 is None or snap_h1 is None:
+            return 0.0
+
+        score = 0.0
+        cap = self.params.scoring.regime_separation_atr_cap
+        for snap in (snap_h4, snap_h1):
+            atr = getattr(snap, "atr", 0.0) or 0.0
+            ma_fast = getattr(snap, "ma_fast", 0.0) or 0.0
+            ma_slow = getattr(snap, "ma_slow", 0.0) or 0.0
+            close = getattr(snap, "close", 0.0) or 0.0
+            pip_value = self._pip_size(getattr(snap, "symbol", ""))
+            separation = abs(ma_fast - ma_slow)
+            separation_pips = separation / pip_value if pip_value > 0 else 0.0
+            score += self._clamp(separation_pips / 20.0, 0.0, 1.0) * 5.0
+            if atr > 0:
+                separation_ratio = separation / atr
+                score += self._clamp(separation_ratio / cap, 0.0, 1.0) * 3.0
+            if direction == Direction.LONG and close >= ma_fast:
+                score += 4.5
+            elif direction == Direction.SHORT and close <= ma_fast:
+                score += 4.5
+        return round(min(score, 25.0), 1)
 
     def _structural_bars_from_ohlc(self, ohlc: Optional[dict]) -> list[dict]:
         if not ohlc:
@@ -381,9 +415,26 @@ class SignalEngineV1:
                 flags=flags,
             )
 
+        direction = dir_h4
+        regime_score = self._score_regime(direction, snap_h4, snap_h1)
+        if regime_score < self.params.scoring.min_regime_score:
+            flags.append(FLAG_REGIME_SCORE_WEAK)
+            return SignalPreviewV1(
+                ts_utc=ts,
+                symbol=symbol,
+                setup_type=SetupType.NO_TRADE,
+                direction=Direction.FLAT,
+                setup_present=False,
+                entry_triggered=False,
+                confidence=Confidence.LOW,
+                rr=self.params.rr.base_rr or 0.0,
+                data_quality=data_quality,
+                spread_quality=spread_quality,
+                flags=flags,
+            )
+
         confidence = Confidence.NORMAL
         rr = self.params.rr.base_rr or 0.0
-        direction = dir_h4
         structural = self._compute_structural_setup(
             symbol=symbol,
             direction=dir_h4,
@@ -410,7 +461,41 @@ class SignalEngineV1:
                 flags.append(FLAG_STRUCTURAL_SL_TP)
 
             momentum_confirm = self._m15_confirm(symbol, snap_m15, dir_h4)
-            confidence = self._compute_confidence(dir_h4, dir_h1, momentum_confirm and structural.entry_triggered)
+            impulse_score = float(structural.impulse_score or 0.0)
+            pullback_score = float(structural.pullback_score or 0.0)
+            trigger_score = float(structural.trigger_score or 0.0)
+            setup_score = regime_score + impulse_score + pullback_score
+            continuation_score = setup_score + trigger_score
+
+            if impulse_score < 10.0:
+                flags.append(FLAG_IMPULSE_SCORE_WEAK)
+            if pullback_score < 10.0:
+                flags.append(FLAG_PULLBACK_SCORE_WEAK)
+            if structural.entry_triggered and trigger_score < 8.0:
+                flags.append(FLAG_TRIGGER_SCORE_WEAK)
+
+            if structural.setup_present and setup_score < self.params.scoring.min_setup_score:
+                flags.append(FLAG_CONTINUATION_SCORE_LOW)
+                return SignalPreviewV1(
+                    ts_utc=ts,
+                    symbol=symbol,
+                    setup_type=SetupType.NO_TRADE,
+                    direction=Direction.FLAT,
+                    setup_present=False,
+                    entry_triggered=False,
+                    confidence=Confidence.LOW,
+                    rr=self.params.rr.base_rr or 0.0,
+                    data_quality=data_quality,
+                    spread_quality=spread_quality,
+                    flags=flags,
+                )
+
+            if structural.entry_triggered and continuation_score < self.params.scoring.min_entry_score:
+                flags.append(FLAG_CONTINUATION_SCORE_LOW)
+                entry_triggered = False
+                flags.append(FLAG_ENTRY_NOT_TRIGGERED)
+
+            confidence = self._compute_confidence(continuation_score, momentum_confirm and entry_triggered)
             rr = self.params.rr.high_conf_rr if confidence == Confidence.HIGH else self.params.rr.base_rr or 0.0
 
             return SignalPreviewV1(
@@ -440,7 +525,7 @@ class SignalEngineV1:
         else:
             flags.append(FLAG_ENTRY_NOT_TRIGGERED)
 
-        confidence = self._compute_confidence(dir_h4, dir_h1, confirm)
+        confidence = self._compute_confidence(regime_score + (60.0 if confirm else 0.0), confirm)
         rr = self.params.rr.high_conf_rr if confidence == Confidence.HIGH else self.params.rr.base_rr or 0.0
 
         if not setup_present:

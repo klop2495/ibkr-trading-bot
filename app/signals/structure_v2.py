@@ -40,6 +40,9 @@ class StructuralSetup:
     impulse_start_index: Optional[int] = None
     impulse_end_index: Optional[int] = None
     anchor_index: Optional[int] = None
+    impulse_score: Optional[float] = None
+    pullback_score: Optional[float] = None
+    trigger_score: Optional[float] = None
 
 
 def pip_size(symbol: str) -> float:
@@ -144,6 +147,7 @@ def build_continuation_setup(
     post_impulse = seq[impulse_end_bar_idx + 1:]
     latest = seq[-1]
     buffer = sl_buffer_pips * pip_size(symbol)
+    avg_bar_range = _average_bar_range(seq[max(0, impulse_end_bar_idx - 8): impulse_end_bar_idx + 1])
 
     if direction == "long":
         pullback_extreme = min(bar.low for bar in post_impulse)
@@ -174,6 +178,9 @@ def build_continuation_setup(
         return StructuralSetup(direction=direction, setup_present=False, entry_triggered=False, invalidated=False, reason="invalid_impulse_geometry")
 
     retracement_ratio = retracement / impulse_size
+    impulse_score = _score_impulse_quality(impulse_size=impulse_size, avg_bar_range=avg_bar_range)
+    pullback_score = _score_pullback_quality(retracement_ratio=retracement_ratio)
+    trigger_score = _score_trigger_quality(latest=latest, trigger_price=trigger_price, direction=direction, symbol=symbol)
     if invalidated:
         return StructuralSetup(
             direction=direction,
@@ -186,6 +193,9 @@ def build_continuation_setup(
             impulse_start_index=anchor.index,
             impulse_end_index=impulse_end.index,
             anchor_index=anchor.index,
+            impulse_score=impulse_score,
+            pullback_score=pullback_score,
+            trigger_score=0.0,
         )
 
     if retracement_ratio <= 0 or retracement_ratio > max_retracement_ratio:
@@ -200,6 +210,9 @@ def build_continuation_setup(
             impulse_start_index=anchor.index,
             impulse_end_index=impulse_end.index,
             anchor_index=anchor.index,
+            impulse_score=impulse_score,
+            pullback_score=pullback_score,
+            trigger_score=0.0,
         )
 
     if stop_distance_pips < min_sl_pips or stop_distance_pips > max_sl_pips:
@@ -216,6 +229,9 @@ def build_continuation_setup(
             impulse_start_index=anchor.index,
             impulse_end_index=impulse_end.index,
             anchor_index=anchor.index,
+            impulse_score=impulse_score,
+            pullback_score=pullback_score,
+            trigger_score=trigger_score if entry_triggered else 0.0,
         )
 
     return StructuralSetup(
@@ -235,6 +251,9 @@ def build_continuation_setup(
         impulse_start_index=anchor.index,
         impulse_end_index=impulse_end.index,
         anchor_index=anchor.index,
+        impulse_score=impulse_score,
+        pullback_score=pullback_score,
+        trigger_score=trigger_score if entry_triggered else 0.0,
     )
 
 
@@ -271,3 +290,60 @@ def _bar_position(bars: list[StructuralBar], swing_index: int) -> Optional[int]:
         if bar.index == swing_index:
             return i
     return None
+
+
+def _average_bar_range(bars: list[StructuralBar]) -> float:
+    ranges = [max(bar.high - bar.low, 0.0) for bar in bars]
+    valid = [value for value in ranges if value > 0]
+    if not valid:
+        return 0.0
+    return sum(valid) / len(valid)
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def _score_impulse_quality(*, impulse_size: float, avg_bar_range: float) -> float:
+    if impulse_size <= 0 or avg_bar_range <= 0:
+        return 0.0
+    ratio = impulse_size / avg_bar_range
+    normalized = _clamp((ratio - 1.0) / 4.0, 0.0, 1.0)
+    return round(normalized * 25.0, 1)
+
+
+def _score_pullback_quality(*, retracement_ratio: float) -> float:
+    if retracement_ratio <= 0:
+        return 0.0
+    if 0.2 <= retracement_ratio <= 0.5:
+        return 20.0
+    if 0.1 <= retracement_ratio < 0.2:
+        return round(10.0 + ((retracement_ratio - 0.1) / 0.1) * 10.0, 1)
+    if 0.5 < retracement_ratio <= 0.65:
+        return round(20.0 - ((retracement_ratio - 0.5) / 0.15) * 8.0, 1)
+    if 0.65 < retracement_ratio <= 0.75:
+        return round(12.0 - ((retracement_ratio - 0.65) / 0.10) * 8.0, 1)
+    return 0.0
+
+
+def _score_trigger_quality(
+    *,
+    latest: StructuralBar,
+    trigger_price: Optional[float],
+    direction: Direction,
+    symbol: str,
+) -> float:
+    if trigger_price is None:
+        return 0.0
+    bar_range = max(latest.high - latest.low, pip_size(symbol))
+    if direction == "long":
+        breakout = latest.close - trigger_price
+        close_location = (latest.close - latest.low) / bar_range
+    else:
+        breakout = trigger_price - latest.close
+        close_location = (latest.high - latest.close) / bar_range
+    if breakout <= 0:
+        return 0.0
+    breakout_ratio = _clamp(breakout / bar_range, 0.0, 1.0)
+    location_ratio = _clamp(close_location, 0.0, 1.0)
+    return round((breakout_ratio * 12.0) + (location_ratio * 8.0), 1)

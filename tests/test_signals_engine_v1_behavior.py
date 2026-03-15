@@ -3,8 +3,11 @@ from datetime import datetime, timezone
 from app.models.signals_params import SignalsParams
 from app.models.snapshot import MarketSnapshot
 from app.signals.engine_v1 import (
+    FLAG_CONTINUATION_SCORE_LOW,
     FLAG_DATA_WARMUP_NOT_READY,
+    FLAG_IMPULSE_SCORE_WEAK,
     FLAG_LEGACY_CONFIRM_FALLBACK,
+    FLAG_REGIME_SCORE_WEAK,
     FLAG_SPREAD_WIDE,
     FLAG_REGIME_H4_NEUTRAL,
     FLAG_STRUCTURAL_SL_TP,
@@ -235,3 +238,68 @@ def test_legacy_path_sets_fallback_flag_and_no_distances():
     assert FLAG_LEGACY_CONFIRM_FALLBACK in preview.flags
     assert preview.sl_distance_pips is None
     assert preview.tp_distance_pips is None
+
+
+def test_weak_regime_rejected_before_structural_setup():
+    engine = SignalEngineV1(_structural_params())
+    snaps = {
+        "H4": _snap("H4", 1.0002, 1.0, rsi=60, close=1.0002),
+        "H1": _snap("H1", 1.0002, 1.0, rsi=60, close=1.0002),
+        "M15": _snap("M15", 1.0, 0.8, rsi=60, close=1.0135),
+    }
+    preview = engine.compute_preview_for_symbol(
+        "EURUSD",
+        snaps,
+        warmup_ready=True,
+        ohlc_by_timeframe={
+            "M15": _ohlc(
+                [
+                    (1.0000, 1.0020, 0.9990, 1.0010),
+                    (1.0010, 1.0060, 1.0000, 1.0050),
+                    (1.0050, 1.0040, 0.9970, 0.9980),
+                    (0.9980, 1.0100, 0.9990, 1.0090),
+                    (1.0090, 1.0080, 1.0010, 1.0020),
+                    (1.0020, 1.0150, 1.0030, 1.0140),
+                    (1.0140, 1.0110, 1.0080, 1.0090),
+                    (1.0090, 1.0120, 1.0070, 1.0100),
+                    (1.0100, 1.0140, 1.0090, 1.0135),
+                ]
+            )
+        },
+    )
+    assert preview.setup_type == SetupType.NO_TRADE
+    assert FLAG_REGIME_SCORE_WEAK in preview.flags
+
+
+def test_structural_entry_rejected_when_continuation_score_too_low():
+    engine = SignalEngineV1(_structural_params())
+    engine.params.scoring.min_entry_score = 90.0
+    snaps = {
+        "H4": _snap("H4", 1.8, 1.0, rsi=60, close=1.2),
+        "H1": _snap("H1", 1.8, 1.0, rsi=60, close=1.2),
+        "M15": _snap("M15", 1.0, 0.8, rsi=60, close=1.0182),
+    }
+    preview = engine.compute_preview_for_symbol(
+        "EURUSD",
+        snaps,
+        warmup_ready=True,
+        ohlc_by_timeframe={
+            "M15": _ohlc(
+                [
+                    (1.0000, 1.0012, 0.9996, 1.0010),
+                    (1.0010, 1.0023, 1.0008, 1.0020),
+                    (1.0020, 1.0017, 0.9995, 1.0000),
+                    (1.0000, 1.0045, 1.0002, 1.0040),
+                    (1.0040, 1.0037, 1.0015, 1.0020),
+                    (1.0020, 1.0180, 1.0025, 1.0178),
+                    (1.0178, 1.0179, 1.0120, 1.0128),
+                    (1.0128, 1.0130, 1.0118, 1.0122),
+                    (1.0122, 1.0185, 1.0121, 1.0182),
+                ]
+            )
+        },
+    )
+    assert preview.setup_present is True
+    assert preview.entry_triggered is False
+    assert preview.setup_type == SetupType.SWING_CONTINUATION
+    assert FLAG_CONTINUATION_SCORE_LOW in preview.flags
