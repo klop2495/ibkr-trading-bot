@@ -13,6 +13,7 @@ class BotSettingsPatch(BaseModel):
 
     trading_enabled: bool | None = None
     mode: str | None = None
+    account_currency: str | None = None
     risk_per_trade: float | None = None
     max_open_positions: int | None = None
     max_trades_per_day_portfolio: int | None = None
@@ -40,6 +41,7 @@ class BotSettingsRepo:
         return BotSettings(
             owner_user_id=owner_user_id,
             trading_enabled=False,
+            account_currency="USD",
             symbols=[],
         )
 

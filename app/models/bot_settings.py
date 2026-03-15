@@ -35,6 +35,7 @@ class BotSettings(BaseModel):
 
     trading_enabled: bool = False
     mode: Literal["paper", "live"] = "paper"
+    account_currency: str = "USD"
 
     # Percent risk per trade (e.g., 0.5 = 0.5%)
     risk_per_trade: float = Field(default=0.5, gt=0.0, le=5.0)
@@ -85,3 +86,24 @@ class BotSettings(BaseModel):
             seen.add(name)
             cleaned.append(name)
         return cleaned
+
+    @field_validator("account_currency", mode="before")
+    @classmethod
+    def normalize_account_currency(cls, v):
+        if v is None:
+            return "USD"
+        value = str(v).strip().upper()
+        if not value:
+            return "USD"
+        if value != "USD":
+            raise ValueError("Only USD account_currency is currently supported")
+        return value
+
+    @field_validator("risk_per_trade", mode="before")
+    @classmethod
+    def normalize_risk_per_trade(cls, v):
+        value = float(v)
+        # Guard against fraction-style inputs such as 0.005 for 0.5%.
+        if 0.0 < value < 0.05:
+            return value * 100.0
+        return value

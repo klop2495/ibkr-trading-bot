@@ -4,8 +4,10 @@ from app.models.signals_params import SignalsParams
 from app.models.snapshot import MarketSnapshot
 from app.signals.engine_v1 import (
     FLAG_DATA_WARMUP_NOT_READY,
+    FLAG_LEGACY_CONFIRM_FALLBACK,
     FLAG_SPREAD_WIDE,
     FLAG_REGIME_H4_NEUTRAL,
+    FLAG_STRUCTURAL_SL_TP,
     FLAG_TF_MISMATCH_H4_H1,
     SignalEngineV1,
     Confidence,
@@ -44,6 +46,14 @@ def _params():
     )
 
 
+def _structural_params():
+    params = _params()
+    params.structure.swing_lookback_bars = 1
+    params.structure.swing_min_separation_bars = 1
+    params.structure.max_sl_pips = 80
+    return params
+
+
 def _snap(tf: str, ma_fast: float, ma_slow: float, rsi: float = 50, close: float = 1.0, spread: float = 0.1):
     ts = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
     return MarketSnapshot(
@@ -58,6 +68,16 @@ def _snap(tf: str, ma_fast: float, ma_slow: float, rsi: float = 50, close: float
         ma_slow=ma_slow,
         spread=spread,
     )
+
+
+def _ohlc(rows):
+    opens, highs, lows, closes = [], [], [], []
+    for o, h, l, c in rows:
+        opens.append(o)
+        highs.append(h)
+        lows.append(l)
+        closes.append(c)
+    return {"opens": opens, "highs": highs, "lows": lows, "closes": closes}
 
 
 def test_gate_warmup_not_ready_no_trade_flag():
@@ -131,3 +151,87 @@ def test_high_confidence_sets_high_rr():
     preview = engine.compute_preview_for_symbol("EURUSD", snaps, warmup_ready=True)
     assert preview.confidence == Confidence.HIGH
     assert preview.rr == 3.0
+
+
+def test_structural_path_sets_pullback_ready_without_trigger():
+    engine = SignalEngineV1(_structural_params())
+    snaps = {
+        "H4": _snap("H4", 2.0, 1.0, rsi=60, close=1.2),
+        "H1": _snap("H1", 2.0, 1.0, rsi=60, close=1.2),
+        "M15": _snap("M15", 1.0, 0.8, rsi=55, close=1.0105),
+    }
+    preview = engine.compute_preview_for_symbol(
+        "EURUSD",
+        snaps,
+        warmup_ready=True,
+        ohlc_by_timeframe={
+            "M15": _ohlc(
+                [
+                    (1.0000, 1.0020, 0.9990, 1.0010),
+                    (1.0010, 1.0060, 1.0000, 1.0050),
+                    (1.0050, 1.0040, 0.9970, 0.9980),
+                    (0.9980, 1.0100, 0.9990, 1.0090),
+                    (1.0090, 1.0080, 1.0010, 1.0020),
+                    (1.0020, 1.0150, 1.0030, 1.0140),
+                    (1.0140, 1.0110, 1.0080, 1.0090),
+                    (1.0090, 1.0120, 1.0070, 1.0100),
+                    (1.0100, 1.0115, 1.0085, 1.0105),
+                ]
+            )
+        },
+    )
+    assert preview.setup_present is True
+    assert preview.entry_triggered is False
+    assert preview.setup_type == SetupType.SWING_CONTINUATION
+    assert preview.direction == Direction.LONG
+    assert preview.sl_distance_pips is not None
+    assert FLAG_STRUCTURAL_SL_TP in preview.flags
+
+
+def test_structural_path_sets_entry_triggered_and_structural_distances():
+    engine = SignalEngineV1(_structural_params())
+    snaps = {
+        "H4": _snap("H4", 2.0, 1.0, rsi=60, close=1.2),
+        "H1": _snap("H1", 2.0, 1.0, rsi=60, close=1.2),
+        "M15": _snap("M15", 1.0, 0.8, rsi=60, close=1.0135),
+    }
+    preview = engine.compute_preview_for_symbol(
+        "EURUSD",
+        snaps,
+        warmup_ready=True,
+        ohlc_by_timeframe={
+            "M15": _ohlc(
+                [
+                    (1.0000, 1.0020, 0.9990, 1.0010),
+                    (1.0010, 1.0060, 1.0000, 1.0050),
+                    (1.0050, 1.0040, 0.9970, 0.9980),
+                    (0.9980, 1.0100, 0.9990, 1.0090),
+                    (1.0090, 1.0080, 1.0010, 1.0020),
+                    (1.0020, 1.0150, 1.0030, 1.0140),
+                    (1.0140, 1.0110, 1.0080, 1.0090),
+                    (1.0090, 1.0120, 1.0070, 1.0100),
+                    (1.0100, 1.0140, 1.0090, 1.0135),
+                ]
+            )
+        },
+    )
+    assert preview.setup_present is True
+    assert preview.entry_triggered is True
+    assert preview.setup_type == SetupType.SWING_CONTINUATION
+    assert preview.direction == Direction.LONG
+    assert preview.sl_distance_pips is not None
+    assert preview.tp_distance_pips is not None
+    assert FLAG_STRUCTURAL_SL_TP in preview.flags
+
+
+def test_legacy_path_sets_fallback_flag_and_no_distances():
+    engine = SignalEngineV1(_params())
+    snaps = {
+        "H4": _snap("H4", 2.0, 1.0, rsi=60, close=1.2),
+        "H1": _snap("H1", 2.0, 1.0, rsi=60, close=1.2),
+        "M15": _snap("M15", 1.0, 0.8, rsi=60, close=1.1),
+    }
+    preview = engine.compute_preview_for_symbol("EURUSD", snaps, warmup_ready=True)
+    assert FLAG_LEGACY_CONFIRM_FALLBACK in preview.flags
+    assert preview.sl_distance_pips is None
+    assert preview.tp_distance_pips is None

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 from app.models.signal_preview import (
     Confidence,
@@ -11,6 +11,7 @@ from app.models.signal_preview import (
 )
 from app.models.signals_params import SignalsParams
 from app.models.snapshot import MarketSnapshot
+from app.signals.structure_v2 import build_continuation_setup
 
 # Flag constants (stable keys)
 FLAG_DATA_WARMUP_NOT_READY = "DATA_WARMUP_NOT_READY"
@@ -26,6 +27,10 @@ FLAG_SETUP_NOT_FOUND = "SETUP_NOT_FOUND"
 FLAG_SETUP_INVALIDATED = "SETUP_INVALIDATED"
 FLAG_ENTRY_NOT_TRIGGERED = "ENTRY_NOT_TRIGGERED"
 FLAG_SWING_NOT_DETECTED = "SWING_NOT_DETECTED"
+FLAG_STRUCTURAL_SL_TP = "STRUCTURAL_SL_TP"
+FLAG_LEGACY_CONFIRM_FALLBACK = "LEGACY_CONFIRM_FALLBACK"
+FLAG_FALLBACK_SL_FROM_SETTINGS = "FALLBACK_SL_FROM_SETTINGS"
+FLAG_FALLBACK_TP_FROM_SETTINGS = "FALLBACK_TP_FROM_SETTINGS"
 FLAG_SIGNALS_RULES_NOT_SPECIFIED = "SIGNALS_RULES_NOT_SPECIFIED"
 FLAG_SIGNALS_PARAMS_INVALID = "SIGNALS_PARAMS_INVALID"
 
@@ -155,6 +160,57 @@ class SignalEngineV1:
             return Confidence.HIGH
         return Confidence.NORMAL
 
+    def _structural_bars_from_ohlc(self, ohlc: Optional[dict]) -> list[dict]:
+        if not ohlc:
+            return []
+        opens = ohlc.get("opens") or []
+        highs = ohlc.get("highs") or []
+        lows = ohlc.get("lows") or []
+        closes = ohlc.get("closes") or []
+        count = min(len(opens), len(highs), len(lows), len(closes))
+        bars: list[dict] = []
+        for i in range(count):
+            bars.append(
+                {
+                    "index": i,
+                    "open": opens[i],
+                    "high": highs[i],
+                    "low": lows[i],
+                    "close": closes[i],
+                }
+            )
+        return bars
+
+    def _compute_structural_setup(
+        self,
+        *,
+        symbol: str,
+        direction: Direction,
+        ohlc_m15: Optional[dict],
+        rr: float,
+    ):
+        bars = self._structural_bars_from_ohlc(ohlc_m15)
+        if not bars:
+            return None
+        structure = self.params.structure
+        lookback = structure.swing_lookback_bars or 0
+        min_separation = structure.swing_min_separation_bars or 0
+        min_sl = structure.min_sl_pips or 0.0
+        max_sl = structure.max_sl_pips or 0.0
+        if lookback < 1 or min_separation < 1 or min_sl <= 0 or max_sl <= 0:
+            return None
+        return build_continuation_setup(
+            symbol=symbol,
+            bars=bars,
+            direction="long" if direction == Direction.LONG else "short",
+            lookback=lookback,
+            min_separation=min_separation,
+            sl_buffer_pips=structure.sl_buffer_pips or 0.0,
+            min_sl_pips=min_sl,
+            max_sl_pips=max_sl,
+            rr=rr,
+        )
+
     def _within_trade_hours(self, ts: datetime) -> bool:
         if not self.params.filters.trade_hours_utc:
             return True
@@ -179,6 +235,7 @@ class SignalEngineV1:
         symbol: str,
         snapshots: Dict[str, MarketSnapshot],
         warmup_ready: bool = True,
+        ohlc_by_timeframe: Optional[Dict[str, dict]] = None,
     ) -> SignalPreviewV1:
         ts = self._ensure_ts(next(iter(snapshots.values())).timestamp if snapshots else None)
 
@@ -324,9 +381,58 @@ class SignalEngineV1:
                 flags=flags,
             )
 
-        # Trend continuation only (H4 == H1)
+        confidence = Confidence.NORMAL
+        rr = self.params.rr.base_rr or 0.0
+        direction = dir_h4
+        structural = self._compute_structural_setup(
+            symbol=symbol,
+            direction=dir_h4,
+            ohlc_m15=(ohlc_by_timeframe or {}).get("M15"),
+            rr=rr,
+        )
+
+        if structural is not None:
+            setup_type = SetupType.SWING_CONTINUATION
+            setup_present = structural.setup_present
+            entry_triggered = structural.entry_triggered
+            if structural.invalidated:
+                flags.append(FLAG_SETUP_INVALIDATED)
+            elif not structural.setup_present:
+                if structural.reason in ("insufficient_bars", "insufficient_swings", "trend_structure_not_found"):
+                    flags.append(FLAG_SWING_NOT_DETECTED)
+                elif structural.reason == "pullback_out_of_range":
+                    flags.append(FLAG_SETUP_NOT_FOUND)
+                elif structural.reason == "sl_out_of_range":
+                    flags.append(FLAG_SETUP_INVALIDATED)
+            elif not structural.entry_triggered:
+                flags.append(FLAG_ENTRY_NOT_TRIGGERED)
+            if structural.stop_distance_pips is not None:
+                flags.append(FLAG_STRUCTURAL_SL_TP)
+
+            momentum_confirm = self._m15_confirm(symbol, snap_m15, dir_h4)
+            confidence = self._compute_confidence(dir_h4, dir_h1, momentum_confirm and structural.entry_triggered)
+            rr = self.params.rr.high_conf_rr if confidence == Confidence.HIGH else self.params.rr.base_rr or 0.0
+
+            return SignalPreviewV1(
+                ts_utc=ts,
+                symbol=symbol,
+                setup_type=setup_type if setup_present else SetupType.NO_TRADE,
+                direction=direction if setup_present else Direction.FLAT,
+                setup_present=setup_present,
+                entry_triggered=entry_triggered,
+                confidence=confidence,
+                rr=rr,
+                data_quality=data_quality,
+                spread_quality=spread_quality,
+                flags=flags,
+                sl_distance_pips=structural.stop_distance_pips,
+                tp_distance_pips=structural.take_profit_pips if structural.entry_triggered else None,
+            )
+
+        # Fallback: legacy surrogate continuation only when structural history is unavailable.
         setup_type = SetupType.SWING_CONTINUATION
         setup_present = True
+        flags.append(FLAG_LEGACY_CONFIRM_FALLBACK)
 
         confirm = self._m15_confirm(symbol, snap_m15, dir_h4)
         if confirm:
@@ -337,7 +443,6 @@ class SignalEngineV1:
         confidence = self._compute_confidence(dir_h4, dir_h1, confirm)
         rr = self.params.rr.high_conf_rr if confidence == Confidence.HIGH else self.params.rr.base_rr or 0.0
 
-        direction = dir_h4
         if not setup_present:
             direction = Direction.FLAT
 
@@ -359,6 +464,7 @@ class SignalEngineV1:
         self,
         snapshots: Iterable[MarketSnapshot],
         warmup_ready: bool = True,
+        ohlc_by_symbol: Optional[Dict[str, Dict[str, dict]]] = None,
     ) -> List[SignalPreviewV1]:
         by_symbol: Dict[str, Dict[str, MarketSnapshot]] = {}
         for snap in snapshots:
@@ -367,5 +473,12 @@ class SignalEngineV1:
             by_symbol[sym][snap.timeframe] = snap
         previews: List[SignalPreviewV1] = []
         for sym, tf_snaps in by_symbol.items():
-            previews.append(self.compute_preview_for_symbol(sym, tf_snaps, warmup_ready=warmup_ready))
+            previews.append(
+                self.compute_preview_for_symbol(
+                    sym,
+                    tf_snaps,
+                    warmup_ready=warmup_ready,
+                    ohlc_by_timeframe=(ohlc_by_symbol or {}).get(sym),
+                )
+            )
         return previews

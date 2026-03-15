@@ -20,6 +20,31 @@ def test_bot_settings_symbols_normalization():
     assert s.symbols == ["EURUSD", "GBPUSD"]
 
 
+def test_bot_settings_defaults_account_currency_to_usd():
+    settings = BotSettings(owner_user_id=uuid4(), trading_enabled=False, symbols=[])
+    assert settings.account_currency == "USD"
+
+
+def test_bot_settings_normalizes_fraction_style_risk_input():
+    settings = BotSettings(
+        owner_user_id=uuid4(),
+        trading_enabled=True,
+        symbols=["EURUSD"],
+        risk_per_trade=0.005,
+    )
+    assert settings.risk_per_trade == pytest.approx(0.5)
+
+
+def test_bot_settings_rejects_non_usd_account_currency():
+    with pytest.raises(ValidationError):
+        BotSettings(
+            owner_user_id=uuid4(),
+            trading_enabled=False,
+            symbols=[],
+            account_currency="EUR",
+        )
+
+
 def test_signals_params_configured_and_forbid_extra():
     cfg = {
         "schema_version": 1,

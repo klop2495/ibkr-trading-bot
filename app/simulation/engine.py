@@ -297,9 +297,21 @@ class SimulationEngine:
         
         side = SimSide.BUY if direction in ("LONG", "BUY") else SimSide.SELL
         
-        # Get SL/TP pips
-        sl_pips = preview.get("sl_distance_pips") or 20.0
-        tp_pips = preview.get("tp_distance_pips") or 40.0
+        # Structural preview distances must be explicit by the time simulation sees them.
+        sl_pips = preview.get("sl_distance_pips")
+        tp_pips = preview.get("tp_distance_pips")
+        if sl_pips is None or tp_pips is None:
+            self._block_trade(
+                verdict,
+                BlockReason.INVALID_SL_TP,
+                symbol,
+                data={
+                    "sl_distance_pips": sl_pips,
+                    "tp_distance_pips": tp_pips,
+                    "preview_flags": preview.get("flags") or [],
+                },
+            )
+            return
         
         # Admission checks
         block_reason = self._check_admission(symbol)

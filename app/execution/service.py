@@ -45,6 +45,11 @@ from app.models.bot_settings import BotSettings
 from app.models.decision import DecisionV1
 from app.models.risk_verdict import RiskVerdictV1
 from app.pm.position_sizer import PositionSizer, PositionSizerConfig, PositionSizeResult
+from app.signals.engine_v1 import (
+    FLAG_FALLBACK_SL_FROM_SETTINGS,
+    FLAG_FALLBACK_TP_FROM_SETTINGS,
+    FLAG_LEGACY_CONFIRM_FALLBACK,
+)
 from app.storage.bot_settings_repo import BotSettingsRepo
 from app.storage.repositories import RiskEventsRepo, TradesHistoryRepo
 
@@ -557,6 +562,7 @@ class ExecutionService:
         """Initialize IBKR components if needed."""
         # Always ensure position sizer is configured from settings
         risk_pct = self._get_risk_per_trade_pct(settings)
+        account_currency = self._get_account_currency(settings)
         if risk_pct is None:
             self._log_event(
                 "EXECUTION_BLOCKED",
@@ -572,6 +578,7 @@ class ExecutionService:
                 min_risk_per_trade_pct=min(risk_pct, 0.1) if risk_pct > 0 else 0.01,
                 max_position_size=100000.0,
                 min_position_size=1000.0,
+                account_currency=account_currency,
             )
             self._position_sizer = PositionSizer(sizer_config)
         except Exception as e:
@@ -633,8 +640,9 @@ class ExecutionService:
                     owner_user_id=self._owner_user_id,
                 )
             
-            # OMS - check if funds guard should be enabled
-            enable_funds_guard = os.getenv("FX_FUNDS_GUARD_ENABLED", "1") == "1"
+            # OMS path is CFD-only; spot-style FX funds guard is intentionally disabled here.
+            env_funds_guard_enabled = os.getenv("FX_FUNDS_GUARD_ENABLED", "1") == "1"
+            enable_funds_guard = False
             self._oms = IBKROMS(
                 ib=self._connection_manager.ib,
                 callback=self._callback,
@@ -645,8 +653,13 @@ class ExecutionService:
                 sync_lock=self._broker_state_service.sync_lock if self._broker_state_service else None,
                 broker_state_service=self._broker_state_service,
             )
-            if not enable_funds_guard:
-                logger.info("FX Funds Guard DISABLED via FX_FUNDS_GUARD_ENABLED=0")
+            if env_funds_guard_enabled:
+                logger.info("FX Funds Guard DISABLED for CFD execution path")
+                self._log_event(
+                    "EXECUTION_INFO",
+                    "info",
+                    "FX Funds Guard disabled for CFD execution path",
+                )
             
             self._initialized = True
             self._log_event("EXECUTION_INITIALIZED", "info", f"Execution service initialized in {self._mode.value} mode")
@@ -676,6 +689,13 @@ class ExecutionService:
         if value <= 0 or value > 10:
             return None
         return value
+
+    def _get_account_currency(self, settings: BotSettings) -> str:
+        try:
+            value = str(getattr(settings, "account_currency", "USD") or "USD").strip().upper()
+        except Exception:
+            value = "USD"
+        return "USD" if value != "USD" else value
     
     def update_equity(self, equity: float) -> None:
         """Update account equity for position sizing."""
@@ -1050,6 +1070,7 @@ class ExecutionService:
         agent_votes: Optional[Dict[str, str]] = None,  # Phase 7
         agent_confidences: Optional[Dict[str, float]] = None,  # Phase 7
         final_signal: Optional[str] = None,  # Phase 7
+        preview_flags: Optional[list[str]] = None,
     ) -> ExecutionResult:
         """
         Execute trade based on decision and verdict.
@@ -1096,8 +1117,24 @@ class ExecutionService:
                 mode=self._mode,
                 reason="execution_disabled",
             )
+
+        # Risk verdict is now expected to carry policy decisions such as
+        # max positions, daily limits, exposure, and symbol-level blocks.
+        if not verdict.trade_allowed:
+            self._log_event(
+                "EXECUTION_BLOCKED",
+                "info",
+                f"Trade blocked by risk for {decision.symbol}",
+                {"decision_id": str(decision.id), "symbol": decision.symbol},
+            )
+            return ExecutionResult(
+                executed=False,
+                mode=self._mode,
+                symbol=decision.symbol,
+                reason="risk_not_allowed",
+            )
         
-        # ========== STATE & MONEY MANAGEMENT CHECKS ==========
+        # ========== OPERATIONAL & BROKER CHECKS ==========
         try:
             # Idempotency: block duplicate decision_id
             if self.trades_history_repo and getattr(decision, "id", None):
@@ -1115,42 +1152,7 @@ class ExecutionService:
                         symbol=decision.symbol,
                         reason="duplicate_decision",
                     )
-            
-            # 1. Check max concurrent trades
-            max_positions = getattr(settings, 'max_open_positions', 3)
-            current_open = self._get_open_trades_count()
-            if current_open >= max_positions:
-                self._log_event(
-                    "EXECUTION_BLOCKED",
-                    "warn",
-                    f"Max open positions reached: {current_open}/{max_positions}",
-                    {"decision_id": str(decision.id), "symbol": decision.symbol, "current_open": current_open},
-                )
-                return ExecutionResult(
-                    executed=False,
-                    mode=self._mode,
-                    symbol=decision.symbol,
-                    reason=f"max_positions_reached:{current_open}/{max_positions}",
-                )
-            
-            # NOTE: Symbol-level position check is now handled atomically below
-            # via try_acquire_symbol_lock to prevent race conditions (AI_RULES 2.5)
-            # Keep explicit pre-check for fail-fast behavior across all modes, including DRY_RUN.
-            symbol_open = self._get_open_trades_for_symbol(decision.symbol)
-            if symbol_open > 0:
-                self._log_event(
-                    "EXECUTION_BLOCKED",
-                    "warn",
-                    f"Active trade already exists for {decision.symbol}",
-                    {"decision_id": str(decision.id), "symbol": decision.symbol, "active_symbol_trades": symbol_open},
-                )
-                return ExecutionResult(
-                    executed=False,
-                    mode=self._mode,
-                    symbol=decision.symbol,
-                    reason=f"active_trade_exists:{symbol_open}",
-                )
-            
+
             # P0-C: Check broker positions FIRST - this is source of truth
             # Prevents opening duplicate positions even if DB is out of sync
             if self._mode in (ExecutionMode.PAPER, ExecutionMode.LIVE):
@@ -1226,28 +1228,6 @@ class ExecutionService:
                 reason="state_check_failed",
             )
         
-        # 3. Check leverage limit
-        max_leverage = getattr(settings, 'max_effective_leverage', 5.0)
-        current_exposure = self._calculate_total_exposure()
-        max_exposure = self._equity * max_leverage
-        
-        # ========== END MONEY MANAGEMENT CHECKS ==========
-        
-        # Check verdict allows trade
-        if not verdict.trade_allowed:
-            self._log_event(
-                "EXECUTION_BLOCKED",
-                "info",
-                f"Trade blocked by risk for {decision.symbol}",
-                {"decision_id": str(decision.id), "symbol": decision.symbol},
-            )
-            return ExecutionResult(
-                executed=False,
-                mode=self._mode,
-                symbol=decision.symbol,
-                reason="risk_not_allowed",
-            )
-        
         # Determine side
         side = self._determine_side(decision, verdict, direction=direction)
         
@@ -1265,23 +1245,64 @@ class ExecutionService:
                 reason="cannot_determine_side",
             )
         
-        # Get SL/TP distances (prefer passed values, fallback to signal_preview)
+        # Get SL/TP distances and provenance from signal preview.
         sl_pips = stop_loss_pips
         tp_pips = take_profit_pips
+        preview_flag_set = {str(flag) for flag in (preview_flags or [])}
+        legacy_preview = FLAG_LEGACY_CONFIRM_FALLBACK in preview_flag_set
+        settings_fallback_preview = (
+            FLAG_FALLBACK_SL_FROM_SETTINGS in preview_flag_set
+            or FLAG_FALLBACK_TP_FROM_SETTINGS in preview_flag_set
+        )
+        trade_meta = {
+            "preview_flags": sorted(preview_flag_set),
+            "legacy_degraded_path": legacy_preview,
+            "sl_tp_source": (
+                "legacy_settings_fallback"
+                if legacy_preview and settings_fallback_preview
+                else "settings_fallback"
+                if settings_fallback_preview
+                else "structural"
+            ),
+            "risk_commentary": verdict.commentary,
+            "risk_flags": list(verdict.flags or []),
+        }
         
-        # Enforce SL in paper/live modes
-        if self._mode in (ExecutionMode.PAPER, ExecutionMode.LIVE) and sl_pips is None:
+        # Enforce explicit SL/TP in paper/live modes.
+        if self._mode in (ExecutionMode.PAPER, ExecutionMode.LIVE) and (sl_pips is None or tp_pips is None):
             self._log_event(
                 "EXECUTION_BLOCKED",
                 "warn",
-                f"Missing stop loss for {decision.symbol} in {self._mode.value} mode",
-                {"decision_id": str(decision.id), "symbol": decision.symbol},
+                f"Missing structural SL/TP for {decision.symbol} in {self._mode.value} mode",
+                {
+                    "decision_id": str(decision.id),
+                    "symbol": decision.symbol,
+                    "stop_loss_pips": sl_pips,
+                    "take_profit_pips": tp_pips,
+                },
             )
             return ExecutionResult(
                 executed=False,
                 mode=self._mode,
                 symbol=decision.symbol,
-                reason="missing_sl_required",
+                reason="missing_structural_sl_tp",
+            )
+        if self._mode in (ExecutionMode.PAPER, ExecutionMode.LIVE) and settings_fallback_preview and not legacy_preview:
+            self._log_event(
+                "EXECUTION_BLOCKED",
+                "warn",
+                f"Non-structural SL/TP fallback blocked for {decision.symbol}",
+                {
+                    "decision_id": str(decision.id),
+                    "symbol": decision.symbol,
+                    "preview_flags": sorted(preview_flag_set),
+                },
+            )
+            return ExecutionResult(
+                executed=False,
+                mode=self._mode,
+                symbol=decision.symbol,
+                reason="non_structural_sl_tp",
             )
 
         # Forecast gate: check symbol accuracy and direction alignment.
@@ -1306,9 +1327,6 @@ class ExecutionService:
                     reason=fc_reason,
                 )
         
-        # Default SL for position sizing if not provided
-        effective_sl_pips = sl_pips if sl_pips is not None else 20.0
-        
         # Get entry price early for leverage calculation
         current_price = entry_price or self.get_price(decision.symbol)
         
@@ -1316,7 +1334,7 @@ class ExecutionService:
         size_result = self._calculate_position_size(
             symbol=decision.symbol,
             risk_modifier=verdict.risk_modifier,
-            stop_loss_pips=effective_sl_pips,
+            stop_loss_pips=float(sl_pips) if sl_pips is not None else 0.0,
             entry_price=current_price,
         )
         
@@ -1338,33 +1356,6 @@ class ExecutionService:
                 side=side,
                 quantity=0,
                 reason=size_result.reason or "position_too_small",
-            )
-        
-        # Check if new position would exceed leverage limit
-        estimated_position_value = size_result.units * (current_price or 1.0)
-        new_total_exposure = current_exposure + estimated_position_value
-        if new_total_exposure > max_exposure:
-            self._log_event(
-                "EXECUTION_BLOCKED",
-                "warn",
-                f"Leverage limit exceeded: {new_total_exposure:.0f}/{max_exposure:.0f}",
-                {
-                    "decision_id": str(decision.id),
-                    "symbol": decision.symbol,
-                    "current_exposure": current_exposure,
-                    "new_position_value": estimated_position_value,
-                    "max_exposure": max_exposure,
-                    "equity": self._equity,
-                    "max_leverage": max_leverage,
-                },
-            )
-            return ExecutionResult(
-                executed=False,
-                mode=self._mode,
-                symbol=decision.symbol,
-                side=side,
-                quantity=size_result.units,
-                reason=f"leverage_exceeded:{new_total_exposure:.0f}/{max_exposure:.0f}",
             )
 
         # Broker state final gate before placing orders
@@ -1446,6 +1437,7 @@ class ExecutionService:
                 mode="dry_run",
                 signal_preview_id=decision.signal_preview_id,
                 decision_id=decision.id,
+                meta=trade_meta,
             )
             
             # Phase 7: Store agent data for performance tracking
@@ -1526,6 +1518,7 @@ class ExecutionService:
                 mode=self._mode.value,
                 signal_preview_id=str(decision.signal_preview_id) if decision.signal_preview_id else None,
                 decision_id=str(decision.id) if decision.id else None,
+                meta=trade_meta,
             )
             if lock_error:
                 self._log_event(
@@ -1553,6 +1546,7 @@ class ExecutionService:
                 mode=self._mode.value,
                 signal_preview_id=decision.signal_preview_id,
                 decision_id=decision.id,
+                meta=trade_meta,
             )
         
         if trade_id and self._callback:
@@ -1751,6 +1745,7 @@ class ExecutionService:
         signal_preview_id: Optional[UUID],
         decision_id: Optional[UUID],
         ib_order_id: Optional[int] = None,
+        meta: Optional[dict] = None,
     ) -> Optional[str]:
         """
         Record trade in trades_history with PENDING status.
@@ -1778,6 +1773,7 @@ class ExecutionService:
                 decision_id=str(decision_id) if decision_id else None,
                 ib_order_id=ib_order_id,
                 status=initial_status,
+                meta=meta,
             )
             logger.info(f"Trade recorded in trades_history: {trade_id} status={initial_status}")
             return trade_id
@@ -1816,6 +1812,7 @@ class ExecutionService:
         mode: str,
         signal_preview_id: Optional[UUID],
         decision_id: Optional[UUID],
+        meta: Optional[dict] = None,
     ) -> Optional[str]:
         """Record trade opening in trades_history (legacy - use _record_trade_pending)."""
         return self._record_trade_pending(
@@ -1828,6 +1825,7 @@ class ExecutionService:
             mode=mode,
             signal_preview_id=signal_preview_id,
             decision_id=decision_id,
+            meta=meta,
         )
     
     def shutdown(self) -> None:

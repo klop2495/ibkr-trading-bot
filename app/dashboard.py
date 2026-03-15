@@ -6,6 +6,7 @@ Phase 5: Real-time monitoring of parallel decisions and LLM agents.
 
 import logging
 import os
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -111,6 +112,42 @@ def get_db() -> SupabaseDB:
     if _db is None:
         _db = SupabaseDB()
     return _db
+
+
+_RISK_BLOCK_RE = re.compile(r"^risk_blocked:(.+)$")
+
+
+def _normalize_risk_block_reason(commentary: Optional[str]) -> Optional[str]:
+    if not commentary:
+        return None
+    match = _RISK_BLOCK_RE.match(str(commentary).strip())
+    if match:
+        return match.group(1)
+    lowered = str(commentary).strip().lower()
+    if lowered == "trading disabled":
+        return "trading_disabled"
+    if lowered.startswith("risk_error:"):
+        return lowered
+    return None
+
+
+def _normalize_execution_block_reason(event_type: str, message: Optional[str], data: Optional[dict]) -> Optional[str]:
+    payload = data or {}
+    reason = payload.get("reason") or payload.get("execution_block") or payload.get("block_reason")
+    if reason:
+        return str(reason)
+    lowered = (message or "").lower()
+    if event_type == "EXECUTION_ABORTED" and "trade row" in lowered:
+        return "trade_row_not_created"
+    if "forecast gate" in lowered:
+        return "forecast_gate"
+    if "broker state blocked" in lowered:
+        return "broker_blocked"
+    if "missing structural sl/tp" in lowered:
+        return "missing_structural_sl_tp"
+    if "non-structural sl/tp" in lowered:
+        return "non_structural_sl_tp"
+    return None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -768,6 +805,124 @@ async def get_agent_stats(hours: int = Query(168, ge=1, le=720)):
         avg_cache_hits=round(total_cache_hits / total, 2) if total > 0 else 0.0,
         last_hour_count=last_hour_count,
     )
+
+
+@app.get("/api/execution/diagnostics")
+async def get_execution_diagnostics(
+    hours: int = Query(72, ge=1, le=720),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Normalized diagnostics for risk blocks, execution blocks, and trade provenance."""
+    db = get_db()
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+    risk_rows = (
+        db.client.table("risk_verdicts")
+        .select("id, created_at, ts_utc, symbol, decision_id, signal_preview_id, trade_allowed, flags, commentary")
+        .eq("trade_allowed", False)
+        .gte("created_at", since)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+        .data
+        or []
+    )
+    risk_counts: Dict[str, int] = {}
+    recent_risk_blocks: List[Dict[str, Any]] = []
+    for row in risk_rows:
+        reason = _normalize_risk_block_reason(row.get("commentary"))
+        if reason:
+            risk_counts[reason] = risk_counts.get(reason, 0) + 1
+        recent_risk_blocks.append(
+            {
+                "id": row.get("id"),
+                "ts_utc": row.get("created_at") or row.get("ts_utc"),
+                "symbol": row.get("symbol"),
+                "decision_id": row.get("decision_id"),
+                "signal_preview_id": row.get("signal_preview_id"),
+                "risk_block_reason": reason,
+                "commentary": row.get("commentary"),
+                "flags": row.get("flags") or [],
+            }
+        )
+
+    event_rows = (
+        db.client.table("risk_events")
+        .select("created_at, event_type, severity, symbol, message, data")
+        .in_("event_type", ["EXECUTION_BLOCKED", "EXECUTION_SKIPPED", "EXECUTION_ABORTED"])
+        .gte("created_at", since)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+        .data
+        or []
+    )
+    execution_counts: Dict[str, int] = {}
+    recent_execution_blocks: List[Dict[str, Any]] = []
+    for row in event_rows:
+        reason = _normalize_execution_block_reason(
+            str(row.get("event_type") or ""),
+            row.get("message"),
+            row.get("data") or {},
+        )
+        if reason:
+            execution_counts[reason] = execution_counts.get(reason, 0) + 1
+        recent_execution_blocks.append(
+            {
+                "ts_utc": row.get("created_at"),
+                "event_type": row.get("event_type"),
+                "severity": row.get("severity"),
+                "symbol": row.get("symbol"),
+                "execution_block_reason": reason,
+                "message": row.get("message"),
+                "data": row.get("data") or {},
+            }
+        )
+
+    trade_rows = (
+        db.client.table("trades_history")
+        .select("id, opened_at, symbol, status, mode, decision_id, signal_preview_id, meta, error_message")
+        .gte("opened_at", since)
+        .order("opened_at", desc=True)
+        .limit(limit)
+        .execute()
+        .data
+        or []
+    )
+    provenance_counts: Dict[str, int] = {}
+    recent_trade_provenance: List[Dict[str, Any]] = []
+    for row in trade_rows:
+        meta = row.get("meta") or {}
+        source = str(meta.get("sl_tp_source") or "unknown")
+        provenance_counts[source] = provenance_counts.get(source, 0) + 1
+        recent_trade_provenance.append(
+            {
+                "id": row.get("id"),
+                "ts_utc": row.get("opened_at"),
+                "symbol": row.get("symbol"),
+                "status": row.get("status"),
+                "mode": row.get("mode"),
+                "decision_id": row.get("decision_id"),
+                "signal_preview_id": row.get("signal_preview_id"),
+                "sl_tp_source": source,
+                "legacy_degraded_path": bool(meta.get("legacy_degraded_path")),
+                "preview_flags": meta.get("preview_flags") or [],
+                "risk_commentary": meta.get("risk_commentary"),
+                "error_message": row.get("error_message"),
+            }
+        )
+
+    return {
+        "since": since,
+        "summary": {
+            "risk_block_counts": risk_counts,
+            "execution_block_counts": execution_counts,
+            "trade_provenance_counts": provenance_counts,
+        },
+        "recent_risk_blocks": recent_risk_blocks,
+        "recent_execution_blocks": recent_execution_blocks,
+        "recent_trade_provenance": recent_trade_provenance,
+    }
 
 
 @app.get("/api/comparison", response_model=List[SignalComparison])

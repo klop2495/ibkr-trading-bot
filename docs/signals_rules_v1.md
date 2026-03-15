@@ -49,6 +49,7 @@
 - Spread/Market: `SPREAD_WIDE`, `SPREAD_UNKNOWN`
 - Regime/TF: `REGIME_H4_NEUTRAL`, `REGIME_UNKNOWN`, `TF_MISMATCH_H4_H1`
 - Structure/Setup: `SETUP_NOT_FOUND`, `SETUP_INVALIDATED`, `ENTRY_NOT_TRIGGERED`, `SWING_NOT_DETECTED`
+- SL/TP provenance: `STRUCTURAL_SL_TP`, `LEGACY_CONFIRM_FALLBACK`, `FALLBACK_SL_FROM_SETTINGS`, `FALLBACK_TP_FROM_SETTINGS`
 - Config: `SIGNALS_RULES_NOT_SPECIFIED`, `SIGNALS_PARAMS_INVALID`
 
 ## SignalPreview v1 schema
@@ -68,6 +69,10 @@
 - Optional (stage-5 ready, still no prices):
   - `sl_distance_pips` (float)
   - `tp_distance_pips` (float)
+- Provenance rules:
+  - `STRUCTURAL_SL_TP`: structural engine produced explicit stop distance.
+  - `LEGACY_CONFIRM_FALLBACK`: preview came from legacy MA/RSI fallback because structural history was unavailable.
+  - `FALLBACK_SL_FROM_SETTINGS` / `FALLBACK_TP_FROM_SETTINGS`: runtime injected settings defaults because preview did not contain explicit distances.
 
 ## signals_params v1 schema
 - Managed keys:

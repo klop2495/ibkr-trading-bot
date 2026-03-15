@@ -16,6 +16,7 @@ from app.models.signal_preview import (
 )
 from app.models.decision import DecisionV1
 from app.models.parallel_decision import ParallelDecisionV1
+from app.signals.engine_v1 import FLAG_FALLBACK_SL_FROM_SETTINGS, FLAG_FALLBACK_TP_FROM_SETTINGS
 
 
 class TestMainIntegration:
@@ -127,6 +128,54 @@ class TestRunParallelShadowTick:
         assert result["errors"] == 0
         assert result["llm_calls"] == 0
         assert result["cache_hits"] == 0
+
+
+class TestSignalGenerationTick:
+    def test_applies_explicit_fallback_flags_when_distances_missing(self):
+        from app.main import run_signal_generation_tick
+
+        preview = SignalPreviewV1(
+            ts_utc=datetime.now(timezone.utc),
+            symbol="EURUSD",
+            timeframe_trigger=TimeframeTrigger.M15,
+            setup_type=SetupType.SWING_CONTINUATION,
+            direction=Direction.LONG,
+            setup_present=True,
+            entry_triggered=True,
+            confidence=Confidence.HIGH,
+            rr=2.0,
+            data_quality=DataQuality.OK,
+            spread_quality=SpreadQuality.OK,
+            flags=[],
+            sl_distance_pips=None,
+            tp_distance_pips=None,
+        )
+
+        market_data_service = MagicMock()
+        market_data_service.process.return_value = (True, [MagicMock(symbol="EURUSD")])
+        market_data_service.is_ib_untrusted.return_value = False
+        market_data_service.get_ohlc.return_value = None
+
+        signal_engine = MagicMock()
+        signal_engine.compute_previews.return_value = [preview]
+
+        signal_previews_repo = MagicMock()
+        settings = MagicMock(default_sl_pips=18.0, default_tp_pips=36.0)
+
+        result = run_signal_generation_tick(
+            market_data_service=market_data_service,
+            signal_engine=signal_engine,
+            signal_previews_repo=signal_previews_repo,
+            risk_events_repo=None,
+            settings=settings,
+        )
+
+        assert result["generated"] == 1
+        assert preview.sl_distance_pips == 18.0
+        assert preview.tp_distance_pips == 36.0
+        assert FLAG_FALLBACK_SL_FROM_SETTINGS in preview.flags
+        assert FLAG_FALLBACK_TP_FROM_SETTINGS in preview.flags
+        signal_previews_repo.insert_preview.assert_called_once_with(preview)
 
 
 class TestParallelRunnerIntegration:

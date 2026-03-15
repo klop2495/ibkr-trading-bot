@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Any, Optional
 
@@ -664,6 +664,45 @@ class TradesHistoryRepo(BaseRepo):
         active = self.get_active_trades(symbol=symbol)
         return len(active)
 
+    def count_trades_opened_since(self, since: datetime, symbol: Optional[str] = None) -> int:
+        """Count trades opened since a UTC timestamp, optionally filtered by symbol."""
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        query = (
+            self.db.client.table(self.table)
+            .select("id", count="exact")
+            .gte("opened_at", since.isoformat())
+        )
+        if symbol:
+            query = query.eq("symbol", symbol)
+        res = query.execute()
+        if hasattr(res, "count") and res.count is not None:
+            return int(res.count)
+        rows = getattr(res, "data", None) or []
+        return len(rows)
+
+    def sum_closed_pnl_since(self, since: datetime) -> float:
+        """Sum realized PnL for trades closed since a UTC timestamp."""
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        res = (
+            self.db.client.table(self.table)
+            .select("pnl")
+            .eq("status", "CLOSED")
+            .gte("closed_at", since.isoformat())
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+        total = 0.0
+        for row in rows:
+            try:
+                pnl = row.get("pnl")
+                if pnl is not None:
+                    total += float(pnl)
+            except Exception:
+                continue
+        return total
+
     def open_trade(
         self,
         symbol: str,
@@ -1020,6 +1059,7 @@ class TradesHistoryRepo(BaseRepo):
         mode: str = "paper",
         signal_preview_id: Optional[str] = None,
         decision_id: Optional[str] = None,
+        meta: Optional[dict] = None,
     ) -> tuple[Optional[str], Optional[str]]:
         """
         Atomically try to acquire a "lock" on a symbol by creating a PENDING trade.
@@ -1060,7 +1100,20 @@ class TradesHistoryRepo(BaseRepo):
             "opened_at": datetime.utcnow().isoformat(),
             "signal_preview_id": signal_preview_id,
             "decision_id": decision_id,
+            "completion_status": infer_completion_status("PENDING"),
+            "close_source": None,
+            "data_integrity_flags": [],
+            "last_status_at": datetime.utcnow().isoformat(),
+            "status_trace": append_status_trace(
+                [],
+                from_status=None,
+                to_status="PENDING",
+                reason="create_trade",
+                actor="system",
+            ),
         }
+        if meta is not None:
+            payload["meta"] = meta
         
         try:
             self.db.client.table(self.table).insert(payload).execute()

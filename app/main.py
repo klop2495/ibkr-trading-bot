@@ -36,7 +36,11 @@ from app.agents.parallel_runner import ParallelDecisionRunner, create_parallel_r
 # Phase 6: Signal generation from IB Gateway market data
 from app.market_data.service import MarketDataService
 from app.market_data.seed_fetcher import SeedFetcher
-from app.signals.engine_v1 import SignalEngineV1
+from app.signals.engine_v1 import (
+    FLAG_FALLBACK_SL_FROM_SETTINGS,
+    FLAG_FALLBACK_TP_FROM_SETTINGS,
+    SignalEngineV1,
+)
 from app.storage.repositories import SnapshotsRepo
 from app.models.bot_settings import DEFAULT_SYMBOLS
 from app.broker.state_service import BrokerStateService
@@ -840,7 +844,7 @@ def _run_execution_tick_hybrid(
             previews_res = (
                 client.table("signal_previews")
                 .select(
-                    "id, sl_distance_pips, tp_distance_pips, direction, entry_triggered, setup_present, setup_type, data_quality, spread_quality"
+                    "id, sl_distance_pips, tp_distance_pips, direction, entry_triggered, setup_present, setup_type, data_quality, spread_quality, flags"
                 )
                 .in_("id", preview_ids)
                 .execute()
@@ -867,7 +871,7 @@ def _run_execution_tick_hybrid(
                 if dec_id:
                     already_executed.add(dec_id)
 
-        risk_engine = RiskEngineV1()
+        risk_engine = RiskEngineV1(trades_history_repo=trades_history_repo)
         for row in candidates:
             decision_id = row.get("decision_id")
             if not decision_id:
@@ -921,6 +925,7 @@ def _run_execution_tick_hybrid(
                     take_profit_pips=float(tp_pips) if tp_pips is not None else None,
                     direction=direction,
                     final_signal=row.get("signal"),
+                    preview_flags=preview.get("flags") if preview else None,
                 )
 
                 if result.executed:
@@ -1041,7 +1046,7 @@ def run_execution_tick(
         if signal_preview_ids:
             previews_res = (
                 client.table("signal_previews")
-                .select("id, sl_distance_pips, tp_distance_pips, direction")
+                .select("id, sl_distance_pips, tp_distance_pips, direction, flags")
                 .in_("id", signal_preview_ids)
                 .execute()
             )
@@ -1125,6 +1130,7 @@ def run_execution_tick(
                     stop_loss_pips=float(sl_pips) if sl_pips is not None else None,
                     take_profit_pips=float(tp_pips) if tp_pips is not None else None,
                     direction=direction,
+                    preview_flags=preview_data.get("flags") if signal_preview_id else None,
                 )
                 
                 if result.executed:
@@ -1453,8 +1459,20 @@ def run_signal_generation_tick(
                 "mode": "no_data",
             }
         
-        # Generate signal previews
-        previews = signal_engine.compute_previews(snapshots, warmup_ready=warmup_ready)
+        # Generate signal previews with cached OHLC where available.
+        ohlc_by_symbol: Dict[str, Dict[str, dict]] = {}
+        symbols = sorted({snap.symbol.upper() for snap in snapshots if getattr(snap, "symbol", None)})
+        for sym in symbols:
+            ohlc_by_symbol[sym] = {
+                "M15": market_data_service.get_ohlc(sym, "M15", n_bars=100),
+                "H1": market_data_service.get_ohlc(sym, "H1", n_bars=100),
+                "H4": market_data_service.get_ohlc(sym, "H4", n_bars=100),
+            }
+        previews = signal_engine.compute_previews(
+            snapshots,
+            warmup_ready=warmup_ready,
+            ohlc_by_symbol=ohlc_by_symbol,
+        )
         
         # Apply SL/TP from settings
         default_sl = getattr(settings, "default_sl_pips", 20.0)
@@ -1462,9 +1480,15 @@ def run_signal_generation_tick(
         
         for preview in previews:
             try:
-                # Set SL/TP distances
-                preview.sl_distance_pips = default_sl
-                preview.tp_distance_pips = default_tp
+                # Set fallback SL/TP distances only if structural engine did not provide them.
+                if preview.sl_distance_pips is None:
+                    preview.sl_distance_pips = default_sl
+                    if FLAG_FALLBACK_SL_FROM_SETTINGS not in preview.flags:
+                        preview.flags.append(FLAG_FALLBACK_SL_FROM_SETTINGS)
+                if preview.tp_distance_pips is None and preview.entry_triggered:
+                    preview.tp_distance_pips = default_tp
+                    if FLAG_FALLBACK_TP_FROM_SETTINGS not in preview.flags:
+                        preview.flags.append(FLAG_FALLBACK_TP_FROM_SETTINGS)
                 
                 # Insert into DB
                 signal_previews_repo.insert_preview(preview)
@@ -1788,6 +1812,8 @@ def main():
         bot_settings_repo=bot_settings_repo,
         owner_user_id=owner_uuid_str,
     )
+    risk_engine.set_trades_history_repo(trades_history_repo)
+    risk_engine.set_broker_state_service(broker_state_service)
     execution_service = ExecutionService(
         risk_events_repo=risk_events_repo,
         trades_history_repo=trades_history_repo,

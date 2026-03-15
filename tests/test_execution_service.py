@@ -17,6 +17,11 @@ from app.broker.oms import IBKROrderState, OrderSide, OrderStatus, OrderType
 from app.models.decision import DecisionV1
 from app.models.risk_verdict import RiskVerdictV1
 from app.models.bot_settings import BotSettings
+from app.signals.engine_v1 import (
+    FLAG_FALLBACK_SL_FROM_SETTINGS,
+    FLAG_FALLBACK_TP_FROM_SETTINGS,
+    FLAG_LEGACY_CONFIRM_FALLBACK,
+)
 
 
 @pytest.fixture
@@ -178,6 +183,25 @@ class TestExecutionService:
         assert result.side in (OrderSide.BUY, None)
 
     @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "EXECUTION_DRY_RUN": "1"})
+    def test_execute_dry_run_records_trade_meta_provenance(self, execution_service, mock_decision, mock_verdict, mock_settings):
+        execution_service.update_price("EURUSD", 1.1)
+        with patch.object(execution_service, "_record_trade_open", return_value="trade-1") as record_trade, \
+             patch.object(execution_service, "_forecast_gate", None):
+            result = execution_service.execute(
+                mock_decision,
+                mock_verdict,
+                mock_settings,
+                stop_loss_pips=18.0,
+                take_profit_pips=36.0,
+                preview_flags=[FLAG_LEGACY_CONFIRM_FALLBACK, FLAG_FALLBACK_SL_FROM_SETTINGS, FLAG_FALLBACK_TP_FROM_SETTINGS],
+            )
+        assert result.mode == ExecutionMode.DRY_RUN
+        kwargs = record_trade.call_args.kwargs
+        assert kwargs["meta"]["legacy_degraded_path"] is True
+        assert kwargs["meta"]["sl_tp_source"] == "legacy_settings_fallback"
+        assert FLAG_LEGACY_CONFIRM_FALLBACK in kwargs["meta"]["preview_flags"]
+
+    @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "EXECUTION_DRY_RUN": "1"})
     def test_execute_dry_run_with_short(self, execution_service, mock_decision, mock_verdict, mock_settings):
         mock_decision.flags = ["SHORT"]
         execution_service.update_price("EURUSD", 1.1)
@@ -197,6 +221,20 @@ class TestExecutionService:
         assert result.mode == ExecutionMode.DRY_RUN
         assert execution_service._position_sizer is not None
         assert execution_service._position_sizer.config.max_risk_per_trade_pct == 0.5
+
+    @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "EXECUTION_DRY_RUN": "1"})
+    def test_position_sizer_uses_usd_account_currency(self, execution_service, mock_decision, mock_verdict):
+        settings = BotSettings(
+            owner_user_id=uuid4(),
+            trading_enabled=True,
+            mode="paper",
+            account_currency="USD",
+            risk_per_trade=0.5,
+        )
+        result = execution_service.execute(mock_decision, mock_verdict, settings)
+        assert result.mode == ExecutionMode.DRY_RUN
+        assert execution_service._position_sizer is not None
+        assert execution_service._position_sizer.config.account_currency == "USD"
 
     def test_calculate_position_size(self, execution_service):
         result = execution_service._calculate_position_size(
@@ -223,7 +261,7 @@ class TestExecutionService:
         assert result.reason == "duplicate_decision"
 
     @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "EXECUTION_DRY_RUN": "1"})
-    def test_block_active_symbol_trade(self, execution_service, mock_decision, mock_verdict, mock_settings):
+    def test_execution_does_not_recheck_symbol_trade_db_policy(self, execution_service, mock_decision, mock_verdict, mock_settings):
         repo = MagicMock()
         repo.exists_by_decision_id.return_value = False
         repo.count_active_trades.return_value = 0
@@ -231,8 +269,7 @@ class TestExecutionService:
         execution_service.trades_history_repo = repo
         execution_service.update_price("EURUSD", 1.1)
         result = execution_service.execute(mock_decision, mock_verdict, mock_settings)
-        assert result.executed is False
-        assert "active_trade_exists" in (result.reason or "")
+        assert result.mode == ExecutionMode.DRY_RUN
 
     @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "EXECUTION_DRY_RUN": "1"})
     def test_fail_safe_state_error(self, execution_service, mock_decision, mock_verdict, mock_settings):
@@ -260,7 +297,60 @@ class TestExecutionService:
         with patch.object(execution_service, "_init_components", return_value=True):
             result = execution_service.execute(mock_decision, mock_verdict, settings, stop_loss_pips=None)
         assert result.executed is False
-        assert result.reason == "missing_sl_required"
+        assert result.reason == "missing_structural_sl_tp"
+
+    @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "IBKR_ENABLED": "1"})
+    def test_block_non_structural_settings_fallback_in_paper(self, execution_service, mock_decision, mock_verdict):
+        repo = MagicMock()
+        repo.exists_by_decision_id.return_value = False
+        execution_service.trades_history_repo = repo
+        execution_service.update_price("EURUSD", 1.1)
+        settings = BotSettings(
+            owner_user_id=uuid4(),
+            trading_enabled=True,
+            mode="paper",
+            risk_per_trade=0.5,
+        )
+        with patch.object(execution_service, "_init_components", return_value=True):
+            result = execution_service.execute(
+                mock_decision,
+                mock_verdict,
+                settings,
+                stop_loss_pips=18.0,
+                take_profit_pips=36.0,
+                preview_flags=[FLAG_FALLBACK_SL_FROM_SETTINGS, FLAG_FALLBACK_TP_FROM_SETTINGS],
+            )
+        assert result.executed is False
+        assert result.reason == "non_structural_sl_tp"
+
+    @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "IBKR_ENABLED": "1"})
+    def test_allow_legacy_degraded_preview_fallback_in_paper(self, execution_service, mock_decision, mock_verdict):
+        execution_service.trades_history_repo = None
+        execution_service.update_price("EURUSD", 1.1)
+        settings = BotSettings(
+            owner_user_id=uuid4(),
+            trading_enabled=True,
+            mode="paper",
+            risk_per_trade=0.5,
+        )
+        with patch.object(execution_service, "_init_components", return_value=True), \
+             patch.object(execution_service, "_broker_state_service", None), \
+             patch.object(execution_service, "_record_trade_pending", return_value="trade-1"), \
+             patch.object(execution_service, "_oms", MagicMock()) as _:
+            execution_service._oms.place_order_with_funds_check.return_value = ("ib-1", "Submitted")
+            result = execution_service.execute(
+                mock_decision,
+                mock_verdict,
+                settings,
+                stop_loss_pips=18.0,
+                take_profit_pips=36.0,
+                preview_flags=[
+                    FLAG_LEGACY_CONFIRM_FALLBACK,
+                    FLAG_FALLBACK_SL_FROM_SETTINGS,
+                    FLAG_FALLBACK_TP_FROM_SETTINGS,
+                ],
+            )
+        assert result.reason not in ("non_structural_sl_tp", "missing_structural_sl_tp")
 
     @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "IBKR_ENABLED": "1"})
     def test_abort_if_trade_row_not_created_before_order_submit(
@@ -271,6 +361,7 @@ class TestExecutionService:
         mock_settings,
     ):
         execution_service._oms = MagicMock()
+        execution_service._forecast_gate = None
         execution_service.trades_history_repo = None
         execution_service.update_price("EURUSD", 1.1)
         execution_service.update_equity(1_000_000.0)
@@ -287,6 +378,21 @@ class TestExecutionService:
         assert result.executed is False
         assert result.reason == "trade_row_not_created"
         execution_service._oms.place_order_with_funds_check.assert_not_called()
+
+    @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "IBKR_ENABLED": "1", "FX_FUNDS_GUARD_ENABLED": "1"})
+    def test_init_components_disables_spot_funds_guard_for_cfd_path(self, execution_service, mock_settings):
+        mock_manager = MagicMock()
+        mock_manager.ensure_connected.return_value = True
+        mock_manager.ib = MagicMock()
+
+        with patch("app.execution.service.IBKRConnectionManager", return_value=mock_manager), \
+             patch("app.execution.service.BrokerStateService", return_value=MagicMock()), \
+             patch("app.execution.service.IBKROMS") as mock_oms_cls:
+            execution_service._mode = ExecutionMode.PAPER
+            ok = execution_service._init_components(mock_settings)
+
+        assert ok is True
+        assert mock_oms_cls.call_args.kwargs["enable_funds_guard"] is False
 
 
 class TestExecutionResult:
