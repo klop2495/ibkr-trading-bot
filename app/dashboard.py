@@ -823,22 +823,21 @@ async def get_agent_stats(hours: int = Query(168, ge=1, le=720)):
 async def get_execution_diagnostics(
     hours: int = Query(72, ge=1, le=720),
     limit: int = Query(100, ge=1, le=500),
+    symbol: Optional[str] = None,
 ):
     """Normalized diagnostics for risk blocks, execution blocks, and trade provenance."""
     db = get_db()
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
-    risk_rows = (
+    risk_query = (
         db.client.table("risk_verdicts")
         .select("id, created_at, ts_utc, symbol, decision_id, signal_preview_id, trade_allowed, flags, commentary")
         .eq("trade_allowed", False)
         .gte("created_at", since)
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-        .data
-        or []
     )
+    if symbol:
+        risk_query = risk_query.eq("symbol", symbol.upper())
+    risk_rows = risk_query.order("created_at", desc=True).limit(limit).execute().data or []
     risk_counts: Dict[str, int] = {}
     recent_risk_blocks: List[Dict[str, Any]] = []
     for row in risk_rows:
@@ -858,17 +857,15 @@ async def get_execution_diagnostics(
             }
         )
 
-    event_rows = (
+    event_query = (
         db.client.table("risk_events")
         .select("created_at, event_type, severity, symbol, message, data")
         .in_("event_type", ["EXECUTION_BLOCKED", "EXECUTION_SKIPPED", "EXECUTION_ABORTED"])
         .gte("created_at", since)
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-        .data
-        or []
     )
+    if symbol:
+        event_query = event_query.eq("symbol", symbol.upper())
+    event_rows = event_query.order("created_at", desc=True).limit(limit).execute().data or []
     execution_counts: Dict[str, int] = {}
     recent_execution_blocks: List[Dict[str, Any]] = []
     for row in event_rows:
@@ -891,16 +888,14 @@ async def get_execution_diagnostics(
             }
         )
 
-    trade_rows = (
+    trade_query = (
         db.client.table("trades_history")
         .select("id, opened_at, symbol, status, mode, decision_id, signal_preview_id, meta, error_message")
         .gte("opened_at", since)
-        .order("opened_at", desc=True)
-        .limit(limit)
-        .execute()
-        .data
-        or []
     )
+    if symbol:
+        trade_query = trade_query.eq("symbol", symbol.upper())
+    trade_rows = trade_query.order("opened_at", desc=True).limit(limit).execute().data or []
     provenance_counts: Dict[str, int] = {}
     recent_trade_provenance: List[Dict[str, Any]] = []
     for row in trade_rows:
