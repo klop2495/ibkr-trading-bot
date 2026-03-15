@@ -13,7 +13,7 @@ from app.execution.service import (
     ExecutionResult,
     ExecutionServiceCallback,
 )
-from app.broker.oms import OrderSide, OrderStatus, OrderType
+from app.broker.oms import IBKROrderState, OrderSide, OrderStatus, OrderType
 from app.models.decision import DecisionV1
 from app.models.risk_verdict import RiskVerdictV1
 from app.models.bot_settings import BotSettings
@@ -262,6 +262,32 @@ class TestExecutionService:
         assert result.executed is False
         assert result.reason == "missing_sl_required"
 
+    @patch.dict("os.environ", {"EXECUTION_ENABLED": "1", "IBKR_ENABLED": "1"})
+    def test_abort_if_trade_row_not_created_before_order_submit(
+        self,
+        execution_service,
+        mock_decision,
+        mock_verdict,
+        mock_settings,
+    ):
+        execution_service._oms = MagicMock()
+        execution_service.trades_history_repo = None
+        execution_service.update_price("EURUSD", 1.1)
+        execution_service.update_equity(1_000_000.0)
+
+        with patch.object(execution_service, "_init_components", return_value=True):
+            result = execution_service.execute(
+                mock_decision,
+                mock_verdict,
+                mock_settings,
+                stop_loss_pips=20.0,
+                take_profit_pips=20.0,
+            )
+
+        assert result.executed is False
+        assert result.reason == "trade_row_not_created"
+        execution_service._oms.place_order_with_funds_check.assert_not_called()
+
 
 class TestExecutionResult:
     """Tests for ExecutionResult dataclass."""
@@ -305,3 +331,23 @@ class TestExecutionServiceCallback:
         mock_repo = Mock()
         callback = ExecutionServiceCallback(risk_events_repo=mock_repo)
         assert callback.risk_events_repo == mock_repo
+
+    def test_callback_preserves_cancel_reason(self):
+        mock_repo = Mock()
+        trade = {"id": "trade-1", "status": "SUBMITTED", "ib_order_id": 123}
+        mock_repo.get_trade_by_ib_order_id.return_value = trade
+        callback = ExecutionServiceCallback(risk_events_repo=None, trades_history_repo=mock_repo)
+        state = IBKROrderState(
+            request_id=uuid4(),
+            ib_order_id=123,
+            status=OrderStatus.CANCELLED,
+            error_message="broker_cancelled",
+        )
+
+        callback.on_order_status(state)
+
+        mock_repo.update_status.assert_called_with(
+            trade_id="trade-1",
+            status="CANCELLED",
+            error_message="broker_cancelled",
+        )

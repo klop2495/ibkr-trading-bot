@@ -303,8 +303,8 @@ class ExecutionServiceCallback(IBKROrderCallback):
                         if state.status == OrderStatus.FILLED and state.avg_fill_price:
                             update_kwargs["entry_price"] = state.avg_fill_price
                         
-                        # Add error message for rejected/error
-                        if state.status in (OrderStatus.REJECTED, OrderStatus.ERROR):
+                        # Preserve broker/OMS reason for terminal failures.
+                        if state.status in (OrderStatus.REJECTED, OrderStatus.ERROR, OrderStatus.CANCELLED):
                             update_kwargs["error_message"] = state.error_message
                         
                         self.trades_history_repo.update_status(**update_kwargs)
@@ -1557,6 +1557,29 @@ class ExecutionService:
         
         if trade_id and self._callback:
             self._callback.register_request_trade(request.id, trade_id)
+
+        # A risk-approved execution must not reach OMS without a persisted trade row.
+        if not trade_id:
+            self._log_event(
+                "EXECUTION_ABORTED",
+                "error",
+                f"Failed to persist trade row before order placement for {decision.symbol}",
+                {
+                    "decision_id": str(decision.id),
+                    "symbol": decision.symbol,
+                    "side": side.value,
+                    "quantity": size_result.units,
+                    "mode": self._mode.value,
+                },
+            )
+            return ExecutionResult(
+                executed=False,
+                mode=self._mode,
+                symbol=decision.symbol,
+                side=side,
+                quantity=size_result.units,
+                reason="trade_row_not_created",
+            )
         
         # Phase 7: Store agent data for performance tracking
         if trade_id and agent_votes:
