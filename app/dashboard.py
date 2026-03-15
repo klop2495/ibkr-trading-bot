@@ -137,6 +137,18 @@ def _normalize_execution_block_reason(event_type: str, message: Optional[str], d
     if reason:
         return str(reason)
     lowered = (message or "").lower()
+    if "duplicate decision" in lowered:
+        return "duplicate_decision"
+    if "pending orders" in lowered:
+        return "broker_has_open_orders"
+    if "already has position" in lowered:
+        return "broker_has_position"
+    if "symbol lock failed" in lowered or "symbol_locked:" in lowered:
+        return "symbol_locked"
+    if "position size too small" in lowered:
+        return "position_too_small"
+    if "hours_filter:" in lowered:
+        return "hours_filter"
     if event_type == "EXECUTION_ABORTED" and "trade row" in lowered:
         return "trade_row_not_created"
     if "forecast gate" in lowered:
