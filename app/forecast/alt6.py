@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional, Sequence, Tuple
 
@@ -23,6 +24,20 @@ DEFAULT_MAX_BREAKOUT_DISTANCE_PIPS = float(os.getenv("ALT6_MAX_BREAKOUT_DISTANCE
 DEFAULT_BREAKOUT_NET_PIPS = float(os.getenv("ALT6_BREAKOUT_NET_PIPS", "0.4"))
 DEFAULT_BREAKOUT_BODY_PIPS = float(os.getenv("ALT6_BREAKOUT_BODY_PIPS", "1.0"))
 DEFAULT_BREAKOUT_MONOTONIC_MODE = str(os.getenv("ALT6_BREAKOUT_MONOTONIC_MODE", "relaxed")).strip().lower() or "relaxed"
+DEFAULT_MIN_ADX = float(os.getenv("ALT6_MIN_ADX", "0"))
+DEFAULT_MTF_VETO = str(os.getenv("ALT6_MTF_VETO", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class Alt6Decision:
+    direction: Optional[str]
+    trade_eligible: bool
+    reject_reason: Optional[str]
+    stage: str
+    candidate: bool
+    structure_passed: bool
+    timing_passed: bool
+    quality_passed: bool
 
 
 def pip_size(symbol: str) -> float:
@@ -44,6 +59,12 @@ def _append_reject_flag(forecast: ForecastResult, reason: Optional[str]) -> None
     if not reason:
         return
     flag = f"ALT6_REJECT:{reason}"
+    if flag not in forecast.flags:
+        forecast.flags.append(flag)
+
+
+def _append_stage_flag(forecast: ForecastResult, stage: str) -> None:
+    flag = f"ALT6_STAGE:{stage}"
     if flag not in forecast.flags:
         forecast.flags.append(flag)
 
@@ -157,37 +178,130 @@ def extension_veto(
     return extension < -max_extension_pips
 
 
-def compute_alt6_signal(
-    forecast: ForecastResult, s5: Sequence[Tuple[datetime, float]]
-) -> Tuple[Optional[str], Optional[bool], Optional[str]]:
+def _candidate_stage(forecast: ForecastResult) -> Tuple[Optional[str], Optional[str]]:
     direction = _h30_direction(forecast)
     if direction not in {"up", "down"}:
-        return None, False, "NO_H30_DIRECTION"
+        return None, "NO_H30_DIRECTION"
+    return direction, None
+
+
+def _structure_stage(
+    forecast: ForecastResult,
+    s5: Sequence[Tuple[datetime, float]],
+) -> Optional[str]:
     width_ok = forecast.bb_width is not None and forecast.bb_width <= 0.008
     if not (bool(forecast.bb_squeeze) or width_ok):
-        return None, False, "NO_SQUEEZE_CONTEXT"
+        return "NO_SQUEEZE_CONTEXT"
     if not squeeze_breakout_confirm_strict_s5_v2(forecast, s5):
-        return None, False, "BREAKOUT_NOT_CONFIRMED"
+        return "BREAKOUT_NOT_CONFIRMED"
+    return None
+
+
+def _timing_stage(
+    forecast: ForecastResult,
+    s5: Sequence[Tuple[datetime, float]],
+) -> Optional[str]:
     breakout_age_sec, breakout_distance_pips = _breakout_metrics(forecast, s5)
     if breakout_age_sec is None or breakout_distance_pips is None:
-        return None, False, "BREAKOUT_CONTEXT_MISSING"
+        return "BREAKOUT_CONTEXT_MISSING"
     if breakout_age_sec > DEFAULT_MAX_BREAKOUT_AGE_SEC:
-        return None, False, "BREAKOUT_TOO_OLD"
+        return "BREAKOUT_TOO_OLD"
     if breakout_distance_pips > DEFAULT_MAX_BREAKOUT_DISTANCE_PIPS:
-        return None, False, "TOO_FAR_FROM_BREAKOUT"
+        return "TOO_FAR_FROM_BREAKOUT"
     if extension_veto(forecast, s5):
-        return None, False, "EXTENSION_VETO"
-    return direction, True, None
+        return "EXTENSION_VETO"
+    return None
+
+
+def _quality_stage(forecast: ForecastResult) -> Optional[str]:
+    if forecast.adx_value is not None and forecast.adx_value < DEFAULT_MIN_ADX:
+        return "LOW_ADX"
+    if DEFAULT_MTF_VETO and bool(forecast.mtf_conflict):
+        return "MTF_CONFLICT"
+    return None
+
+
+def compute_alt6_signal(
+    forecast: ForecastResult, s5: Sequence[Tuple[datetime, float]]
+) -> Alt6Decision:
+    direction, reason = _candidate_stage(forecast)
+    if reason:
+        return Alt6Decision(
+            direction=None,
+            trade_eligible=False,
+            reject_reason=reason,
+            stage="candidate",
+            candidate=False,
+            structure_passed=False,
+            timing_passed=False,
+            quality_passed=False,
+        )
+    reason = _structure_stage(forecast, s5)
+    if reason:
+        return Alt6Decision(
+            direction=None,
+            trade_eligible=False,
+            reject_reason=reason,
+            stage="structure",
+            candidate=True,
+            structure_passed=False,
+            timing_passed=False,
+            quality_passed=False,
+        )
+    reason = _timing_stage(forecast, s5)
+    if reason:
+        return Alt6Decision(
+            direction=None,
+            trade_eligible=False,
+            reject_reason=reason,
+            stage="timing",
+            candidate=True,
+            structure_passed=True,
+            timing_passed=False,
+            quality_passed=False,
+        )
+    reason = _quality_stage(forecast)
+    if reason:
+        return Alt6Decision(
+            direction=None,
+            trade_eligible=False,
+            reject_reason=reason,
+            stage="quality",
+            candidate=True,
+            structure_passed=True,
+            timing_passed=True,
+            quality_passed=False,
+        )
+    return Alt6Decision(
+        direction=direction,
+        trade_eligible=True,
+        reject_reason=None,
+        stage="executable",
+        candidate=True,
+        structure_passed=True,
+        timing_passed=True,
+        quality_passed=True,
+    )
 
 
 def enrich_forecasts_with_alt6(db_client: any, forecasts: Iterable[ForecastResult]) -> None:
     for forecast in forecasts:
         try:
             s5 = load_s5_window(db_client, symbol=forecast.symbol, ts_utc=forecast.ts_utc)
-            direction, eligible, reason = compute_alt6_signal(forecast, s5)
-            forecast.h30_alt6_direction = direction
-            forecast.h30_alt6_trade_eligible = eligible
-            _append_reject_flag(forecast, reason)
+            decision = compute_alt6_signal(forecast, s5)
+            forecast.h30_alt6_direction = decision.direction
+            forecast.h30_alt6_trade_eligible = decision.trade_eligible
+            if decision.candidate:
+                _append_stage_flag(forecast, "CANDIDATE")
+            if decision.structure_passed:
+                _append_stage_flag(forecast, "STRUCTURE")
+            if decision.timing_passed:
+                _append_stage_flag(forecast, "TIMING")
+            if decision.quality_passed:
+                _append_stage_flag(forecast, "QUALITY")
+            if decision.direction and decision.trade_eligible:
+                _append_stage_flag(forecast, "EXECUTABLE")
+            _append_reject_flag(forecast, decision.reject_reason)
         except Exception as exc:
             logger.warning("alt6_enrich_failed symbol=%s error=%s", forecast.symbol, exc)
             forecast.h30_alt6_direction = None

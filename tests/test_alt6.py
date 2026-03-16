@@ -36,11 +36,16 @@ def test_alt6_returns_direction_for_valid_up_setup(monkeypatch):
     monkeypatch.setattr(alt6, "_breakout_metrics", lambda forecast, s5: (5.0, 0.4))
     monkeypatch.setattr(alt6, "extension_veto", lambda forecast, s5: False)
 
-    direction, eligible, reason = compute_alt6_signal(forecast, s5)
+    decision = compute_alt6_signal(forecast, s5)
 
-    assert direction == "up"
-    assert eligible is True
-    assert reason is None
+    assert decision.direction == "up"
+    assert decision.trade_eligible is True
+    assert decision.reject_reason is None
+    assert decision.stage == "executable"
+    assert decision.candidate is True
+    assert decision.structure_passed is True
+    assert decision.timing_passed is True
+    assert decision.quality_passed is True
 
 
 def test_alt6_uses_horizon_model_not_missing_flat_field(monkeypatch):
@@ -50,11 +55,12 @@ def test_alt6_uses_horizon_model_not_missing_flat_field(monkeypatch):
     monkeypatch.setattr(alt6, "_breakout_metrics", lambda forecast, s5: (5.0, 0.4))
     monkeypatch.setattr(alt6, "extension_veto", lambda forecast, s5: False)
 
-    direction, eligible, reason = compute_alt6_signal(forecast, s5)
+    decision = compute_alt6_signal(forecast, s5)
 
-    assert direction == "down"
-    assert eligible is True
-    assert reason is None
+    assert decision.direction == "down"
+    assert decision.trade_eligible is True
+    assert decision.reject_reason is None
+    assert decision.stage == "executable"
 
 
 def test_alt6_rejects_stale_breakout(monkeypatch):
@@ -65,11 +71,15 @@ def test_alt6_rejects_stale_breakout(monkeypatch):
     monkeypatch.setattr(alt6, "_breakout_metrics", lambda forecast, s5: (30.0, 0.3))
     monkeypatch.setattr(alt6, "extension_veto", lambda forecast, s5: False)
 
-    direction, eligible, reason = compute_alt6_signal(forecast, s5)
+    decision = compute_alt6_signal(forecast, s5)
 
-    assert direction is None
-    assert eligible is False
-    assert reason == "BREAKOUT_TOO_OLD"
+    assert decision.direction is None
+    assert decision.trade_eligible is False
+    assert decision.reject_reason == "BREAKOUT_TOO_OLD"
+    assert decision.stage == "timing"
+    assert decision.candidate is True
+    assert decision.structure_passed is True
+    assert decision.timing_passed is False
 
 
 def test_alt6_rejects_late_entry_far_from_breakout(monkeypatch):
@@ -81,8 +91,30 @@ def test_alt6_rejects_late_entry_far_from_breakout(monkeypatch):
     monkeypatch.setattr(alt6, "_breakout_metrics", lambda forecast, s5: (10.0, 1.2))
     monkeypatch.setattr(alt6, "extension_veto", lambda forecast, s5: False)
 
-    direction, eligible, reason = compute_alt6_signal(forecast, s5)
+    decision = compute_alt6_signal(forecast, s5)
 
-    assert direction is None
-    assert eligible is False
-    assert reason == "TOO_FAR_FROM_BREAKOUT"
+    assert decision.direction is None
+    assert decision.trade_eligible is False
+    assert decision.reject_reason == "TOO_FAR_FROM_BREAKOUT"
+    assert decision.stage == "timing"
+
+
+def test_alt6_quality_stage_can_block_on_low_adx(monkeypatch):
+    forecast = _forecast("EURUSD", "up")
+    forecast.adx_value = 9.0
+    s5 = [(datetime(2026, 3, 16, 10, 2, 0, tzinfo=timezone.utc), 1.1000)] * 10
+    monkeypatch.setattr(alt6, "DEFAULT_MIN_ADX", 12.0)
+    monkeypatch.setattr(alt6, "squeeze_breakout_confirm_strict_s5_v2", lambda forecast, s5: True)
+    monkeypatch.setattr(alt6, "_breakout_metrics", lambda forecast, s5: (5.0, 0.4))
+    monkeypatch.setattr(alt6, "extension_veto", lambda forecast, s5: False)
+
+    decision = compute_alt6_signal(forecast, s5)
+
+    assert decision.direction is None
+    assert decision.trade_eligible is False
+    assert decision.reject_reason == "LOW_ADX"
+    assert decision.stage == "quality"
+    assert decision.candidate is True
+    assert decision.structure_passed is True
+    assert decision.timing_passed is True
+    assert decision.quality_passed is False
