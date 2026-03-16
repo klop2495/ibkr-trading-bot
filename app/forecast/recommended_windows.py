@@ -97,5 +97,5 @@ def get_recommended_window_labels() -> List[str]:
 
 
 def is_alt6_recommended_timestamp(ts: str) -> bool:
-    in_window, _, _, _ = classify_utc_timestamp(ts)
-    return in_window
+    _ = ts
+    return True

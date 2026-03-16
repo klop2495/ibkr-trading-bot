@@ -2334,7 +2334,8 @@ def main():
 
                             # Alt3/Alt4/Alt6 Telegram notifications — only for RECOMMENDED signals.
                             # Recommended policy:
-                            # - timestamp is inside FORECAST_RECOMMENDED_WINDOWS_UTC
+                            # - Alt3/Alt4: timestamp is inside FORECAST_RECOMMENDED_WINDOWS_UTC
+                            # - Alt6: no UTC-window restriction
                             # - Alt3: h30_alt3v2_trade_eligible == True
                             # - Alt4: h30_alt4_trade_eligible == True
                             # - Alt6: h30_alt6_trade_eligible == True
@@ -2368,7 +2369,7 @@ def main():
                                         ]:
                                             alt_dir = getattr(fc, attr, None)
                                             if alt_dir:
-                                                _send_allowed = _in_window
+                                                _send_allowed = True if strat == "alt6" else _in_window
                                                 if not _send_allowed:
                                                     continue
                                                 if strat == "alt3" and not bool(getattr(fc, "h30_alt3v2_trade_eligible", False)):
