@@ -4,6 +4,7 @@ Sweep ALT6 thresholds on today's forecasts and compare emitted/rejected counts.
 
 Usage:
   python scripts/sweep_alt6_today.py
+  python scripts/sweep_alt6_today.py --since 2026-03-16T13:00:00+00:00
   python scripts/sweep_alt6_today.py --symbols EURUSD USDJPY
   python scripts/sweep_alt6_today.py --age-secs 20,30,40 --distance-pips 1.0,1.4,1.8 --extension-pips 1.4,1.8
 """
@@ -83,12 +84,11 @@ def _build_forecast(row: dict[str, Any]) -> ForecastResult:
     )
 
 
-def _fetch_today_rows(db: SupabaseDB, symbols: list[str]) -> list[dict[str, Any]]:
-    start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+def _fetch_rows(db: SupabaseDB, symbols: list[str], since: datetime) -> list[dict[str, Any]]:
     query = (
         db.client.table("price_forecasts")
         .select("symbol,ts_utc,h30_direction,h30_confidence,h30_strength,h30_aligned,h30_total,bb_width,bb_squeeze")
-        .gte("ts_utc", start_of_day.isoformat())
+        .gte("ts_utc", since.isoformat())
         .order("ts_utc", desc=False)
         .limit(5000)
     )
@@ -103,6 +103,7 @@ def main() -> int:
     parser.add_argument("--age-secs", default="20,30,40,50")
     parser.add_argument("--distance-pips", default="1.0,1.4,1.8,2.2")
     parser.add_argument("--extension-pips", default="1.4,1.8,2.2")
+    parser.add_argument("--since", default="")
     parser.add_argument("--top", type=int, default=12)
     parser.add_argument("--output", default="")
     args = parser.parse_args()
@@ -112,7 +113,9 @@ def main() -> int:
         raise RuntimeError("Supabase client not configured")
 
     symbols = [s.upper() for s in (args.symbols or [])]
-    rows = _fetch_today_rows(db, symbols)
+    start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    since = _parse_ts(args.since) if args.since else start_of_day
+    rows = _fetch_rows(db, symbols, since)
     prepared: list[tuple[dict[str, Any], ForecastResult, Any]] = []
     for row in rows:
         fc = _build_forecast(row)
@@ -172,6 +175,7 @@ def main() -> int:
         reverse=True,
     )
     payload = {
+        "since": since.isoformat(),
         "rows_scanned": len(prepared),
         "symbols": symbols or sorted({str(r.get("symbol") or "") for r, _, _ in prepared}),
         "current_defaults": {
