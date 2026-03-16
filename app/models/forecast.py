@@ -213,5 +213,6 @@ class ForecastResult(BaseModel):
         # Alt6: strict S5 breakout with extension veto
         if self.h30_alt6_direction is not None:
             row["h30_alt6_direction"] = self.h30_alt6_direction
+        if self.h30_alt6_trade_eligible is not None:
             row["h30_alt6_trade_eligible"] = bool(self.h30_alt6_trade_eligible)
         return row

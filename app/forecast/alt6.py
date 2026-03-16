@@ -8,12 +8,18 @@ recent S5 snapshots from the database.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from app.models.forecast import ForecastResult
 
 logger = logging.getLogger(__name__)
+
+
+DEFAULT_MAX_EXTENSION_PIPS = float(os.getenv("ALT6_MAX_EXTENSION_PIPS", "1.4"))
+DEFAULT_MAX_BREAKOUT_AGE_SEC = int(os.getenv("ALT6_MAX_BREAKOUT_AGE_SEC", "20"))
+DEFAULT_MAX_BREAKOUT_DISTANCE_PIPS = float(os.getenv("ALT6_MAX_BREAKOUT_DISTANCE_PIPS", "1.0"))
 
 
 def pip_size(symbol: str) -> float:
@@ -29,6 +35,37 @@ def _h30_direction(forecast: ForecastResult) -> Optional[str]:
     if horizon is None:
         return None
     return horizon.direction.value
+
+
+def _append_reject_flag(forecast: ForecastResult, reason: Optional[str]) -> None:
+    if not reason:
+        return
+    flag = f"ALT6_REJECT:{reason}"
+    if flag not in forecast.flags:
+        forecast.flags.append(flag)
+
+
+def _breakout_metrics(
+    forecast: ForecastResult,
+    s5: Sequence[Tuple[datetime, float]],
+) -> Tuple[Optional[float], Optional[float]]:
+    direction = _h30_direction(forecast)
+    if len(s5) < 10 or direction not in {"up", "down"}:
+        return None, None
+    closes = [x[1] for x in s5]
+    times = [x[0] for x in s5]
+    if direction == "up":
+        anchor = max(closes[:-4])
+        breakout_ts = next((ts for ts, close in zip(times[-4:], closes[-4:]) if close > anchor), None)
+        distance_pips = (closes[-1] - anchor) / pip_size(forecast.symbol)
+    else:
+        anchor = min(closes[:-4])
+        breakout_ts = next((ts for ts, close in zip(times[-4:], closes[-4:]) if close < anchor), None)
+        distance_pips = (anchor - closes[-1]) / pip_size(forecast.symbol)
+    if breakout_ts is None:
+        return None, None
+    age_sec = max(0.0, (forecast.ts_utc - breakout_ts).total_seconds())
+    return age_sec, max(0.0, distance_pips)
 
 
 def load_s5_window(
@@ -93,7 +130,7 @@ def extension_veto(
     forecast: ForecastResult,
     s5: Sequence[Tuple[datetime, float]],
     *,
-    max_extension_pips: float = 1.8,
+    max_extension_pips: float = DEFAULT_MAX_EXTENSION_PIPS,
 ) -> bool:
     direction = _h30_direction(forecast)
     if len(s5) < 8 or direction not in {"up", "down"}:
@@ -108,28 +145,37 @@ def extension_veto(
 
 def compute_alt6_signal(
     forecast: ForecastResult, s5: Sequence[Tuple[datetime, float]]
-) -> Tuple[Optional[str], Optional[bool]]:
+) -> Tuple[Optional[str], Optional[bool], Optional[str]]:
     direction = _h30_direction(forecast)
     if direction not in {"up", "down"}:
-        return None, None
+        return None, False, "NO_H30_DIRECTION"
     width_ok = forecast.bb_width is not None and forecast.bb_width <= 0.008
     if not (bool(forecast.bb_squeeze) or width_ok):
-        return None, None
+        return None, False, "NO_SQUEEZE_CONTEXT"
     if not squeeze_breakout_confirm_strict_s5_v2(forecast, s5):
-        return None, None
+        return None, False, "BREAKOUT_NOT_CONFIRMED"
+    breakout_age_sec, breakout_distance_pips = _breakout_metrics(forecast, s5)
+    if breakout_age_sec is None or breakout_distance_pips is None:
+        return None, False, "BREAKOUT_CONTEXT_MISSING"
+    if breakout_age_sec > DEFAULT_MAX_BREAKOUT_AGE_SEC:
+        return None, False, "BREAKOUT_TOO_OLD"
+    if breakout_distance_pips > DEFAULT_MAX_BREAKOUT_DISTANCE_PIPS:
+        return None, False, "TOO_FAR_FROM_BREAKOUT"
     if extension_veto(forecast, s5):
-        return None, None
-    return direction, True
+        return None, False, "EXTENSION_VETO"
+    return direction, True, None
 
 
 def enrich_forecasts_with_alt6(db_client: any, forecasts: Iterable[ForecastResult]) -> None:
     for forecast in forecasts:
         try:
             s5 = load_s5_window(db_client, symbol=forecast.symbol, ts_utc=forecast.ts_utc)
-            direction, eligible = compute_alt6_signal(forecast, s5)
+            direction, eligible, reason = compute_alt6_signal(forecast, s5)
             forecast.h30_alt6_direction = direction
             forecast.h30_alt6_trade_eligible = eligible
+            _append_reject_flag(forecast, reason)
         except Exception as exc:
             logger.warning("alt6_enrich_failed symbol=%s error=%s", forecast.symbol, exc)
             forecast.h30_alt6_direction = None
-            forecast.h30_alt6_trade_eligible = None
+            forecast.h30_alt6_trade_eligible = False
+            _append_reject_flag(forecast, "ENRICH_FAILED")
