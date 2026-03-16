@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_EXTENSION_PIPS = float(os.getenv("ALT6_MAX_EXTENSION_PIPS", "1.4"))
 DEFAULT_MAX_BREAKOUT_AGE_SEC = int(os.getenv("ALT6_MAX_BREAKOUT_AGE_SEC", "20"))
 DEFAULT_MAX_BREAKOUT_DISTANCE_PIPS = float(os.getenv("ALT6_MAX_BREAKOUT_DISTANCE_PIPS", "1.0"))
+DEFAULT_BREAKOUT_NET_PIPS = float(os.getenv("ALT6_BREAKOUT_NET_PIPS", "0.4"))
+DEFAULT_BREAKOUT_BODY_PIPS = float(os.getenv("ALT6_BREAKOUT_BODY_PIPS", "1.0"))
+DEFAULT_BREAKOUT_MONOTONIC_MODE = str(os.getenv("ALT6_BREAKOUT_MONOTONIC_MODE", "relaxed")).strip().lower() or "relaxed"
 
 
 def pip_size(symbol: str) -> float:
@@ -111,18 +114,29 @@ def squeeze_breakout_confirm_strict_s5_v2(
     net = closes[-1] - closes[0]
     last4 = closes[-4:]
     body = max(closes) - min(closes)
+    monotonic_mode = DEFAULT_BREAKOUT_MONOTONIC_MODE
     if direction == "up":
-        return (
-            net >= 0.8 * ps
-            and last4[0] <= last4[1] <= last4[2] <= last4[3]
-            and closes[-1] >= max(closes[:-4])
-            and body >= 1.0 * ps
+        monotonic_ok = (
+            last4[0] <= last4[1] <= last4[2] <= last4[3]
+            if monotonic_mode == "strict"
+            else sum(1 for a, b in zip(last4, last4[1:]) if b >= a) >= 2
         )
+        return (
+            net >= DEFAULT_BREAKOUT_NET_PIPS * ps
+            and monotonic_ok
+            and closes[-1] >= max(closes[:-4])
+            and body >= DEFAULT_BREAKOUT_BODY_PIPS * ps
+        )
+    monotonic_ok = (
+        last4[0] >= last4[1] >= last4[2] >= last4[3]
+        if monotonic_mode == "strict"
+        else sum(1 for a, b in zip(last4, last4[1:]) if b <= a) >= 2
+    )
     return (
-        net <= -0.8 * ps
-        and last4[0] >= last4[1] >= last4[2] >= last4[3]
+        net <= -DEFAULT_BREAKOUT_NET_PIPS * ps
+        and monotonic_ok
         and closes[-1] <= min(closes[:-4])
-        and body >= 1.0 * ps
+        and body >= DEFAULT_BREAKOUT_BODY_PIPS * ps
     )
 
 
