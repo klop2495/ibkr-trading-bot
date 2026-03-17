@@ -111,6 +111,28 @@ def _parse_hour_set_or_none(raw: str) -> Optional[set[int]]:
     return hours or None
 
 
+def is_alt4_recommended_timestamp(ts: str) -> bool:
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt_utc = dt.astimezone(timezone.utc)
+    hours = _parse_hour_set_or_none(
+        ",".join(
+            part for part in [
+                os.getenv("ALT4_ORIGINAL_HOURS", ""),
+                os.getenv("ALT4_INVERTED_HOURS", ""),
+            ]
+            if part
+        )
+    )
+    if hours:
+        return dt_utc.hour in hours
+    return classify_utc_timestamp(ts)[0]
+
+
 def is_alt5_recommended_timestamp(ts: str) -> bool:
     try:
         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))

@@ -1117,6 +1117,7 @@ async def get_forecasts_history(
         from app.forecast.recommended_windows import (
             classify_utc_timestamp,
             get_recommended_window_labels,
+            is_alt4_recommended_timestamp,
             is_alt5_recommended_timestamp,
             is_alt6_recommended_timestamp,
         )
@@ -1143,7 +1144,11 @@ async def get_forecasts_history(
             # not current lifecycle status (which can change later and corrupt history view).
             recommended_alt2 = bool(in_window and has_alt2 and alt2_trade_eligible)
             recommended_alt3 = bool(in_window and has_alt3)
-            recommended_alt4 = bool(in_window and has_alt4 and alt4_trade_eligible)
+            recommended_alt4 = bool(
+                is_alt4_recommended_timestamp(str(row.get("ts_utc") or ""))
+                and has_alt4
+                and alt4_trade_eligible
+            )
             recommended_alt5 = bool(
                 is_alt5_recommended_timestamp(str(row.get("ts_utc") or ""))
                 and has_alt5
