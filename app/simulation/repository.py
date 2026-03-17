@@ -1,13 +1,12 @@
 """
 SimulationEngine Repository - Database operations for sim_* tables
 """
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from app.simulation.models import (
     SimTrade, SimFill, SimEquityPoint, SimEvent,
-    SimTradeStatus, SimCloseReason, SimSide, SimEventType, BlockReason
+    SimTradeStatus, SimCloseReason, SimSide, SimEventType
 )
 from app.storage.db import SupabaseDB
 
@@ -50,7 +49,7 @@ class SimTradesRepo:
             "risk_modifier": trade.risk_modifier,
         }
         
-        res = self.db.client.table(self.table).insert(payload).execute()
+        self.db.client.table(self.table).insert(payload).execute()
         return str(trade.id)
     
     def update_status(
@@ -157,7 +156,7 @@ class SimFillsRepo:
             "spread": fill.spread,
             "timestamp": fill.timestamp.isoformat(),
         }
-        res = self.db.client.table(self.table).insert(payload).execute()
+        self.db.client.table(self.table).insert(payload).execute()
         return str(fill.id)
 
 
@@ -181,7 +180,7 @@ class SimEquityCurveRepo:
             "num_open_positions": point.num_open_positions,
             "equity_source": point.equity_source,
         }
-        res = self.db.client.table(self.table).insert(payload).execute()
+        self.db.client.table(self.table).insert(payload).execute()
         return str(point.id)
     
     def get_latest(self) -> Optional[Dict[str, Any]]:
@@ -216,7 +215,7 @@ class SimEventsRepo:
             "message": event.message,
             "data": event.data,
         }
-        res = self.db.client.table(self.table).insert(payload).execute()
+        self.db.client.table(self.table).insert(payload).execute()
         return str(event.id)
     
     def log(

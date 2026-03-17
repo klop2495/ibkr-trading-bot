@@ -21,8 +21,7 @@ from uuid import UUID, uuid4
 
 from app.simulation.models import (
     SimTrade, SimFill, SimEquityPoint,
-    SimTradeStatus, SimCloseReason, SimSide, SimEventType, BlockReason,
-    DEFAULT_PIP_SIZE
+    SimTradeStatus, SimCloseReason, SimSide, SimEventType, BlockReason
 )
 from app.simulation.repository import (
     SimTradesRepo, SimFillsRepo, SimEquityCurveRepo, SimEventsRepo

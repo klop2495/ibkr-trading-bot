@@ -931,7 +931,7 @@ def _run_execution_tick_hybrid(
                 if dec_id:
                     already_executed.add(dec_id)
 
-        risk_engine = RiskEngineV1(trades_history_repo=trades_history_repo)
+        risk_engine = RiskEngineV1(trades_history_repo=execution_service.trades_history_repo)
         for row in candidates:
             decision_id = row.get("decision_id")
             if not decision_id:

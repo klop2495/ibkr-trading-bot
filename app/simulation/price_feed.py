@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
-from app.simulation.models import SimEventType
 from app.broker.contracts import create_cfd_fx_contract
 from app.broker.ib_utils import ib_request_with_timeout
 
