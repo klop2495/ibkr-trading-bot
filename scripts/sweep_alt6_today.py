@@ -139,13 +139,13 @@ def main() -> int:
                     reason_counts: Counter[str] = Counter()
                     emitted_symbols: Counter[str] = Counter()
                     for _, fc, s5 in prepared:
-                        direction, eligible, reason = alt6.compute_alt6_signal(fc, s5)
-                        if direction is not None and eligible:
+                        decision = alt6.compute_alt6_signal(fc, s5)
+                        if decision.direction is not None and decision.trade_eligible:
                             emitted += 1
                             emitted_symbols[fc.symbol] += 1
-                        elif eligible is False:
+                        elif decision.trade_eligible is False:
                             rejected += 1
-                            reason_counts[str(reason or "UNKNOWN")] += 1
+                            reason_counts[str(decision.reject_reason or "UNKNOWN")] += 1
                         else:
                             undecided += 1
                     combos.append(
