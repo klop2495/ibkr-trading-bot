@@ -47,10 +47,6 @@ HORIZON_CONFIG = {
 }
 
 # Indicator weights — all set to 1.0 (default)
-# Empirical weight optimization (2026-02-23) proved to be overfitting:
-# - Custom weights: accuracy dropped 53% → 35%, HIGH conf 50% → 17%
-# - Rollback to 1.0: accuracy recovering to ~48%+ within hours
-# Lesson: gate-based pair filtering > weight tuning on small samples
 WEIGHTS = {
     "ma_cross_inv": 1.0,
     "price_vs_ma": 1.0,
@@ -76,6 +72,7 @@ class ForecastEngine:
 
     def __init__(self):
         self._warn_logged: Dict[str, bool] = {}
+        # Alt4 config
         self._alt4_original_hours = self._parse_hour_set(
             os.getenv("ALT4_ORIGINAL_HOURS", "9,10,19"),
             default={9, 10, 19},
@@ -93,6 +90,17 @@ class ForecastEngine:
             lower=True,
         )
         self._alt4_min_adx = self._parse_float(os.getenv("ALT4_MIN_ADX", "0"), 0.0)
+
+        # Alt5 config: ANTI-h30 strategy (inverts h30_direction)
+        self._alt5_enabled = os.getenv("ALT5_ENABLED", "1") == "1"
+        self._alt5_hours_utc = self._parse_hour_set_or_none(
+            os.getenv("ALT5_HOURS_UTC", "") or os.getenv("ALT5_ALLOWED_HOURS", "")
+        )
+        self._alt5_min_adx = self._parse_float(os.getenv("ALT5_MIN_ADX", "20"), 20.0)
+        self._alt5_exclude_symbols = self._parse_csv_set(
+            os.getenv("ALT5_EXCLUDE_SYMBOLS", "USDCAD,CHFJPY"),
+            upper=True,
+        )
 
     def compute_all(
         self,
@@ -211,7 +219,7 @@ class ForecastEngine:
                 h4_adx = None
                 if len(h4_h) >= 30 and len(h4_l) >= 30:
                     h4_adx = calc_adx(h4_h, h4_l, h4_closes, period=14)
-                mtf_conflict = h4_adx is not None and h4_adx > 25  # Only flag if H4 ADX is strong
+                mtf_conflict = h4_adx is not None and h4_adx > 25
             else:
                 mtf_conflict = False
 
@@ -230,6 +238,15 @@ class ForecastEngine:
             adx_value=adx_value,
             ts_utc=ts,
         )
+
+        # Alt5: ANTI-h30 strategy (inverts h30_direction with filters)
+        _alt5_dir, _alt5_eligible = self._compute_alt5_signal(
+            symbol=symbol,
+            h30_direction=_h30_direction,
+            adx_value=adx_value,
+            ts_utc=ts,
+        )
+
         return ForecastResult(
             ts_utc=ts,
             symbol=symbol,
@@ -243,9 +260,6 @@ class ForecastEngine:
             mtf_conflict=mtf_conflict,
             mtf_h4_direction=mtf_h4_direction,
             h30_votes_json=h30_votes_json,
-            # Alt1 DISABLED — unprofitable strategy
-            # h30_alt_direction=h30_alt_direction,
-            # h30_alt_strength=h30_alt_strength,
             h30_alt2_direction=_alt2_dir,
             h30_alt2_trade_eligible=None,
             h30_alt3_direction=_alt3_dir,
@@ -256,6 +270,9 @@ class ForecastEngine:
             h30_alt4_direction=_alt4_dir,
             h30_alt4_mode=_alt4_mode,
             h30_alt4_trade_eligible=_alt4_eligible,
+            # Alt5: ANTI-h30 direction
+            h30_alt5_direction=_alt5_dir,
+            h30_alt5_trade_eligible=_alt5_eligible,
         )
 
     def _compute_horizon(
@@ -363,13 +380,13 @@ class ForecastEngine:
 
     # A/B alternative weights: invert contrarians (price_vs_ma, momentum, atr_trend)
     ALT_WEIGHTS = {
-        "ma_cross_inv": 1.0,      # KEEP: +23.1% delta (good predictor)
-        "rsi_trend": 0.0,         # DROP: weak, often neutral
-        "rsi_momentum": 0.0,      # DROP: 14% participation, no data
-        "price_vs_ma": -1.0,      # INVERT: -15.2% delta (contrarian)
-        "momentum": -1.0,         # INVERT: -8.5% delta (contrarian)
-        "atr_trend": -1.0,        # INVERT: -15.2% delta (contrarian)
-        "secondary_ma": 0.0,      # Not in H30
+        "ma_cross_inv": 1.0,
+        "rsi_trend": 0.0,
+        "rsi_momentum": 0.0,
+        "price_vs_ma": -1.0,
+        "momentum": -1.0,
+        "atr_trend": -1.0,
+        "secondary_ma": 0.0,
     }
 
     # A/B alt2: top 16 symbols where signal is valid
@@ -381,8 +398,7 @@ class ForecastEngine:
     }
 
     def _compute_alt2_signal(self, symbol: str, votes: Optional[Dict[str, int]], adx_value: Optional[float]) -> Optional[str]:
-        """A/B test 2: ma_cross_inv direction when ma!=pv + ADX>=30 + top8.
-        Returns 'up'/'down' if signal passes all filters, None otherwise."""
+        """A/B test 2: ma_cross_inv direction when ma!=pv + ADX>=30 + top8."""
         if not votes or symbol not in self.ALT2_SYMBOLS:
             return None
         ma = votes.get("ma_cross_inv", 0)
@@ -394,9 +410,7 @@ class ForecastEngine:
         return "up" if ma == 1 else "down"
 
     def _compute_alt3_signal(self, symbol: str, votes: Optional[Dict[str, int]], adx_value: Optional[float]) -> Optional[str]:
-        """A/B test 3: ma!=pv + ADX>=30 + momentum agrees with ma + top8.
-        Stricter version of alt2 — requires momentum to confirm ma_cross_inv direction.
-        Returns 'up'/'down' if signal passes all filters, None otherwise."""
+        """A/B test 3: ma!=pv + ADX>=30 + momentum agrees with ma + top8."""
         if not votes or symbol not in self.ALT2_SYMBOLS:
             return None
         ma = votes.get("ma_cross_inv", 0)
@@ -406,7 +420,6 @@ class ForecastEngine:
             return None
         if adx_value is None or adx_value < 30:
             return None
-        # Alt3 extra filter: momentum must agree with ma_cross_inv
         if mom != ma:
             return None
         return "up" if ma == 1 else "down"
@@ -417,15 +430,7 @@ class ForecastEngine:
         votes: Optional[Dict[str, int]],
         adx_value: Optional[float],
     ) -> Tuple[Optional[str], Optional[bool], Optional[float], Optional[Dict[str, float]]]:
-        """Independent Alt3-v2 signal.
-
-        Unlike legacy Alt3, this variant does not inherit Alt2 direction directly.
-        Direction is based on a strict weighted blend of core signals:
-        - ma_cross_inv
-        - momentum
-        - inverted price_vs_ma
-        Plus small stabilizers from rsi_trend / atr_trend.
-        """
+        """Independent Alt3-v2 signal."""
         if not votes or symbol not in self.ALT2_SYMBOLS:
             return None, None, None, None
         if adx_value is None or adx_value < 30:
@@ -447,7 +452,6 @@ class ForecastEngine:
             0.35 * rsi +
             0.25 * atr
         )
-        # Keep Alt3-v2 sparse and stronger than Alt2.
         if abs(score) < 1.2:
             return None, None, score, {
                 "ma": float(ma),
@@ -481,11 +485,7 @@ class ForecastEngine:
         ts_utc: datetime,
         adx_value: Optional[float] = None,
     ) -> Tuple[Optional[str], Optional[str], Optional[bool]]:
-        """Alt4 hybrid signal: hour-based original/inverted direction + eligibility.
-
-        Returns (direction, mode, eligible):
-        - mode: "original" | "inverted" | None
-        """
+        """Alt4 hybrid signal: hour-based original/inverted direction + eligibility."""
         if h30_direction is None or h30_direction == "neutral":
             return None, None, None
         hour = ts_utc.hour
@@ -507,12 +507,56 @@ class ForecastEngine:
                 eligible = False
         return alt4_direction, mode, eligible
 
+    def _compute_alt5_signal(
+        self,
+        symbol: str,
+        h30_direction: Optional[str],
+        adx_value: Optional[float],
+        ts_utc: datetime,
+    ) -> Tuple[Optional[str], Optional[bool]]:
+        """Alt5: ANTI-h30 strategy — inverts h30_direction with hour + ADX filters.
+
+        This is independent of Alt3-v2. It simply inverts h30_direction when:
+        - ALT5_ENABLED=1
+        - Current hour is in ALT5_HOURS_UTC (if set)
+        - ADX >= ALT5_MIN_ADX (default 20)
+        - Symbol not in ALT5_EXCLUDE_SYMBOLS
+
+        Returns (direction, eligible):
+        - direction: inverted h30_direction or None
+        - eligible: True if all filters pass
+        """
+        # Check if Alt5 is enabled
+        if not self._alt5_enabled:
+            return None, None
+
+        # Need a valid h30_direction to invert
+        if h30_direction is None or h30_direction == "neutral":
+            return None, None
+
+        # Hour filter (if set)
+        hour = ts_utc.hour
+        if self._alt5_hours_utc is not None and hour not in self._alt5_hours_utc:
+            return None, None
+
+        # ADX filter
+        if self._alt5_min_adx > 0:
+            if adx_value is None or adx_value < self._alt5_min_adx:
+                return None, None
+
+        # Symbol exclusion
+        if symbol.upper() in self._alt5_exclude_symbols:
+            return None, None
+
+        # Invert h30_direction
+        alt5_direction = "down" if h30_direction == "up" else "up"
+
+        # All filters passed = eligible
+        return alt5_direction, True
+
     @staticmethod
     def _compute_alt2_trade_eligible(votes: Optional[Dict[str, int]], alt2_direction: Optional[str]) -> Optional[bool]:
-        """Soft execution filter for Alt2.
-        Keep all Alt2 rows in DB, but mark execution eligibility.
-        Eligible when momentum AGREES with ma_cross_inv (ma * mom > 0).
-        """
+        """Soft execution filter for Alt2."""
         if alt2_direction is None:
             return None
         if not votes:
