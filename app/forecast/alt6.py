@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_MAX_EXTENSION_PIPS = float(os.getenv("ALT6_MAX_EXTENSION_PIPS", "1.4"))
-DEFAULT_MAX_BREAKOUT_AGE_SEC = int(os.getenv("ALT6_MAX_BREAKOUT_AGE_SEC", "90"))
+DEFAULT_MAX_BREAKOUT_AGE_SEC = int(os.getenv("ALT6_MAX_BREAKOUT_AGE_SEC", "120"))
 DEFAULT_MAX_BREAKOUT_DISTANCE_PIPS = float(os.getenv("ALT6_MAX_BREAKOUT_DISTANCE_PIPS", "1.4"))
 DEFAULT_BREAKOUT_NET_PIPS = float(os.getenv("ALT6_BREAKOUT_NET_PIPS", "0.4"))
 DEFAULT_BREAKOUT_BODY_PIPS = float(os.getenv("ALT6_BREAKOUT_BODY_PIPS", "1.0"))
@@ -215,6 +215,47 @@ def squeeze_breakout_confirm_soft_s5_v4(
     )
 
 
+def soft_structure_metrics_s5_v43(
+    forecast: ForecastResult, s5: Sequence[Tuple[datetime, float]]
+) -> Tuple[bool, int, Tuple[str, ...]]:
+    direction = _h30_direction(forecast)
+    if len(s5) < 8 or direction not in {"up", "down"}:
+        return False, 0, ()
+    closes = [x[1] for x in s5]
+    ps = pip_size(forecast.symbol)
+    recent = closes[-4:]
+    history = closes[:-4]
+    if not history:
+        return False, 0, ()
+    net = closes[-1] - closes[0]
+    body = max(closes) - min(closes)
+    margin = DEFAULT_SOFT_BREAK_MARGIN_PIPS * ps
+
+    if direction == "up":
+        anchor = max(history)
+        breakout_touch = max(recent) >= (anchor - margin)
+        directional_net_ok = net >= DEFAULT_SOFT_NET_PIPS * ps
+        directional_steps_ok = sum(1 for a, b in zip(recent, recent[1:]) if b >= a) >= 2
+        last_close_side_ok = closes[-1] >= (anchor - margin)
+    else:
+        anchor = min(history)
+        breakout_touch = min(recent) <= (anchor + margin)
+        directional_net_ok = net <= -DEFAULT_SOFT_NET_PIPS * ps
+        directional_steps_ok = sum(1 for a, b in zip(recent, recent[1:]) if b <= a) >= 2
+        last_close_side_ok = closes[-1] <= (anchor + margin)
+
+    body_ok = body >= DEFAULT_SOFT_BODY_PIPS * ps
+    score = sum(1 for ok in (directional_steps_ok, last_close_side_ok, body_ok) if ok)
+    metrics = (
+        f"steps={'1' if directional_steps_ok else '0'}",
+        f"close_side={'1' if last_close_side_ok else '0'}",
+        f"body={'1' if body_ok else '0'}",
+        f"score={score}",
+    )
+    must_have = directional_net_ok and breakout_touch
+    return must_have and score >= 2, score, metrics
+
+
 def extension_veto(
     forecast: ForecastResult,
     s5: Sequence[Tuple[datetime, float]],
@@ -242,13 +283,15 @@ def _candidate_stage(forecast: ForecastResult) -> Tuple[Optional[str], Optional[
 def _structure_stage(
     forecast: ForecastResult,
     s5: Sequence[Tuple[datetime, float]],
-) -> Optional[str]:
+) -> Tuple[Optional[str], Tuple[str, ...]]:
     width_ok = forecast.bb_width is not None and forecast.bb_width <= 0.008
     if not (bool(forecast.bb_squeeze) or width_ok):
-        return "NO_SQUEEZE_CONTEXT"
-    if not squeeze_breakout_confirm_soft_s5_v4(forecast, s5):
-        return "STRUCTURE_SOFT_FAIL"
-    return None
+        return "NO_SQUEEZE_CONTEXT", ()
+    passed, score, metrics = soft_structure_metrics_s5_v43(forecast, s5)
+    quality_flags = (f"ALT6_STRUCTURE_SCORE:{score}",) + tuple(f"ALT6_STRUCTURE_{m}" for m in metrics)
+    if not passed:
+        return "STRUCTURE_SOFT_FAIL", quality_flags
+    return None, quality_flags
 
 
 def _timing_stage(
@@ -298,7 +341,7 @@ def compute_alt6_signal(
             timing_passed=False,
             quality_passed=False,
         )
-    reason = _structure_stage(forecast, s5)
+    reason, structure_flags = _structure_stage(forecast, s5)
     if reason:
         return Alt6Decision(
             direction=None,
@@ -309,6 +352,7 @@ def compute_alt6_signal(
             structure_passed=False,
             timing_passed=False,
             quality_passed=False,
+            quality_flags=structure_flags,
         )
     reason = _timing_stage(forecast, s5)
     if reason:
@@ -333,7 +377,7 @@ def compute_alt6_signal(
             structure_passed=True,
             timing_passed=True,
             quality_passed=False,
-            quality_flags=quality_flags,
+            quality_flags=structure_flags + quality_flags,
         )
     return Alt6Decision(
         direction=direction,
@@ -344,7 +388,7 @@ def compute_alt6_signal(
         structure_passed=True,
         timing_passed=True,
         quality_passed=True,
-        quality_flags=quality_flags,
+        quality_flags=structure_flags + quality_flags,
     )
 
 
