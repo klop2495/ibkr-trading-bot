@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 HYBRID_THRESHOLD = float(os.getenv("HYBRID_THRESHOLD", "0.15"))
 RULES_WEIGHT = float(os.getenv("HYBRID_RULES_WEIGHT", "0.6"))
 LLM_WEIGHT = float(os.getenv("HYBRID_LLM_WEIGHT", "0.4"))
-RULES_INVERT_SIGNAL = os.getenv("RULES_INVERT_SIGNAL", "1") == "1"
+RULES_INVERT_SIGNAL = os.getenv("RULES_INVERT_SIGNAL", "0") == "1"
 
 
 class ParallelDecisionRunner:

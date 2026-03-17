@@ -59,6 +59,7 @@ DEFAULT_IDLE_BACKOFF_MAX = 60.0
 DEFAULT_EQUITY = 10000.0  # Default equity for dry-run mode
 DEFAULT_POSITION_SYNC_INTERVAL = 300  # Sync positions every 5 minutes
 ALT6_INFO_ONLY = str(os.getenv("ALT6_INFO_ONLY", "true")).strip().lower() in {"1", "true", "yes", "on"}
+RULES_INVERT_SIGNAL = os.getenv("RULES_INVERT_SIGNAL", "0") == "1"
 
 
 def _parse_hour_set_or_none(raw: str) -> Optional[set[int]]:
@@ -770,6 +771,20 @@ def _hybrid_execution_gates(
     return True, None
 
 
+def _rules_signal_from_preview(preview: Dict[str, Any]) -> tuple[str, Optional[str]]:
+    if not preview:
+        return "HOLD", None
+    direction = str(preview.get("direction") or "").lower()
+    entry_triggered = bool(preview.get("entry_triggered", False))
+    if not entry_triggered:
+        return "HOLD", None
+    if direction == "long":
+        return ("SHORT", "short") if RULES_INVERT_SIGNAL else ("LONG", "long")
+    if direction == "short":
+        return ("LONG", "long") if RULES_INVERT_SIGNAL else ("SHORT", "short")
+    return "HOLD", None
+
+
 def _run_execution_tick_hybrid(
     *,
     client: Any,
@@ -1033,6 +1048,13 @@ def run_execution_tick(
     executed = 0
     skipped = 0
     errors = 0
+    params = getattr(settings, "signals_params", None)
+    gates = getattr(params, "gates", None)
+    require_data_ok = True
+    require_spread_ok = True
+    if gates:
+        require_data_ok = bool(getattr(gates, "require_data_ok", True))
+        require_spread_ok = bool(getattr(gates, "require_spread_ok", True))
 
     try:
         # Get recent verdicts with trade_allowed=True
@@ -1091,7 +1113,10 @@ def run_execution_tick(
         if signal_preview_ids:
             previews_res = (
                 client.table("signal_previews")
-                .select("id, sl_distance_pips, tp_distance_pips, direction, flags")
+                .select(
+                    "id, sl_distance_pips, tp_distance_pips, direction, entry_triggered, "
+                    "setup_present, setup_type, data_quality, spread_quality, flags"
+                )
                 .in_("id", signal_preview_ids)
                 .execute()
             )
@@ -1142,7 +1167,19 @@ def run_execution_tick(
                 preview_data = signal_previews_map.get(str(signal_preview_id), {})
                 sl_pips = preview_data.get("sl_distance_pips")
                 tp_pips = preview_data.get("tp_distance_pips")
-                direction = preview_data.get("direction")
+                allowed, reason = _hybrid_execution_gates(
+                    preview_data,
+                    require_entry_triggered=True,
+                    require_data_ok=require_data_ok,
+                    require_spread_ok=require_spread_ok,
+                )
+                if not allowed:
+                    skipped += 1
+                    continue
+                final_signal, direction = _rules_signal_from_preview(preview_data)
+                if not direction:
+                    skipped += 1
+                    continue
             
             # Build DecisionV1 and RiskVerdictV1 from rows
             try:
@@ -1175,6 +1212,7 @@ def run_execution_tick(
                     stop_loss_pips=float(sl_pips) if sl_pips is not None else None,
                     take_profit_pips=float(tp_pips) if tp_pips is not None else None,
                     direction=direction,
+                    final_signal=final_signal if signal_preview_id else None,
                     preview_flags=preview_data.get("flags") if signal_preview_id else None,
                 )
                 
