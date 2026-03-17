@@ -28,8 +28,8 @@ DEFAULT_SOFT_NET_PIPS = float(os.getenv("ALT6_SOFT_NET_PIPS", "0.05"))
 DEFAULT_SOFT_BODY_PIPS = float(os.getenv("ALT6_SOFT_BODY_PIPS", "0.2"))
 DEFAULT_SOFT_BREAK_MARGIN_PIPS = float(os.getenv("ALT6_SOFT_BREAK_MARGIN_PIPS", "0.4"))
 DEFAULT_STRUCTURE_MIN_SCORE = int(os.getenv("ALT6_STRUCTURE_MIN_SCORE", "1"))
-DEFAULT_MIN_ADX = float(os.getenv("ALT6_MIN_ADX", "0"))
-DEFAULT_MTF_VETO = str(os.getenv("ALT6_MTF_VETO", "false")).strip().lower() in {"1", "true", "yes", "on"}
+DEFAULT_MIN_ADX = float(os.getenv("ALT6_MIN_ADX", "20"))
+DEFAULT_MTF_VETO = str(os.getenv("ALT6_MTF_VETO", "true")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
