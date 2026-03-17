@@ -24,9 +24,9 @@ DEFAULT_MAX_BREAKOUT_DISTANCE_PIPS = float(os.getenv("ALT6_MAX_BREAKOUT_DISTANCE
 DEFAULT_BREAKOUT_NET_PIPS = float(os.getenv("ALT6_BREAKOUT_NET_PIPS", "0.4"))
 DEFAULT_BREAKOUT_BODY_PIPS = float(os.getenv("ALT6_BREAKOUT_BODY_PIPS", "1.0"))
 DEFAULT_BREAKOUT_MONOTONIC_MODE = str(os.getenv("ALT6_BREAKOUT_MONOTONIC_MODE", "relaxed")).strip().lower() or "relaxed"
-DEFAULT_SOFT_NET_PIPS = float(os.getenv("ALT6_SOFT_NET_PIPS", "0.2"))
-DEFAULT_SOFT_BODY_PIPS = float(os.getenv("ALT6_SOFT_BODY_PIPS", "0.6"))
-DEFAULT_SOFT_BREAK_MARGIN_PIPS = float(os.getenv("ALT6_SOFT_BREAK_MARGIN_PIPS", "0.2"))
+DEFAULT_SOFT_NET_PIPS = float(os.getenv("ALT6_SOFT_NET_PIPS", "0.1"))
+DEFAULT_SOFT_BODY_PIPS = float(os.getenv("ALT6_SOFT_BODY_PIPS", "0.4"))
+DEFAULT_SOFT_BREAK_MARGIN_PIPS = float(os.getenv("ALT6_SOFT_BREAK_MARGIN_PIPS", "0.4"))
 DEFAULT_MIN_ADX = float(os.getenv("ALT6_MIN_ADX", "0"))
 DEFAULT_MTF_VETO = str(os.getenv("ALT6_MTF_VETO", "false")).strip().lower() in {"1", "true", "yes", "on"}
 
