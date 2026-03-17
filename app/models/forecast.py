@@ -98,7 +98,7 @@ class ForecastResult(BaseModel):
     h30_alt4_correct: Optional[bool] = None
     h30_alt4_trade_eligible: Optional[bool] = None
 
-    # Alt5: legacy strategy retained in historical rows only
+    # Alt5: anti-Alt3 directional variant
     h30_alt5_direction: Optional[str] = None
     h30_alt5_correct: Optional[bool] = None
     h30_alt5_trade_eligible: Optional[bool] = None
@@ -210,6 +210,11 @@ class ForecastResult(BaseModel):
             row["h30_alt4_direction"] = self.h30_alt4_direction
             row["h30_alt4_mode"] = self.h30_alt4_mode
             row["h30_alt4_trade_eligible"] = bool(self.h30_alt4_trade_eligible)
+        # Alt5: anti-Alt3 directional strategy
+        if self.h30_alt5_direction is not None:
+            row["h30_alt5_direction"] = self.h30_alt5_direction
+        if self.h30_alt5_trade_eligible is not None:
+            row["h30_alt5_trade_eligible"] = bool(self.h30_alt5_trade_eligible)
         # Alt6: strict S5 breakout with extension veto
         if self.h30_alt6_direction is not None:
             row["h30_alt6_direction"] = self.h30_alt6_direction

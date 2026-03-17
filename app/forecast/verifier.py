@@ -21,7 +21,7 @@ HORIZON_PREFIXES = {30: "h30", 60: "h60", 240: "h240", 1440: "h1440"}
 class AltVerified:
     row_id: str
     symbol: str
-    variant: str  # "alt2" | "alt3" | "alt3v2" | "alt4" | "alt6"
+    variant: str  # "alt2" | "alt3" | "alt3v2" | "alt4" | "alt5" | "alt6"
     correct: bool
     ts_utc: str
 
@@ -133,7 +133,7 @@ class ForecastVerifier:
                         "h30_direction, h60_direction, h240_direction, h1440_direction, "
                         "h30_correct, h60_correct, h240_correct, h1440_correct, "
                         "h30_alt_direction, h30_alt2_direction, h30_alt3_direction, "
-                        "h30_alt3v2_direction, h30_alt4_direction, h30_alt6_direction")
+                        "h30_alt3v2_direction, h30_alt4_direction, h30_alt5_direction, h30_alt6_direction")
                 .is_("verified_at", "null")
                 .lte("ts_utc", cutoff.isoformat())
                 .order("ts_utc", desc=False)
@@ -240,8 +240,9 @@ class ForecastVerifier:
                     alt3_dir = row.get("h30_alt3_direction")
                     alt3v2_dir = row.get("h30_alt3v2_direction")
                     alt4_dir = row.get("h30_alt4_direction")
+                    alt5_dir = row.get("h30_alt5_direction")
                     alt6_dir = row.get("h30_alt6_direction")
-                    if alt2_dir or alt3_dir or alt3v2_dir or alt4_dir or alt6_dir:
+                    if alt2_dir or alt3_dir or alt3v2_dir or alt4_dir or alt5_dir or alt6_dir:
                         # Need actual price to determine actual_dir
                         _actual_price = self._get_historical_price(
                             symbol,
@@ -266,6 +267,8 @@ class ForecastVerifier:
                                 update_data["h30_alt3v2_correct"] = (alt3v2_dir == _adir)
                             if alt4_dir and alt4_dir != "neutral":
                                 update_data["h30_alt4_correct"] = (alt4_dir == _adir)
+                            if alt5_dir and alt5_dir != "neutral":
+                                update_data["h30_alt5_correct"] = (alt5_dir == _adir)
                             if alt6_dir and alt6_dir != "neutral":
                                 update_data["h30_alt6_correct"] = (alt6_dir == _adir)
                 continue
@@ -320,6 +323,10 @@ class ForecastVerifier:
                 alt4_dir = row.get("h30_alt4_direction")
                 if alt4_dir and alt4_dir != "neutral":
                     update_data["h30_alt4_correct"] = (alt4_dir == actual_dir)
+                # Alt5: verify anti-Alt3 variant
+                alt5_dir = row.get("h30_alt5_direction")
+                if alt5_dir and alt5_dir != "neutral":
+                    update_data["h30_alt5_correct"] = (alt5_dir == actual_dir)
                 # Alt6: verify strict S5 breakout with extension veto
                 alt6_dir = row.get("h30_alt6_direction")
                 if alt6_dir and alt6_dir != "neutral":
@@ -351,6 +358,7 @@ class ForecastVerifier:
         alt3_correct = update_data.get("h30_alt3_correct")
         alt3v2_correct = update_data.get("h30_alt3v2_correct")
         alt4_correct = update_data.get("h30_alt4_correct")
+        alt5_correct = update_data.get("h30_alt5_correct")
         alt6_correct = update_data.get("h30_alt6_correct")
         if isinstance(alt2_correct, bool) and row.get("h30_alt2_direction") not in (None, "neutral"):
             alt_verified.append(
@@ -389,6 +397,16 @@ class ForecastVerifier:
                     symbol=str(symbol),
                     variant="alt4",
                     correct=alt4_correct,
+                    ts_utc=ts_out,
+                )
+            )
+        if isinstance(alt5_correct, bool) and row.get("h30_alt5_direction") not in (None, "neutral"):
+            alt_verified.append(
+                AltVerified(
+                    row_id=str(row_id),
+                    symbol=str(symbol),
+                    variant="alt5",
+                    correct=alt5_correct,
                     ts_utc=ts_out,
                 )
             )

@@ -61,6 +61,50 @@ DEFAULT_POSITION_SYNC_INTERVAL = 300  # Sync positions every 5 minutes
 ALT6_INFO_ONLY = str(os.getenv("ALT6_INFO_ONLY", "true")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_hour_set_or_none(raw: str) -> Optional[set[int]]:
+    hours: set[int] = set()
+    for part in (raw or "").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            hour = int(token)
+        except Exception:
+            continue
+        if 0 <= hour <= 23:
+            hours.add(hour)
+    return hours or None
+
+
+def _parse_csv_set(raw: str, *, upper: bool = False, lower: bool = False) -> set[str]:
+    values: set[str] = set()
+    for part in (raw or "").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if upper:
+            token = token.upper()
+        if lower:
+            token = token.lower()
+        values.add(token)
+    return values
+
+
+def _invert_direction(direction: Optional[str]) -> Optional[str]:
+    if direction == "up":
+        return "down"
+    if direction == "down":
+        return "up"
+    return None
+
+
+def _alt5_source_direction(fc: Any, source_strategy: str) -> Optional[str]:
+    source = (source_strategy or "alt3").strip().lower()
+    if source in {"alt3", "alt3v2"}:
+        return getattr(fc, "h30_alt3v2_direction", None) or getattr(fc, "h30_alt3_direction", None)
+    return getattr(fc, "h30_alt3v2_direction", None) or getattr(fc, "h30_alt3_direction", None)
+
+
 def _safe_uuid(value: Any) -> Optional[UUID]:
     try:
         return UUID(str(value))
@@ -1783,16 +1827,26 @@ def main():
 
     # Telegram notifications for binary signals
     tg_notifier = TelegramNotifier()
-    # If TG_ALT_ONLY=1 (default), send only Alt strategy alerts (Alt3 main=v2 / Alt4 / Alt6).
+    # If TG_ALT_ONLY=1 (default), send only Alt strategy alerts.
     tg_alt_only = os.getenv("TG_ALT_ONLY", "1") != "0"
     # Alt4 telegram is enabled by default. Set TG_ALT4_ENABLED=0 to disable.
     tg_alt4_enabled = os.getenv("TG_ALT4_ENABLED", "1") != "0"
+    tg_alt5_enabled = os.getenv("TG_ALT5_ENABLED", "1") != "0"
     alt4_min_repeat_min = max(0, int(os.getenv("ALT4_MIN_REPEAT_MIN", "45")))
+    alt5_min_repeat_min = max(0, int(os.getenv("ALT5_MIN_REPEAT_MIN", "120")))
     alt6_min_repeat_min = max(0, int(os.getenv("ALT6_MIN_REPEAT_MIN", "45")))
     alt3_min_repeat_min = max(0, int(os.getenv("ALT3_MIN_REPEAT_MIN", "45")))
     tg_notify_lost = (os.getenv("TG_NOTIFY_LOST_SIGNALS", "1") != "0") and not tg_alt_only
     # Hard TG anti-spam guard (works even if lifecycle is disabled).
     _tg_alt_last_sent: Dict[str, datetime] = {}
+
+    alt5_enabled = os.getenv("ALT5_ENABLED", "1") == "1"
+    alt5_source_strategy = os.getenv("ALT5_SOURCE_STRATEGY", "alt3")
+    alt5_invert = os.getenv("ALT5_INVERT", "1") == "1"
+    alt5_min_adx = float(os.getenv("ALT5_MIN_ADX", "0") or 0.0)
+    alt5_hours_utc = _parse_hour_set_or_none(os.getenv("ALT5_HOURS_UTC", os.getenv("ALT5_ALLOWED_HOURS", "")))
+    alt5_exclude_symbols = _parse_csv_set(os.getenv("ALT5_EXCLUDE_SYMBOLS", ""), upper=True)
+    alt5_exclude_confidence = _parse_csv_set(os.getenv("ALT5_EXCLUDE_CONFIDENCE", ""), lower=True)
     # Track trading hours transitions
     _prev_in_trading_hours: Optional[bool] = None
     # Trading hours for notifications (same as quality filter)
@@ -2205,16 +2259,40 @@ def main():
                             from app.forecast.alt6 import enrich_forecasts_with_alt6
 
                             enrich_forecasts_with_alt6(db.client, forecasts)
+                            for fc in forecasts:
+                                setattr(fc, "h30_alt5_direction", None)
+                                setattr(fc, "h30_alt5_trade_eligible", None)
+                                if not alt5_enabled:
+                                    continue
+                                source_dir = _alt5_source_direction(fc, alt5_source_strategy)
+                                if source_dir not in {"up", "down"}:
+                                    continue
+                                if alt5_hours_utc and fc.ts_utc.hour not in alt5_hours_utc:
+                                    continue
+                                if alt5_min_adx > 0 and (fc.adx_value is None or fc.adx_value < alt5_min_adx):
+                                    continue
+                                if fc.symbol.upper() in alt5_exclude_symbols:
+                                    continue
+                                h30 = fc.horizon(30)
+                                confidence = h30.confidence.value.lower() if h30 and h30.confidence else ""
+                                if confidence and confidence in alt5_exclude_confidence:
+                                    continue
+                                alt5_dir = _invert_direction(source_dir) if alt5_invert else source_dir
+                                if alt5_dir not in {"up", "down"}:
+                                    continue
+                                setattr(fc, "h30_alt5_direction", alt5_dir)
+                                setattr(fc, "h30_alt5_trade_eligible", True)
                         # Signal Lifecycle: filter active variants (dedup + cooldown + blacklist)
                         # Variant policy:
-                        # - Alt3-v2, Alt4 and Alt6 are tracked independently.
-                        # - Lifecycle keys are variant-aware: "SYMBOL#alt3v2" / "SYMBOL#alt4" / "SYMBOL#alt6".
+                        # - Alt3-v2, Alt4, Alt5 and Alt6 are tracked independently.
+                        # - Lifecycle keys are variant-aware.
                         if forecasts and signal_lifecycle.enabled:
                             _lc_now = datetime.now(timezone.utc)
                             _lc_blocked = 0
                             for fc in forecasts:
                                 _alt3v2_dir = getattr(fc, "h30_alt3v2_direction", None)
                                 _alt4_dir = getattr(fc, "h30_alt4_direction", None)
+                                _alt5_dir = getattr(fc, "h30_alt5_direction", None)
                                 _alt6_dir = getattr(fc, "h30_alt6_direction", None)
 
                                 if _alt3v2_dir:
@@ -2255,6 +2333,26 @@ def main():
                                         setattr(fc, "h30_alt4_direction", None)
                                         setattr(fc, "h30_alt4_mode", None)
                                         setattr(fc, "h30_alt4_trade_eligible", None)
+                                        _lc_blocked += 1
+
+                                if _alt5_dir:
+                                    _key5 = f"{fc.symbol}#ALT5"
+                                    _st5 = signal_lifecycle._states.get(_key5)  # noqa: SLF001
+                                    if (
+                                        alt5_min_repeat_min > 0
+                                        and _st5
+                                        and _st5.last_signal_ts is not None
+                                    ):
+                                        _age5 = (_lc_now - _st5.last_signal_ts).total_seconds() / 60
+                                        if _age5 < alt5_min_repeat_min:
+                                            setattr(fc, "h30_alt5_direction", None)
+                                            setattr(fc, "h30_alt5_trade_eligible", None)
+                                            _lc_blocked += 1
+                                            continue
+                                    _ok5, _reason5 = signal_lifecycle.can_signal(_key5, _alt5_dir, _lc_now)
+                                    if not _ok5:
+                                        setattr(fc, "h30_alt5_direction", None)
+                                        setattr(fc, "h30_alt5_trade_eligible", None)
                                         _lc_blocked += 1
 
                                 if _alt6_dir and not ALT6_INFO_ONLY:
@@ -2307,6 +2405,7 @@ def main():
                                                 pass
                                         _d3 = _row.get("h30_alt3v2_direction")
                                         _d4 = _row.get("h30_alt4_direction")
+                                        _d5 = _row.get("h30_alt5_direction")
                                         _d6 = _row.get("h30_alt6_direction")
                                         if _sym and _d3:
                                             signal_lifecycle.record_signal(
@@ -2322,6 +2421,13 @@ def main():
                                                 now=_ts,
                                                 row_id=str(_rid) if _rid is not None else None,
                                             )
+                                        if _sym and _d5:
+                                            signal_lifecycle.record_signal(
+                                                f"{_sym}#ALT5",
+                                                _d5,
+                                                now=_ts,
+                                                row_id=str(_rid) if _rid is not None else None,
+                                            )
                                         if _sym and _d6 and not ALT6_INFO_ONLY:
                                             signal_lifecycle.record_signal(
                                                 f"{_sym}#ALT6",
@@ -2333,17 +2439,19 @@ def main():
                             if execution_service and execution_service.forecast_gate:
                                 execution_service.forecast_gate.update_forecasts_batch(forecasts)
 
-                            # Alt3/Alt4/Alt6 Telegram notifications — only for RECOMMENDED signals.
+                            # Alt strategy Telegram notifications — only for recommended signals.
                             # Recommended policy:
                             # - Alt3/Alt4: timestamp is inside FORECAST_RECOMMENDED_WINDOWS_UTC
+                            # - Alt5: timestamp hour is inside ALT5_HOURS_UTC / ALT5_ALLOWED_HOURS
                             # - Alt6: no UTC-window restriction
                             # - Alt3: h30_alt3v2_trade_eligible == True
                             # - Alt4: h30_alt4_trade_eligible == True
+                            # - Alt5: h30_alt5_trade_eligible == True
                             # - Alt6: h30_alt6_trade_eligible == True
                             # Fail-closed: if windows are missing/invalid, nothing is sent.
                             if fc_count > 0:
                                 try:
-                                    from app.forecast.recommended_windows import classify_utc_timestamp
+                                    from app.forecast.recommended_windows import classify_utc_timestamp, is_alt5_recommended_timestamp
                                     # Get symbols that were actually inserted (not deduped)
                                     _inserted_syms = set()
                                     _fc_data = fc_result.get("data")
@@ -2366,13 +2474,18 @@ def main():
                                         for strat, attr in [
                                             ("alt3", "h30_alt3v2_direction"),
                                             ("alt4", "h30_alt4_direction"),
+                                            ("alt5", "h30_alt5_direction"),
                                             ("alt6", "h30_alt6_direction"),
                                         ]:
                                             alt_dir = getattr(fc, attr, None)
                                             if alt_dir:
                                                 if strat == "alt6" and ALT6_INFO_ONLY:
                                                     continue
-                                                _send_allowed = True if strat == "alt6" else _in_window
+                                                _send_allowed = (
+                                                    True if strat == "alt6"
+                                                    else is_alt5_recommended_timestamp(fc.ts_utc.isoformat()) if strat == "alt5"
+                                                    else _in_window
+                                                )
                                                 if not _send_allowed:
                                                     continue
                                                 if strat == "alt3" and not bool(getattr(fc, "h30_alt3v2_trade_eligible", False)):
@@ -2381,12 +2494,17 @@ def main():
                                                     continue
                                                 if strat == "alt4" and not bool(getattr(fc, "h30_alt4_trade_eligible", False)):
                                                     continue
+                                                if strat == "alt5" and not tg_alt5_enabled:
+                                                    continue
+                                                if strat == "alt5" and not bool(getattr(fc, "h30_alt5_trade_eligible", False)):
+                                                    continue
                                                 if strat == "alt6" and not bool(getattr(fc, "h30_alt6_trade_eligible", False)):
                                                     continue
                                                 # Hard per-symbol repeat guard for Telegram notifications.
                                                 _repeat_min = (
                                                     alt3_min_repeat_min if strat == "alt3"
                                                     else alt4_min_repeat_min if strat == "alt4"
+                                                    else alt5_min_repeat_min if strat == "alt5"
                                                     else alt6_min_repeat_min
                                                 )
                                                 if _repeat_min > 0:
@@ -2563,15 +2681,21 @@ def main():
                             try:
                                 for _av in verify_result.alt_results:
                                     _variant = str(getattr(_av, "variant", "") or "").lower()
-                                    if _variant not in ("alt3v2", "alt4", "alt6"):
+                                    if _variant not in ("alt3v2", "alt4", "alt5", "alt6"):
                                         continue
                                     _sym = str(getattr(_av, "symbol", "") or "").upper()
                                     if not _sym:
                                         continue
                                     _correct = bool(getattr(_av, "correct", False))
                                     _row_id = getattr(_av, "row_id", None)
+                                    _variant_key = {
+                                        "alt3v2": "ALT3V2",
+                                        "alt4": "ALT4",
+                                        "alt5": "ALT5",
+                                        "alt6": "ALT6",
+                                    }.get(_variant, _variant.upper())
                                     signal_lifecycle.record_verification(
-                                        f"{_sym}#{_variant}",
+                                        f"{_sym}#{_variant_key}",
                                         correct=_correct,
                                         row_id=str(_row_id) if _row_id is not None else None,
                                     )

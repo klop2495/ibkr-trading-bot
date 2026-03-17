@@ -50,6 +50,7 @@ class ForecastRepo:
                     "h30_alt2_direction, h30_alt2_trade_eligible, h30_alt3_direction, "
                     "h30_alt3v2_direction, h30_alt3v2_trade_eligible, "
                     "h30_alt4_direction, h30_alt4_mode, h30_alt4_trade_eligible, "
+                    "h30_alt5_direction, h30_alt5_trade_eligible, "
                     "h30_alt6_direction, h30_alt6_trade_eligible"
                 )
                 .in_("symbol", symbols)
@@ -73,6 +74,8 @@ class ForecastRepo:
                         row.get("h30_alt4_direction"),
                         row.get("h30_alt4_mode"),
                         row.get("h30_alt4_trade_eligible"),
+                        row.get("h30_alt5_direction"),
+                        row.get("h30_alt5_trade_eligible"),
                         row.get("h30_alt6_direction"),
                         row.get("h30_alt6_trade_eligible"),
                     )
@@ -96,6 +99,8 @@ class ForecastRepo:
                     f.h30_alt4_direction,
                     f.h30_alt4_mode,
                     f.h30_alt4_trade_eligible,
+                    f.h30_alt5_direction,
+                    f.h30_alt5_trade_eligible,
                     f.h30_alt6_direction,
                     f.h30_alt6_trade_eligible,
                 )
