@@ -34,6 +34,7 @@ _optimizer_state: Dict[str, Any] = {
 }
 
 logger = logging.getLogger(__name__)
+ALT6_INFO_ONLY = str(os.getenv("ALT6_INFO_ONLY", "true")).strip().lower() in {"1", "true", "yes", "on"}
 
 app = FastAPI(
     title="IBKR Trading Bot Dashboard",
@@ -1138,7 +1139,7 @@ async def get_forecasts_history(
             recommended_alt2 = bool(in_window and has_alt2 and alt2_trade_eligible)
             recommended_alt3 = bool(in_window and has_alt3)
             recommended_alt4 = bool(in_window and has_alt4 and alt4_trade_eligible)
-            recommended_alt6 = bool(
+            recommended_alt6 = False if ALT6_INFO_ONLY else bool(
                 is_alt6_recommended_timestamp(str(row.get("ts_utc") or ""))
                 and has_alt6
                 and bool(alt6_trade_eligible)

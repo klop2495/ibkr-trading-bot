@@ -58,6 +58,7 @@ DEFAULT_IDLE_BACKOFF_BASE = 2.0
 DEFAULT_IDLE_BACKOFF_MAX = 60.0
 DEFAULT_EQUITY = 10000.0  # Default equity for dry-run mode
 DEFAULT_POSITION_SYNC_INTERVAL = 300  # Sync positions every 5 minutes
+ALT6_INFO_ONLY = str(os.getenv("ALT6_INFO_ONLY", "true")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _safe_uuid(value: Any) -> Optional[UUID]:
@@ -2256,7 +2257,7 @@ def main():
                                         setattr(fc, "h30_alt4_trade_eligible", None)
                                         _lc_blocked += 1
 
-                                if _alt6_dir:
+                                if _alt6_dir and not ALT6_INFO_ONLY:
                                     _key6 = f"{fc.symbol}#ALT6"
                                     _st6 = signal_lifecycle._states.get(_key6)  # noqa: SLF001
                                     if (
@@ -2321,7 +2322,7 @@ def main():
                                                 now=_ts,
                                                 row_id=str(_rid) if _rid is not None else None,
                                             )
-                                        if _sym and _d6:
+                                        if _sym and _d6 and not ALT6_INFO_ONLY:
                                             signal_lifecycle.record_signal(
                                                 f"{_sym}#ALT6",
                                                 _d6,
@@ -2369,6 +2370,8 @@ def main():
                                         ]:
                                             alt_dir = getattr(fc, attr, None)
                                             if alt_dir:
+                                                if strat == "alt6" and ALT6_INFO_ONLY:
+                                                    continue
                                                 _send_allowed = True if strat == "alt6" else _in_window
                                                 if not _send_allowed:
                                                     continue
