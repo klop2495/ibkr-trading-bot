@@ -19,14 +19,15 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_MAX_EXTENSION_PIPS = float(os.getenv("ALT6_MAX_EXTENSION_PIPS", "1.4"))
-DEFAULT_MAX_BREAKOUT_AGE_SEC = int(os.getenv("ALT6_MAX_BREAKOUT_AGE_SEC", "120"))
+DEFAULT_MAX_BREAKOUT_AGE_SEC = int(os.getenv("ALT6_MAX_BREAKOUT_AGE_SEC", "150"))
 DEFAULT_MAX_BREAKOUT_DISTANCE_PIPS = float(os.getenv("ALT6_MAX_BREAKOUT_DISTANCE_PIPS", "1.4"))
 DEFAULT_BREAKOUT_NET_PIPS = float(os.getenv("ALT6_BREAKOUT_NET_PIPS", "0.4"))
 DEFAULT_BREAKOUT_BODY_PIPS = float(os.getenv("ALT6_BREAKOUT_BODY_PIPS", "1.0"))
 DEFAULT_BREAKOUT_MONOTONIC_MODE = str(os.getenv("ALT6_BREAKOUT_MONOTONIC_MODE", "relaxed")).strip().lower() or "relaxed"
-DEFAULT_SOFT_NET_PIPS = float(os.getenv("ALT6_SOFT_NET_PIPS", "0.1"))
-DEFAULT_SOFT_BODY_PIPS = float(os.getenv("ALT6_SOFT_BODY_PIPS", "0.4"))
+DEFAULT_SOFT_NET_PIPS = float(os.getenv("ALT6_SOFT_NET_PIPS", "0.05"))
+DEFAULT_SOFT_BODY_PIPS = float(os.getenv("ALT6_SOFT_BODY_PIPS", "0.2"))
 DEFAULT_SOFT_BREAK_MARGIN_PIPS = float(os.getenv("ALT6_SOFT_BREAK_MARGIN_PIPS", "0.4"))
+DEFAULT_STRUCTURE_MIN_SCORE = int(os.getenv("ALT6_STRUCTURE_MIN_SCORE", "1"))
 DEFAULT_MIN_ADX = float(os.getenv("ALT6_MIN_ADX", "0"))
 DEFAULT_MTF_VETO = str(os.getenv("ALT6_MTF_VETO", "false")).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -253,7 +254,7 @@ def soft_structure_metrics_s5_v43(
         f"score={score}",
     )
     must_have = directional_net_ok and breakout_touch
-    return must_have and score >= 2, score, metrics
+    return must_have and score >= DEFAULT_STRUCTURE_MIN_SCORE, score, metrics
 
 
 def extension_veto(
