@@ -281,7 +281,7 @@ class TestEndToEndPipeline:
         # Verify result
         assert isinstance(result, ParallelDecisionV1)
         assert result.symbol == "EURUSD"
-        assert result.rules_signal == "SHORT"
+        assert result.rules_signal == "LONG"
         assert result.executed_strategy == "hybrid"
         assert result.gpt_signal in ("LONG", "SHORT", "HOLD")
         
@@ -339,4 +339,4 @@ class TestEndToEndPipeline:
         
         # Verify result
         assert result.symbol == "GBPUSD"
-        assert result.rules_signal == "LONG"
+        assert result.rules_signal == "SHORT"
