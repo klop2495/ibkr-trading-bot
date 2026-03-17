@@ -24,6 +24,9 @@ DEFAULT_MAX_BREAKOUT_DISTANCE_PIPS = float(os.getenv("ALT6_MAX_BREAKOUT_DISTANCE
 DEFAULT_BREAKOUT_NET_PIPS = float(os.getenv("ALT6_BREAKOUT_NET_PIPS", "0.4"))
 DEFAULT_BREAKOUT_BODY_PIPS = float(os.getenv("ALT6_BREAKOUT_BODY_PIPS", "1.0"))
 DEFAULT_BREAKOUT_MONOTONIC_MODE = str(os.getenv("ALT6_BREAKOUT_MONOTONIC_MODE", "relaxed")).strip().lower() or "relaxed"
+DEFAULT_SOFT_NET_PIPS = float(os.getenv("ALT6_SOFT_NET_PIPS", "0.2"))
+DEFAULT_SOFT_BODY_PIPS = float(os.getenv("ALT6_SOFT_BODY_PIPS", "0.6"))
+DEFAULT_SOFT_BREAK_MARGIN_PIPS = float(os.getenv("ALT6_SOFT_BREAK_MARGIN_PIPS", "0.2"))
 DEFAULT_MIN_ADX = float(os.getenv("ALT6_MIN_ADX", "0"))
 DEFAULT_MTF_VETO = str(os.getenv("ALT6_MTF_VETO", "false")).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -38,6 +41,7 @@ class Alt6Decision:
     structure_passed: bool
     timing_passed: bool
     quality_passed: bool
+    quality_flags: Tuple[str, ...] = ()
 
 
 def pip_size(symbol: str) -> float:
@@ -161,6 +165,44 @@ def squeeze_breakout_confirm_strict_s5_v2(
     )
 
 
+def squeeze_breakout_confirm_soft_s5_v4(
+    forecast: ForecastResult, s5: Sequence[Tuple[datetime, float]]
+) -> bool:
+    direction = _h30_direction(forecast)
+    if len(s5) < 8 or direction not in {"up", "down"}:
+        return False
+    closes = [x[1] for x in s5]
+    ps = pip_size(forecast.symbol)
+    recent = closes[-4:]
+    history = closes[:-4]
+    if not history:
+        return False
+    net = closes[-1] - closes[0]
+    body = max(closes) - min(closes)
+    margin = DEFAULT_SOFT_BREAK_MARGIN_PIPS * ps
+    if direction == "up":
+        directional_steps = sum(1 for a, b in zip(recent, recent[1:]) if b >= a)
+        anchor = max(history)
+        breakout_touch = max(recent) >= (anchor - margin)
+        return (
+            net >= DEFAULT_SOFT_NET_PIPS * ps
+            and directional_steps >= 2
+            and breakout_touch
+            and closes[-1] >= (anchor - margin)
+            and body >= DEFAULT_SOFT_BODY_PIPS * ps
+        )
+    directional_steps = sum(1 for a, b in zip(recent, recent[1:]) if b <= a)
+    anchor = min(history)
+    breakout_touch = min(recent) <= (anchor + margin)
+    return (
+        net <= -DEFAULT_SOFT_NET_PIPS * ps
+        and directional_steps >= 2
+        and breakout_touch
+        and closes[-1] <= (anchor + margin)
+        and body >= DEFAULT_SOFT_BODY_PIPS * ps
+    )
+
+
 def extension_veto(
     forecast: ForecastResult,
     s5: Sequence[Tuple[datetime, float]],
@@ -192,8 +234,8 @@ def _structure_stage(
     width_ok = forecast.bb_width is not None and forecast.bb_width <= 0.008
     if not (bool(forecast.bb_squeeze) or width_ok):
         return "NO_SQUEEZE_CONTEXT"
-    if not squeeze_breakout_confirm_strict_s5_v2(forecast, s5):
-        return "BREAKOUT_NOT_CONFIRMED"
+    if not squeeze_breakout_confirm_soft_s5_v4(forecast, s5):
+        return "STRUCTURE_SOFT_FAIL"
     return None
 
 
@@ -213,12 +255,20 @@ def _timing_stage(
     return None
 
 
-def _quality_stage(forecast: ForecastResult) -> Optional[str]:
+def _quality_stage(
+    forecast: ForecastResult,
+    s5: Sequence[Tuple[datetime, float]],
+) -> Tuple[Optional[str], Tuple[str, ...]]:
+    quality_flags: list[str] = []
+    if squeeze_breakout_confirm_strict_s5_v2(forecast, s5):
+        quality_flags.append("ALT6_QUALITY:STRICT_BREAKOUT_OK")
+    else:
+        quality_flags.append("ALT6_QUALITY:STRICT_BREAKOUT_WEAK")
     if forecast.adx_value is not None and forecast.adx_value < DEFAULT_MIN_ADX:
-        return "LOW_ADX"
+        return "LOW_ADX", tuple(quality_flags)
     if DEFAULT_MTF_VETO and bool(forecast.mtf_conflict):
-        return "MTF_CONFLICT"
-    return None
+        return "MTF_CONFLICT", tuple(quality_flags)
+    return None, tuple(quality_flags)
 
 
 def compute_alt6_signal(
@@ -260,7 +310,7 @@ def compute_alt6_signal(
             timing_passed=False,
             quality_passed=False,
         )
-    reason = _quality_stage(forecast)
+    reason, quality_flags = _quality_stage(forecast, s5)
     if reason:
         return Alt6Decision(
             direction=None,
@@ -271,6 +321,7 @@ def compute_alt6_signal(
             structure_passed=True,
             timing_passed=True,
             quality_passed=False,
+            quality_flags=quality_flags,
         )
     return Alt6Decision(
         direction=direction,
@@ -281,6 +332,7 @@ def compute_alt6_signal(
         structure_passed=True,
         timing_passed=True,
         quality_passed=True,
+        quality_flags=quality_flags,
     )
 
 
@@ -301,6 +353,9 @@ def enrich_forecasts_with_alt6(db_client: any, forecasts: Iterable[ForecastResul
                 _append_stage_flag(forecast, "QUALITY")
             if decision.direction and decision.trade_eligible:
                 _append_stage_flag(forecast, "EXECUTABLE")
+            for flag in decision.quality_flags:
+                if flag not in forecast.flags:
+                    forecast.flags.append(flag)
             _append_reject_flag(forecast, decision.reject_reason)
         except Exception as exc:
             logger.warning("alt6_enrich_failed symbol=%s error=%s", forecast.symbol, exc)
