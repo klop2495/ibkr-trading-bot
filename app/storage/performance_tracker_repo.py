@@ -6,7 +6,6 @@ Phase 7: Persistence for AgentPerformanceTracker state.
 Stores/loads tracker state to/from Supabase.
 """
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -68,11 +67,7 @@ class PerformanceTrackerRepo:
             }
             
             # Upsert (update if exists, insert if not)
-            res = (
-                self.db.client.table(self.table)
-                .upsert(payload, on_conflict="key")
-                .execute()
-            )
+            self.db.client.table(self.table).upsert(payload, on_conflict="key").execute()
             
             logger.info(f"Performance tracker state saved: key={key} trades={total_trades}")
             return True

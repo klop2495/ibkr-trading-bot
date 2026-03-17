@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-from uuid import UUID
 
 from app.models.agent_report import AgentReport
 from app.storage.repositories import BaseRepo
