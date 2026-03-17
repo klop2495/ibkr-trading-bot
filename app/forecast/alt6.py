@@ -82,15 +82,27 @@ def _breakout_metrics(
         return None, None
     closes = [x[1] for x in s5]
     times = [x[0] for x in s5]
+    breakout_ts: Optional[datetime] = None
+    breakout_anchor: Optional[float] = None
     if direction == "up":
-        anchor = max(closes[:-4])
-        breakout_ts = next((ts for ts, close in zip(times[-4:], closes[-4:]) if close > anchor), None)
-        distance_pips = (closes[-1] - anchor) / pip_size(forecast.symbol)
+        for idx in range(4, len(closes)):
+            prior_anchor = max(closes[:idx])
+            if closes[idx] > prior_anchor:
+                breakout_ts = times[idx]
+                breakout_anchor = prior_anchor
+        if breakout_ts is None or breakout_anchor is None:
+            return None, None
+        distance_pips = (closes[-1] - breakout_anchor) / pip_size(forecast.symbol)
     else:
-        anchor = min(closes[:-4])
-        breakout_ts = next((ts for ts, close in zip(times[-4:], closes[-4:]) if close < anchor), None)
-        distance_pips = (anchor - closes[-1]) / pip_size(forecast.symbol)
-    if breakout_ts is None:
+        for idx in range(4, len(closes)):
+            prior_anchor = min(closes[:idx])
+            if closes[idx] < prior_anchor:
+                breakout_ts = times[idx]
+                breakout_anchor = prior_anchor
+        if breakout_ts is None or breakout_anchor is None:
+            return None, None
+        distance_pips = (breakout_anchor - closes[-1]) / pip_size(forecast.symbol)
+    if breakout_ts is None or breakout_anchor is None:
         return None, None
     age_sec = max(0.0, (forecast.ts_utc - breakout_ts).total_seconds())
     return age_sec, max(0.0, distance_pips)

@@ -153,3 +153,25 @@ def test_alt6_rejects_when_soft_structure_fails(monkeypatch):
     assert decision.trade_eligible is False
     assert decision.reject_reason == "STRUCTURE_SOFT_FAIL"
     assert decision.stage == "structure"
+
+
+def test_breakout_metrics_uses_latest_breakout_impulse():
+    forecast = _forecast("EURUSD", "up")
+    forecast.ts_utc = datetime(2026, 3, 16, 10, 3, 0, tzinfo=timezone.utc)
+    s5 = [
+        (datetime(2026, 3, 16, 10, 2, 0, tzinfo=timezone.utc), 1.1000),
+        (datetime(2026, 3, 16, 10, 2, 5, tzinfo=timezone.utc), 1.1001),
+        (datetime(2026, 3, 16, 10, 2, 10, tzinfo=timezone.utc), 1.1002),
+        (datetime(2026, 3, 16, 10, 2, 15, tzinfo=timezone.utc), 1.1003),
+        (datetime(2026, 3, 16, 10, 2, 20, tzinfo=timezone.utc), 1.1005),
+        (datetime(2026, 3, 16, 10, 2, 25, tzinfo=timezone.utc), 1.1004),
+        (datetime(2026, 3, 16, 10, 2, 30, tzinfo=timezone.utc), 1.1006),
+        (datetime(2026, 3, 16, 10, 2, 35, tzinfo=timezone.utc), 1.10055),
+        (datetime(2026, 3, 16, 10, 2, 40, tzinfo=timezone.utc), 1.1008),
+        (datetime(2026, 3, 16, 10, 2, 45, tzinfo=timezone.utc), 1.10075),
+    ]
+
+    age_sec, distance_pips = alt6._breakout_metrics(forecast, s5)
+
+    assert age_sec == 20.0
+    assert round(distance_pips or 0, 2) == 1.5
