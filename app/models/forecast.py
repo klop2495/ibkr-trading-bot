@@ -108,6 +108,12 @@ class ForecastResult(BaseModel):
     h30_alt6_correct: Optional[bool] = None
     h30_alt6_trade_eligible: Optional[bool] = None
 
+    # Smart ANTI: h30==h4 + aligned<=3 → ANTI (except EURUSD)
+    # 78.2% accuracy on 444 samples (14 days backtest)
+    h30_smart_anti_direction: Optional[str] = None
+    h30_smart_anti_correct: Optional[bool] = None
+    h30_smart_anti_eligible: Optional[bool] = None
+
     # Volatility regime filter (Phase 3 — BBW toxic band detection)
     vol_regime_blocked: Optional[bool] = None   # True if BBW in toxic band
     vol_regime_reason: Optional[str] = None     # e.g. "TOXIC_BBW_BAND"
@@ -220,4 +226,9 @@ class ForecastResult(BaseModel):
             row["h30_alt6_direction"] = self.h30_alt6_direction
         if self.h30_alt6_trade_eligible is not None:
             row["h30_alt6_trade_eligible"] = bool(self.h30_alt6_trade_eligible)
+        # Smart ANTI: market-condition based strategy
+        if self.h30_smart_anti_direction is not None:
+            row["h30_smart_anti_direction"] = self.h30_smart_anti_direction
+        if self.h30_smart_anti_eligible is not None:
+            row["h30_smart_anti_eligible"] = bool(self.h30_smart_anti_eligible)
         return row

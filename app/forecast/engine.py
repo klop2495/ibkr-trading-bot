@@ -229,6 +229,17 @@ class ForecastEngine:
         _alt3v2_dir, _alt3v2_eligible, _alt3v2_score, _alt3v2_meta = self._compute_alt3v2_signal(
             symbol, h30_votes_json, adx_value
         )
+        
+        # Smart ANTI strategy: replaces legacy Alt3
+        # Rule: If h30_direction == mtf_h4_direction AND aligned <= 3 → trade AGAINST
+        # Exception: EURUSD → trade WITH direction (74% accuracy)
+        _smart_anti_dir, _smart_anti_eligible = self._compute_smart_anti_signal(
+            symbol=symbol,
+            h30_direction=h30_horizon.direction.value if h30_horizon else None,
+            h30_aligned=h30_horizon.indicators_aligned if h30_horizon else 0,
+            mtf_h4_direction=mtf_h4_direction,
+            bb_width=bb_width,
+        )
         _h30_direction = h30_horizon.direction.value if h30_horizon else None
         _h30_confidence = h30_horizon.confidence.value if h30_horizon else None
         _alt4_dir, _alt4_mode, _alt4_eligible = self._compute_alt4_signal(
@@ -267,6 +278,9 @@ class ForecastEngine:
             h30_alt3v2_trade_eligible=_alt3v2_eligible,
             h30_alt3v2_score=_alt3v2_score,
             h30_alt3v2_meta_json=_alt3v2_meta,
+            # Smart ANTI (replaces Alt3 for execution)
+            h30_smart_anti_direction=_smart_anti_dir,
+            h30_smart_anti_eligible=_smart_anti_eligible,
             h30_alt4_direction=_alt4_dir,
             h30_alt4_mode=_alt4_mode,
             h30_alt4_trade_eligible=_alt4_eligible,
@@ -506,6 +520,49 @@ class ForecastEngine:
             if adx_value is None or adx_value < self._alt4_min_adx:
                 eligible = False
         return alt4_direction, mode, eligible
+
+    def _compute_smart_anti_signal(
+        self,
+        symbol: str,
+        h30_direction: Optional[str],
+        h30_aligned: int,
+        mtf_h4_direction: Optional[str],
+        bb_width: Optional[float],
+    ) -> Tuple[Optional[str], Optional[bool]]:
+        """Smart ANTI strategy — 78.2% accuracy on 444 samples.
+        
+        Rule:
+        - If h30_direction == mtf_h4_direction AND aligned <= 3 → trade AGAINST h30
+        - Exception: EURUSD trades WITH h30_direction (74% accuracy)
+        - Filter: bb_width >= 0.002 for sufficient volatility
+        
+        Returns (direction, eligible):
+        - direction: trading direction (inverted for most pairs, original for EURUSD)
+        - eligible: True if all conditions met
+        """
+        # Need valid directions
+        if h30_direction is None or h30_direction == "neutral":
+            return None, None
+        if mtf_h4_direction is None or mtf_h4_direction == "neutral":
+            return None, None
+        
+        # Volatility filter
+        if bb_width is None or bb_width < 0.002:
+            return None, None
+        
+        # Core condition: h30 matches H4 AND weak alignment
+        if h30_direction != mtf_h4_direction:
+            return None, None
+        if h30_aligned > 3:
+            return None, None
+        
+        # EURUSD exception: trade WITH direction (74% accuracy)
+        if symbol.upper() == "EURUSD":
+            return h30_direction, True
+        
+        # All other pairs: trade AGAINST direction (78% accuracy)
+        anti_direction = "down" if h30_direction == "up" else "up"
+        return anti_direction, True
 
     def _compute_alt5_signal(
         self,

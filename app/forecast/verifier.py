@@ -133,7 +133,8 @@ class ForecastVerifier:
                         "h30_direction, h60_direction, h240_direction, h1440_direction, "
                         "h30_correct, h60_correct, h240_correct, h1440_correct, "
                         "h30_alt_direction, h30_alt2_direction, h30_alt3_direction, "
-                        "h30_alt3v2_direction, h30_alt4_direction, h30_alt5_direction, h30_alt6_direction")
+                        "h30_alt3v2_direction, h30_alt4_direction, h30_alt5_direction, h30_alt6_direction, "
+                        "h30_smart_anti_direction")
                 .is_("verified_at", "null")
                 .lte("ts_utc", cutoff.isoformat())
                 .order("ts_utc", desc=False)
@@ -271,6 +272,10 @@ class ForecastVerifier:
                                 update_data["h30_alt5_correct"] = (alt5_dir == _adir)
                             if alt6_dir and alt6_dir != "neutral":
                                 update_data["h30_alt6_correct"] = (alt6_dir == _adir)
+                            # Smart ANTI verification
+                            smart_anti_dir = row.get("h30_smart_anti_direction")
+                            if smart_anti_dir and smart_anti_dir != "neutral":
+                                update_data["h30_smart_anti_correct"] = (smart_anti_dir == _adir)
                 continue
 
             # Get actual price at horizon end from historical data
@@ -331,6 +336,10 @@ class ForecastVerifier:
                 alt6_dir = row.get("h30_alt6_direction")
                 if alt6_dir and alt6_dir != "neutral":
                     update_data["h30_alt6_correct"] = (alt6_dir == actual_dir)
+                # Smart ANTI: verify market-condition based strategy
+                smart_anti_dir = row.get("h30_smart_anti_direction")
+                if smart_anti_dir and smart_anti_dir != "neutral":
+                    update_data["h30_smart_anti_correct"] = (smart_anti_dir == actual_dir)
 
         # Determine if we should force-verify to prevent queue blocking
         age_hours = (now - forecast_ts).total_seconds() / 3600
@@ -360,6 +369,7 @@ class ForecastVerifier:
         alt4_correct = update_data.get("h30_alt4_correct")
         alt5_correct = update_data.get("h30_alt5_correct")
         alt6_correct = update_data.get("h30_alt6_correct")
+        smart_anti_correct = update_data.get("h30_smart_anti_correct")
         if isinstance(alt2_correct, bool) and row.get("h30_alt2_direction") not in (None, "neutral"):
             alt_verified.append(
                 AltVerified(
@@ -417,6 +427,16 @@ class ForecastVerifier:
                     symbol=str(symbol),
                     variant="alt6",
                     correct=alt6_correct,
+                    ts_utc=ts_out,
+                )
+            )
+        if isinstance(smart_anti_correct, bool) and row.get("h30_smart_anti_direction") not in (None, "neutral"):
+            alt_verified.append(
+                AltVerified(
+                    row_id=str(row_id),
+                    symbol=str(symbol),
+                    variant="smart_anti",
+                    correct=smart_anti_correct,
                     ts_utc=ts_out,
                 )
             )
