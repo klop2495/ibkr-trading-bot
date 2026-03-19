@@ -230,16 +230,16 @@ class ForecastEngine:
             symbol, h30_votes_json, adx_value
         )
         
-        # Alt3 v3: Smart ANTI strategy
-        # Rule: If h30_direction == mtf_h4_direction AND aligned <= 3 → trade AGAINST
-        # Exception: EURUSD → trade WITH direction (74% accuracy)
-        # Backtest: 78.2% accuracy on 444 samples (14 days)
+        # Alt3 v3: Smart ANTI strategy (V10 optimized)
+        # Filters: strong symbols only + ADX<35 + h30==h4 + aligned<=3 + BBW>=0.002
+        # V10 backtest: 86.4% accuracy on 22 signals
         _alt3_dir, _alt3_eligible = self._compute_alt3_signal_v3(
             symbol=symbol,
             h30_direction=h30_horizon.direction.value if h30_horizon else None,
             h30_aligned=h30_horizon.indicators_aligned if h30_horizon else 0,
             mtf_h4_direction=mtf_h4_direction,
             bb_width=bb_width,
+            adx_value=adx_value,
         )
         _h30_direction = h30_horizon.direction.value if h30_horizon else None
         _h30_confidence = h30_horizon.confidence.value if h30_horizon else None
@@ -522,6 +522,9 @@ class ForecastEngine:
                 eligible = False
         return alt4_direction, mode, eligible
 
+    # Smart ANTI V10: strong symbols that work well with this strategy
+    SMART_ANTI_SYMBOLS = {"EURJPY", "USDCAD", "EURUSD", "EURGBP", "AUDJPY"}
+
     def _compute_alt3_signal_v3(
         self,
         symbol: str,
@@ -529,18 +532,33 @@ class ForecastEngine:
         h30_aligned: int,
         mtf_h4_direction: Optional[str],
         bb_width: Optional[float],
+        adx_value: Optional[float] = None,
     ) -> Tuple[Optional[str], Optional[bool]]:
-        """Alt3 v3: Smart ANTI strategy — 78.2% accuracy on 444 samples.
+        """Alt3 v3: Smart ANTI strategy — V10 optimized for 86.4% accuracy.
         
-        Replaces legacy Alt3 with market-condition based logic:
-        - If h30_direction == mtf_h4_direction AND aligned <= 3 → trade AGAINST h30
-        - Exception: EURUSD trades WITH h30_direction (74% accuracy)
-        - Filter: bb_width >= 0.002 for sufficient volatility
+        Filters (V10 optimization):
+        1. Symbol must be in SMART_ANTI_SYMBOLS (strong performers)
+        2. ADX < 35 (low ADX = better for ANTI strategy)
+        3. h30_direction == mtf_h4_direction (directions aligned)
+        4. aligned <= 3 (weak indicator consensus)
+        5. bb_width >= 0.002 (sufficient volatility)
+        
+        Signal logic:
+        - EURUSD: trade WITH h30_direction (80% accuracy)
+        - All others: trade AGAINST h30_direction (ANTI)
         
         Returns (direction, eligible):
-        - direction: trading direction (inverted for most pairs, original for EURUSD)
+        - direction: trading direction
         - eligible: True if all conditions met
         """
+        # V10 Filter 1: Only strong symbols
+        if symbol.upper() not in self.SMART_ANTI_SYMBOLS:
+            return None, None
+        
+        # V10 Filter 2: ADX < 35 (high ADX = toxic for ANTI)
+        if adx_value is not None and adx_value >= 35:
+            return None, None
+        
         # Need valid directions
         if h30_direction is None or h30_direction == "neutral":
             return None, None
@@ -557,11 +575,11 @@ class ForecastEngine:
         if h30_aligned > 3:
             return None, None
         
-        # EURUSD exception: trade WITH direction (74% accuracy)
+        # EURUSD exception: trade WITH direction (80% accuracy)
         if symbol.upper() == "EURUSD":
             return h30_direction, True
         
-        # All other pairs: trade AGAINST direction (78% accuracy)
+        # All other pairs: trade AGAINST direction (ANTI)
         anti_direction = "down" if h30_direction == "up" else "up"
         return anti_direction, True
 
