@@ -230,10 +230,11 @@ class ForecastEngine:
             symbol, h30_votes_json, adx_value
         )
         
-        # Smart ANTI strategy: replaces legacy Alt3
+        # Alt3 v3: Smart ANTI strategy
         # Rule: If h30_direction == mtf_h4_direction AND aligned <= 3 → trade AGAINST
         # Exception: EURUSD → trade WITH direction (74% accuracy)
-        _smart_anti_dir, _smart_anti_eligible = self._compute_smart_anti_signal(
+        # Backtest: 78.2% accuracy on 444 samples (14 days)
+        _alt3_dir, _alt3_eligible = self._compute_alt3_signal_v3(
             symbol=symbol,
             h30_direction=h30_horizon.direction.value if h30_horizon else None,
             h30_aligned=h30_horizon.indicators_aligned if h30_horizon else 0,
@@ -273,14 +274,14 @@ class ForecastEngine:
             h30_votes_json=h30_votes_json,
             h30_alt2_direction=_alt2_dir,
             h30_alt2_trade_eligible=None,
+            # Alt3: Smart ANTI strategy (v3) - replaces legacy Alt3
             h30_alt3_direction=_alt3_dir,
+            h30_alt3_trade_eligible=_alt3_eligible,
+            # Alt3-v2: legacy variant (kept for comparison)
             h30_alt3v2_direction=_alt3v2_dir,
             h30_alt3v2_trade_eligible=_alt3v2_eligible,
             h30_alt3v2_score=_alt3v2_score,
             h30_alt3v2_meta_json=_alt3v2_meta,
-            # Smart ANTI (replaces Alt3 for execution)
-            h30_smart_anti_direction=_smart_anti_dir,
-            h30_smart_anti_eligible=_smart_anti_eligible,
             h30_alt4_direction=_alt4_dir,
             h30_alt4_mode=_alt4_mode,
             h30_alt4_trade_eligible=_alt4_eligible,
@@ -521,7 +522,7 @@ class ForecastEngine:
                 eligible = False
         return alt4_direction, mode, eligible
 
-    def _compute_smart_anti_signal(
+    def _compute_alt3_signal_v3(
         self,
         symbol: str,
         h30_direction: Optional[str],
@@ -529,9 +530,9 @@ class ForecastEngine:
         mtf_h4_direction: Optional[str],
         bb_width: Optional[float],
     ) -> Tuple[Optional[str], Optional[bool]]:
-        """Smart ANTI strategy — 78.2% accuracy on 444 samples.
+        """Alt3 v3: Smart ANTI strategy — 78.2% accuracy on 444 samples.
         
-        Rule:
+        Replaces legacy Alt3 with market-condition based logic:
         - If h30_direction == mtf_h4_direction AND aligned <= 3 → trade AGAINST h30
         - Exception: EURUSD trades WITH h30_direction (74% accuracy)
         - Filter: bb_width >= 0.002 for sufficient volatility
