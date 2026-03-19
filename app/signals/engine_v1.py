@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional
 
@@ -399,25 +400,35 @@ class SignalEngineV1:
                 flags=flags,
             )
 
+        # SIGNALS_ALLOW_TF_MISMATCH=1 allows trading even when H4 and H1 disagree
+        allow_tf_mismatch = os.getenv("SIGNALS_ALLOW_TF_MISMATCH", "0") == "1"
+        
         if dir_h4 != dir_h1:
             flags.append(FLAG_TF_MISMATCH_H4_H1)
-            return SignalPreviewV1(
-                ts_utc=ts,
-                symbol=symbol,
-                setup_type=SetupType.NO_TRADE,
-                direction=Direction.FLAT,
-                setup_present=False,
-                entry_triggered=False,
-                confidence=Confidence.LOW,
-                rr=self.params.rr.base_rr or 0.0,
-                data_quality=data_quality,
-                spread_quality=spread_quality,
-                flags=flags,
-            )
+            if not allow_tf_mismatch:
+                return SignalPreviewV1(
+                    ts_utc=ts,
+                    symbol=symbol,
+                    setup_type=SetupType.NO_TRADE,
+                    direction=Direction.FLAT,
+                    setup_present=False,
+                    entry_triggered=False,
+                    confidence=Confidence.LOW,
+                    rr=self.params.rr.base_rr or 0.0,
+                    data_quality=data_quality,
+                    spread_quality=spread_quality,
+                    flags=flags,
+                )
+            # When mismatch allowed, use H4 direction but lower confidence
+            direction = dir_h4
 
         direction = dir_h4
         regime_score = self._score_regime(direction, snap_h4, snap_h1)
-        if regime_score < self.params.scoring.min_regime_score:
+        
+        # SIGNALS_MIN_REGIME_SCORE can override the default min_regime_score
+        min_regime = float(os.getenv("SIGNALS_MIN_REGIME_SCORE", str(self.params.scoring.min_regime_score)))
+        
+        if regime_score < min_regime:
             flags.append(FLAG_REGIME_SCORE_WEAK)
             return SignalPreviewV1(
                 ts_utc=ts,
@@ -435,12 +446,18 @@ class SignalEngineV1:
 
         confidence = Confidence.NORMAL
         rr = self.params.rr.base_rr or 0.0
-        structural = self._compute_structural_setup(
-            symbol=symbol,
-            direction=dir_h4,
-            ohlc_m15=(ohlc_by_timeframe or {}).get("M15"),
-            rr=rr,
-        )
+        
+        # SIGNALS_SIMPLE_MODE=1 skips structural analysis and uses legacy fallback
+        simple_mode = os.getenv("SIGNALS_SIMPLE_MODE", "0") == "1"
+        
+        structural = None
+        if not simple_mode:
+            structural = self._compute_structural_setup(
+                symbol=symbol,
+                direction=dir_h4,
+                ohlc_m15=(ohlc_by_timeframe or {}).get("M15"),
+                rr=rr,
+            )
 
         if structural is not None:
             setup_type = SetupType.SWING_CONTINUATION

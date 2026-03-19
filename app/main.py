@@ -1032,10 +1032,18 @@ def run_execution_tick(
     Finds recent verdicts with trade_allowed=True that haven't been executed yet,
     and submits them to the execution service with SL/TP from signal_preview.
     """
+    # Verbose logging for debugging execution flow
+    _exec_verbose = os.getenv("EXECUTION_VERBOSE", "0") == "1"
+    
     if client is None:
+        if _exec_verbose:
+            print("execution_tick: client is None")
         return {"executed": 0, "skipped": 0, "errors": 0}
 
     execution_strategy = os.getenv("EXECUTION_STRATEGY") or os.getenv("ACTIVE_STRATEGY", "rules")
+    if _exec_verbose:
+        print(f"execution_tick: strategy={execution_strategy}")
+    
     if execution_strategy == "hybrid":
         return _run_execution_tick_hybrid(
             client=client,
@@ -1067,6 +1075,9 @@ def run_execution_tick(
             .execute()
         )
         verdicts_rows = getattr(verdicts_res, "data", None) or []
+        
+        if _exec_verbose:
+            print(f"execution_tick: found {len(verdicts_rows)} verdicts with trade_allowed=True")
         
         if not verdicts_rows:
             return {"executed": 0, "skipped": 0, "errors": 0}
@@ -1122,6 +1133,15 @@ def run_execution_tick(
             )
             previews_rows = getattr(previews_res, "data", None) or []
             signal_previews_map = {str(row.get("id")): row for row in previews_rows}
+            
+            if _exec_verbose:
+                for row in previews_rows:
+                    print(
+                        f"execution_tick: preview id={row.get('id')[:8]}... "
+                        f"entry_triggered={row.get('entry_triggered')} "
+                        f"direction={row.get('direction')} "
+                        f"setup_present={row.get('setup_present')}"
+                    )
         
         # Check which verdicts have already been executed (via risk_events)
         # Only check recent events (last 24 hours) to avoid blocking on old executions
@@ -1174,10 +1194,14 @@ def run_execution_tick(
                     require_spread_ok=require_spread_ok,
                 )
                 if not allowed:
+                    if _exec_verbose:
+                        print(f"execution_tick: SKIPPED {decision_row.get('symbol')} reason={reason}")
                     skipped += 1
                     continue
                 final_signal, direction = _rules_signal_from_preview(preview_data)
                 if not direction:
+                    if _exec_verbose:
+                        print(f"execution_tick: SKIPPED {decision_row.get('symbol')} no_direction")
                     skipped += 1
                     continue
             
