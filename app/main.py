@@ -2366,6 +2366,29 @@ def main():
                                         _alt3v2_dir = None
                                     else:
                                         _alt3v2_dir = getattr(fc, "h30_alt3v2_direction", None)
+                                # Smart ANTI V10 lifecycle
+                                _alt3_dir = getattr(fc, "h30_alt3_direction", None)
+                                if _alt3_dir:
+                                    _key3_smart = f"{fc.symbol}#ALT3"
+                                    _st3_smart = signal_lifecycle._states.get(_key3_smart)  # noqa: SLF001
+                                    if (
+                                        alt3_min_repeat_min > 0
+                                        and _st3_smart
+                                        and _st3_smart.last_signal_ts is not None
+                                    ):
+                                        _age3_smart = (_lc_now - _st3_smart.last_signal_ts).total_seconds() / 60
+                                        if _age3_smart < alt3_min_repeat_min:
+                                            setattr(fc, "h30_alt3_direction", None)
+                                            setattr(fc, "h30_alt3_trade_eligible", None)
+                                            _lc_blocked += 1
+                                            _alt3_dir = None
+                                    if _alt3_dir:
+                                        _ok3_smart, _ = signal_lifecycle.can_signal(_key3_smart, _alt3_dir, _lc_now)
+                                        if not _ok3_smart:
+                                            setattr(fc, "h30_alt3_direction", None)
+                                            setattr(fc, "h30_alt3_trade_eligible", None)
+                                            _lc_blocked += 1
+
                                 if _alt3v2_dir:
                                     _key3 = f"{fc.symbol}#ALT3V2"
                                     _ok3, _reason3 = signal_lifecycle.can_signal(_key3, _alt3v2_dir, _lc_now)
@@ -2470,6 +2493,14 @@ def main():
                                         _d4 = _row.get("h30_alt4_direction")
                                         _d5 = _row.get("h30_alt5_direction")
                                         _d6 = _row.get("h30_alt6_direction")
+                                        _d3_smart = _row.get("h30_alt3_direction")
+                                        if _sym and _d3_smart:
+                                            signal_lifecycle.record_signal(
+                                                f"{_sym}#ALT3",
+                                                _d3_smart,
+                                                now=_ts,
+                                                row_id=str(_rid) if _rid is not None else None,
+                                            )
                                         if _sym and _d3:
                                             signal_lifecycle.record_signal(
                                                 f"{_sym}#ALT3V2",
@@ -2548,6 +2579,7 @@ def main():
                                                 _send_allowed = (
                                                     True if strat == "alt6"
                                                     else is_alt5_recommended_timestamp(fc.ts_utc.isoformat()) if strat == "alt5"
+                                                    else True if strat == "alt3"  # Smart ANTI V10
                                                     else _in_window
                                                 )
                                                 if not _send_allowed:
@@ -2749,7 +2781,7 @@ def main():
                             try:
                                 for _av in verify_result.alt_results:
                                     _variant = str(getattr(_av, "variant", "") or "").lower()
-                                    if _variant not in ("alt3v2", "alt4", "alt5", "alt6"):
+                                    if _variant not in ("alt3", "alt3v2", "alt4", "alt5", "alt6"):
                                         continue
                                     _sym = str(getattr(_av, "symbol", "") or "").upper()
                                     if not _sym:
@@ -2757,6 +2789,7 @@ def main():
                                     _correct = bool(getattr(_av, "correct", False))
                                     _row_id = getattr(_av, "row_id", None)
                                     _variant_key = {
+                                        "alt3": "ALT3",
                                         "alt3v2": "ALT3V2",
                                         "alt4": "ALT4",
                                         "alt5": "ALT5",
