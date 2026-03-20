@@ -1892,6 +1892,7 @@ def main():
     # If TG_ALT_ONLY=1 (default), send only Alt strategy alerts.
     tg_alt_only = os.getenv("TG_ALT_ONLY", "1") != "0"
     # Alt4 telegram is enabled by default. Set TG_ALT4_ENABLED=0 to disable.
+    tg_alt3_enabled = os.getenv("TG_ALT3_ENABLED", "1") != "0"  # Smart ANTI V10
     tg_alt4_enabled = os.getenv("TG_ALT4_ENABLED", "1") != "0"
     tg_alt5_enabled = os.getenv("TG_ALT5_ENABLED", "1") != "0"
     alt4_min_repeat_min = max(0, int(os.getenv("ALT4_MIN_REPEAT_MIN", "45")))
@@ -2533,11 +2534,12 @@ def main():
                                         if _inserted_syms and fc.symbol not in _inserted_syms:
                                             continue
                                         _in_window, _window_label, _, _ = classify_utc_timestamp(fc.ts_utc.isoformat())
-                                        for strat, attr in [
-                                            ("alt3", "h30_alt3v2_direction"),
-                                            ("alt4", "h30_alt4_direction"),
-                                            ("alt5", "h30_alt5_direction"),
-                                            ("alt6", "h30_alt6_direction"),
+                                        for strat, attr, eligible_attr in [
+                                            ("alt3", "h30_alt3_direction", "h30_alt3_trade_eligible"),  # Smart ANTI V10
+                                            ("alt3v2", "h30_alt3v2_direction", "h30_alt3v2_trade_eligible"),  # Old Alt3
+                                            ("alt4", "h30_alt4_direction", "h30_alt4_trade_eligible"),
+                                            ("alt5", "h30_alt5_direction", "h30_alt5_trade_eligible"),
+                                            ("alt6", "h30_alt6_direction", "h30_alt6_trade_eligible"),
                                         ]:
                                             alt_dir = getattr(fc, attr, None)
                                             if alt_dir:
@@ -2550,7 +2552,11 @@ def main():
                                                 )
                                                 if not _send_allowed:
                                                     continue
-                                                if strat == "alt3" and not bool(getattr(fc, "h30_alt3v2_trade_eligible", False)):
+                                                if strat == "alt3" and not tg_alt3_enabled:
+                                                    continue
+                                                if strat == "alt3" and not bool(getattr(fc, "h30_alt3_trade_eligible", False)):
+                                                    continue
+                                                if strat == "alt3v2":  # Skip old alt3v2 TG notifications
                                                     continue
                                                 if strat == "alt4" and not tg_alt4_enabled:
                                                     continue
@@ -2564,7 +2570,7 @@ def main():
                                                     continue
                                                 # Hard per-symbol repeat guard for Telegram notifications.
                                                 _repeat_min = (
-                                                    alt3_min_repeat_min if strat == "alt3"
+                                                    alt3_min_repeat_min if strat in ("alt3", "alt3v2")
                                                     else alt4_min_repeat_min if strat == "alt4"
                                                     else alt5_min_repeat_min if strat == "alt5"
                                                     else alt6_min_repeat_min

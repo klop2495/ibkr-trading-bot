@@ -209,6 +209,9 @@ class TelegramNotifier:
         price_str = f"{base_price:.3f}" if is_jpy else f"{base_price:.5f}"
 
         if strategy == "alt3":
+            strat_label = "🎯 SMART ANTI V10"
+            strat_desc = "anti-trend (strong symbols + ADX<35)"
+        elif strategy == "alt3v2":
             strat_label = "\U0001f52c ALT3 (v2)"
             strat_desc = "main strict weighted blend"
         elif strategy == "alt4":
