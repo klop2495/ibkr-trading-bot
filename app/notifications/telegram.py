@@ -210,7 +210,7 @@ class TelegramNotifier:
 
         if strategy == "alt3":
             strat_label = "🎯 SMART ANTI V10"
-            strat_desc = "anti-trend (strong symbols + ADX<35)"
+            strat_desc = "anti-trend (strong symbols + ADX&lt;35)"
         elif strategy == "alt3v2":
             strat_label = "\U0001f52c ALT3 (v2)"
             strat_desc = "main strict weighted blend"
